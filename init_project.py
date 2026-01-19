@@ -24,7 +24,7 @@ def create_project_structure():
         "tests": ["__init__.py", "test_isbn.py", "test_db.py"],
         
         # F12: Documentation (User Manuals)
-        "docs": ["User_Guide.md", "Dev_Setup.md"],
+        "docs": ["user_guide.md", "dev_setup.md"],
         
         # Data storage (Local DB location - .gitkeep needed to track empty folder)
         "data": [".gitkeep"] 

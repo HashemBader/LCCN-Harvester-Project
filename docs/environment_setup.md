@@ -1,6 +1,5 @@
 <!--
 Developer Environment Setup (LCCN Harvester)
-Referenced from README.
 Keep this file up to date as the repo evolves (Python version, run command, dependency file, packaging, tests).
 -->
 

@@ -1,4 +1,4 @@
-# docs index
+# docs index:
 
 This folder holds the project documentation. Most files come straight from the project plan (scope, requirements, use cases, features, delivery plan, risks, charts/diagrams). The rest are short build/use guides so someone can actually run and test the app.
 

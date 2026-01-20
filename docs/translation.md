@@ -1,4 +1,4 @@
-# translation.md
+# translation.md:
 
 ## Purpose
 Defines the translation rules and conventions the team will follow if any existing C-based logic (e.g., Z39.50/YAZ client behavior) needs to be translated into Python 3 for this project. The harvester must be entirely in Python (no C code may be used), and it must remain cross-platform (Windows/Mac/Linux).

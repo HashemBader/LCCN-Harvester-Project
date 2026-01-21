@@ -1,12 +1,12 @@
 # Database Schema & Planned Pipeline (Architecture)
 
-This project uses a small SQLite database as the “source of truth” for what we’ve already harvested successfully, what has failed (so we can retry later without wasting calls), and a couple of stretch features (edition linking + subjects).
+This project uses a small SQLite database (DB) as the “source of truth” for what we’ve already harvested successfully, what has failed (so we can retry later without wasting calls), and a couple of stretch features (edition linking + subjects).
 
 This section documents the schema **and** the planned flow that writes to it. It also ties the docs to the actual initialization code so future changes stay consistent.
 
 ---
 
-## Where this lives (docs ↔ code link)
+## The docs ↔ code link
 
 - **Schema file:** `schema.sql`
 - **Init code:** `db_manager.py` → `DatabaseManager.init_db()`
@@ -14,7 +14,7 @@ This section documents the schema **and** the planned flow that writes to it. It
 
 `DatabaseManager.init_db()` reads `schema.sql` and runs it via SQLite so the database can always be created the same way on any machine.
 
-> Note: SQLite foreign keys are enabled per-connection, so the app ensures `PRAGMA foreign_keys = ON` is set when initializing the DB connection.
+Note: SQLite foreign keys are enabled per-connection. This means the app ensures `PRAGMA foreign_keys = ON` is set when initializing the DB connection.
 
 ---
 
@@ -139,4 +139,4 @@ For each target:
 
 ## Implementation reference
 - The schema is defined in `schema.sql`.
-- The database is created/opened and initialized by `db_manager.py` (`DatabaseManager.init_db()`), which executes the schema script and ensures the DB file exists at `./data/lccn_harvester.db`.
+- The database is created/opened and initialized by `db_manager.py` (`DatabaseManager.init_db()`), which executes the schema script and ensures the DB file exists within the data. 

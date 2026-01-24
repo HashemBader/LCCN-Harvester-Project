@@ -12,7 +12,7 @@ EXPORT_HEADER = ["ISBN", "LCCN", "NLMCN", "Classification", "Source", "Date Adde
 def export_main_to_tsv(db_path: Union[str, Path], out_path: Union[str, Path]) -> Path:
     """
     Purpose:
-        Export all rows from the SQLite `main` table to TSV file.
+        Export all rows from the SQLite `main` table to a TSV file.
 
     Arguments:
         db_path: Path to the SQLite database file.

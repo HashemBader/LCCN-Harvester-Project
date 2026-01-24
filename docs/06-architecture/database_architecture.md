@@ -18,6 +18,15 @@ Note: SQLite foreign keys are enabled per-connection. This means the app ensures
 
 ---
 
+## Schema status
+
+This document describes the **intended** schema and DB usage.
+
+- `schema.sql` is owned/maintained by the DB implementation task owner.
+- If `schema.sql` differs from this document, treat `schema.sql` as the executable source of truth and update this document accordingly.
+
+---
+
 ## Tables
 
 ### 1) `main` — successful results (export-ready)
@@ -139,4 +148,13 @@ For each target:
 
 ## Implementation reference
 - The schema is defined in `schema.sql`.
-- The database is created/opened and initialized by `db_manager.py` (`DatabaseManager.init_db()`), which executes the schema script and ensures the DB file exists within the data. 
+- The database is created/opened and initialized by `db_manager.py` (`DatabaseManager.init_db()`), which executes the schema script and ensures the DB file exists within the data folder.
+
+---
+
+## Verification checklist (for maintainers)
+- [ ] `db_manager.py` enables `PRAGMA foreign_keys = ON` for each connection
+- [ ] `schema.sql` creates tables: `main`, `attempted`, `linked_isbns`, `subjects`
+- [ ] Primary keys match: `main(isbn)`, `attempted(isbn,target_attempted)`, etc.
+- [ ] Indexes exist: `idx_attempted_isbn`, `idx_subjects_lowest_isbn`
+- [ ] Export reads exactly: `isbn,lccn,nlmcn,loc_class,source,date_added`

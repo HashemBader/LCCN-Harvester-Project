@@ -1,0 +1,59 @@
+"""
+Module: messages.py
+Purpose: Central repository for all application text strings.
+         Ensures consistency across Logs, UI, and Errors.
+"""
+
+# how to use this module
+"""
+ import messages
+ messages.SystemMessages.app_start
+ messages.DatabaseMessages.record_found.format(isbn="1234567890")
+
+"""
+
+class SystemMessages:
+    """General system lifecycle messages."""
+    app_start = "LCCN Harvester Application started."
+    app_close = "Application shutting down."
+    config_loaded = "User configuration loaded successfully."
+    config_error = "Failed to load configuration: {error}"
+
+
+class DatabaseMessages:
+    """Messages related to SQLite operations."""
+    connecting = "Connecting to local database..."
+    connect_success = "Successfully connected to SQLite database."
+    connect_fail = "Critical Error: Could not connect to database. {error}"
+    
+    # Dynamic messages (use .format() to fill in data)
+    record_found = "Found existing record for ISBN {isbn}."
+    insert_success = "Saved record: ISBN {isbn} -> LCCN {lccn}"
+    insert_fail = "Failed to save record for ISBN {isbn}: {error}"
+
+
+class NetworkMessages:
+    """Messages for API and Z39.50 interactions."""
+    # Status Updates
+    connecting_to_target = "Connecting to target: {target}..."
+    searching = "Searching for ISBN: {isbn}..."
+    
+    # Outcomes
+    success_match = "Match found in {target}. Call Number: {call_number}"
+    no_match = "No records found in {target}."
+    connection_timeout = "Connection to {target} timed out after {seconds}s."
+    protocol_error = "Z39.50 Protocol Error with {target}: {error}"
+
+
+class GuiMessages:
+    """User-facing messages for the Status Bar and Popups."""
+    ready = "Ready"
+    processing = "Processing {current}/{total} items..."
+    completed = "Harvesting complete. Found {success} matches."
+    
+    # Error Dialog Titles/Bodies
+    err_title_file = "File Error"
+    err_body_file = "Could not open the selected file. Please check permissions."
+    
+    warn_title_invalid = "Invalid ISBNs"
+    warn_body_invalid = "The input file contained {count} invalid ISBNs. Check logs for details."

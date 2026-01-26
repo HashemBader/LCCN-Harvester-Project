@@ -1,10 +1,10 @@
 # Database Schema (SQLite)
 
-## Purpose
-Define the table structures and constraints.
+See [database_architecture.md](database_architecture.md) for the complete schema definition, including:
 
-## Content (to fill)
-- Main table: isbn (PK), lccn, nlmcn, loc_class, source, date_added
-- Attempted table: isbn (FK), target_attempted, date_attempted
-- Linked_ISBNs (stretch)
-- Subjects (stretch)
+- `main` table — successful results (export-ready)
+- `attempted` table — failed attempts (retry support)
+- `linked_isbns` table — (stretch) edition linking
+- `subjects` table — (stretch) subject phrases
+
+The schema source file is `schema.sql` in the project root.

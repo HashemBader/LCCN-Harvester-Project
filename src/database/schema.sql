@@ -1,55 +1,61 @@
+-- LCCN Harvester - SQLite Schema
+-- Core tables: main (successful results) + attempted (failed / retry tracking)
+-- Optional tables included as stretch; app can ignore for now.
+
 PRAGMA foreign_keys = ON;
 
--- ==========================================================
--- MAIN: Successful results (matches planned export columns)
--- Columns: isbn (PK), lccn, nlmcn, loc_class, source, date_added
--- ==========================================================
+-- =========================
+-- Main results table
+-- =========================
 CREATE TABLE IF NOT EXISTS main (
-    isbn        TEXT PRIMARY KEY,      -- normalized ISBN-10/13 (no hyphens)
-    lccn        TEXT,                  -- call number from MARC 050
-    nlmcn       TEXT,                  -- call number from MARC 060 (optional)
-    loc_class   TEXT,                  -- 1-3 letter class prefix (e.g., "HF")
-    source      TEXT,                  -- API/Z39.50 target name
-    date_added  INTEGER                -- yyyymmdd
+    isbn            TEXT PRIMARY KEY,
+    lccn            TEXT,
+    nlmcn           TEXT,
+    classification  TEXT,
+    source          TEXT,
+    date_added      TEXT NOT NULL
 );
 
--- ==========================================================
--- ATTEMPTED: Failed attempts (supports retry-days)
--- Columns: isbn, target_attempted, date_attempted
--- NOTE: no FK to main (an ISBN can fail before ever being found)
--- ==========================================================
+CREATE INDEX IF NOT EXISTS idx_main_source ON main(source);
+CREATE INDEX IF NOT EXISTS idx_main_date_added ON main(date_added);
+
+-- =========================
+-- Attempted / failure tracking table
+-- =========================
 CREATE TABLE IF NOT EXISTS attempted (
-    isbn             TEXT NOT NULL,
-    target_attempted TEXT NOT NULL,
-    date_attempted   INTEGER NOT NULL,  -- yyyymmdd
-    PRIMARY KEY (isbn, target_attempted)
+    isbn              TEXT PRIMARY KEY,
+    last_target       TEXT,
+    last_attempted    TEXT NOT NULL,
+    fail_count        INTEGER NOT NULL DEFAULT 1,
+    last_error        TEXT
 );
 
--- Helpful index for retry checks
-CREATE INDEX IF NOT EXISTS idx_attempted_isbn
-ON attempted(isbn);
+CREATE INDEX IF NOT EXISTS idx_attempted_last_attempted ON attempted(last_attempted);
+CREATE INDEX IF NOT EXISTS idx_attempted_last_target ON attempted(last_target);
 
--- ==========================================================
--- STRETCH: Linked ISBNs (edition linking)
--- Columns: lowest_isbn, other_isbn
--- ==========================================================
+-- =========================
+-- Stretch: Linked ISBNs
+-- =========================
 CREATE TABLE IF NOT EXISTS linked_isbns (
-    lowest_isbn TEXT NOT NULL,
-    other_isbn  TEXT NOT NULL,
-    PRIMARY KEY (lowest_isbn, other_isbn),
-    CHECK (lowest_isbn <> other_isbn)
+    isbn             TEXT PRIMARY KEY,
+    canonical_isbn   TEXT NOT NULL
 );
 
--- ==========================================================
--- STRETCH: Subjects
--- Columns: lowest_isbn, subject_phrase, source
--- ==========================================================
+CREATE INDEX IF NOT EXISTS idx_linked_canonical ON linked_isbns(canonical_isbn);
+
+-- =========================
+-- Stretch: Subjects harvested from MARC 6XX fields
+-- =========================
 CREATE TABLE IF NOT EXISTS subjects (
-    lowest_isbn    TEXT NOT NULL,
-    subject_phrase TEXT NOT NULL,
-    source         TEXT,
-    PRIMARY KEY (lowest_isbn, subject_phrase, source)
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    isbn        TEXT NOT NULL,
+    field       TEXT,         -- e.g., 650
+    indicator2  TEXT,         -- thesaurus indicator (2nd indicator)
+    subject     TEXT NOT NULL,
+    source      TEXT,
+    date_added  TEXT NOT NULL,
+    FOREIGN KEY (isbn) REFERENCES main(isbn) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_subjects_lowest_isbn
-ON subjects(lowest_isbn);
+CREATE INDEX IF NOT EXISTS idx_subjects_isbn ON subjects(isbn);
+CREATE INDEX IF NOT EXISTS idx_subjects_field ON subjects(field);

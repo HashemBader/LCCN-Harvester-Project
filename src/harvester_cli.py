@@ -21,6 +21,11 @@ from typing import List
 
 from database import DatabaseManager
 
+from src.database import DatabaseManager
+
+from src.harvester.run_harvest import run_harvest
+
+
 
 def parse_args(argv=None):
     """
@@ -221,6 +226,7 @@ def main(argv=None) -> int:
                 db.close()
             except Exception:
                 pass
+
 
 
 if __name__ == "__main__":

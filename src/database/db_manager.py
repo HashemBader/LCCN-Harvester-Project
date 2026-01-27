@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 
-def utc_now_iso() -> str:
-    """Return current UTC time as ISO-8601 string (no microseconds)."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+# -------------------------
+# Date helpers (requirements: yyyymmdd integers)
+# -------------------------
+def today_yyyymmdd() -> int:
+    """Return today's UTC date as integer yyyymmdd."""
+    return int(datetime.now(timezone.utc).strftime("%Y%m%d"))
+
+
+def yyyymmdd_to_date(value: int) -> date:
+    """Convert integer yyyymmdd -> datetime.date."""
+    s = str(value)
+    return date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
 
 
 def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
@@ -27,6 +36,9 @@ def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
     return "".join(letters) if letters else None
 
 
+# -------------------------
+# Data models
+# -------------------------
 @dataclass(frozen=True)
 class MainRecord:
     isbn: str
@@ -34,29 +46,31 @@ class MainRecord:
     nlmcn: Optional[str] = None
     classification: Optional[str] = None
     source: Optional[str] = None
-    date_added: Optional[str] = None  # ISO string
+    date_added: Optional[int] = None  # yyyymmdd int
 
 
 @dataclass(frozen=True)
 class AttemptedRecord:
     isbn: str
-    last_target: Optional[str] = None
-    last_attempted: Optional[str] = None  # ISO string
+    target: str
+    last_attempted: Optional[int] = None  # yyyymmdd int
     fail_count: int = 1
     last_error: Optional[str] = None
 
 
+# -------------------------
+# Database manager
+# -------------------------
 class DatabaseManager:
     """
-    Minimal SQLite manager for:
-      - main: successful ISBN -> call number results
-      - attempted: failed lookups + retry tracking
+    SQLite manager aligned with requirements schema:
 
-    Intended usage:
-      db = DatabaseManager()  # uses default DB path
-      db.init_db()
-      db.upsert_main(...)
-      db.upsert_attempted(...)
+    Table main:
+      isbn (PK), lccn, nlmcn, classification, source, date_added (yyyymmdd int)
+
+    Table attempted:
+      (isbn, target) (composite PK),
+      last_attempted (yyyymmdd int), fail_count, last_error
     """
 
     def __init__(self, db_path: Path | str = "data/lccn_harvester.sqlite3"):
@@ -74,7 +88,6 @@ class DatabaseManager:
         """Initialize database schema from schema.sql located in this package folder."""
         schema_path = Path(__file__).with_name("schema.sql")
         schema_sql = schema_path.read_text(encoding="utf-8")
-
         with self.connect() as conn:
             conn.executescript(schema_sql)
             conn.commit()
@@ -83,8 +96,7 @@ class DatabaseManager:
         """
         Compatibility no-op.
 
-        This manager opens a new SQLite connection per operation (self.connect()).
-        There is no long-lived connection to close, but the CLI expects db.close().
+        This manager opens a new SQLite connection per operation.
         """
         return
 
@@ -94,7 +106,8 @@ class DatabaseManager:
     def get_main(self, isbn: str) -> Optional[MainRecord]:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main WHERE isbn = ?",
+                "SELECT isbn, lccn, nlmcn, classification, source, date_added "
+                "FROM main WHERE isbn = ?",
                 (isbn,),
             ).fetchone()
 
@@ -107,18 +120,18 @@ class DatabaseManager:
             nlmcn=row["nlmcn"],
             classification=row["classification"],
             source=row["source"],
-            date_added=row["date_added"],
+            date_added=int(row["date_added"]),
         )
 
     def upsert_main(self, record: MainRecord, *, clear_attempted_on_success: bool = True) -> None:
         """
         Insert/update a main record.
-        - isbn is the key
-        - if date_added missing, set to now
-        - if classification missing, derive from lccn
-        - optionally clear attempted record once it succeeds
+
+        - If date_added missing, set to today yyyymmdd.
+        - If classification missing, derive from lccn.
+        - Optionally clears ALL attempted entries for that ISBN on success.
         """
-        date_added = record.date_added or utc_now_iso()
+        date_added = record.date_added or today_yyyymmdd()
         classification = record.classification or classification_from_lccn(record.lccn)
 
         with self.connect() as conn:
@@ -142,13 +155,14 @@ class DatabaseManager:
             conn.commit()
 
     # -------------------------
-    # ATTEMPTED TABLE HELPERS
+    # ATTEMPTED TABLE HELPERS (per isbn+target)
     # -------------------------
-    def get_attempted(self, isbn: str) -> Optional[AttemptedRecord]:
+    def get_attempted(self, isbn: str, target: str) -> Optional[AttemptedRecord]:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT isbn, last_target, last_attempted, fail_count, last_error FROM attempted WHERE isbn = ?",
-                (isbn,),
+                "SELECT isbn, target, last_attempted, fail_count, last_error "
+                "FROM attempted WHERE isbn = ? AND target = ?",
+                (isbn, target),
             ).fetchone()
 
         if not row:
@@ -156,60 +170,71 @@ class DatabaseManager:
 
         return AttemptedRecord(
             isbn=row["isbn"],
-            last_target=row["last_target"],
-            last_attempted=row["last_attempted"],
+            target=row["target"],
+            last_attempted=int(row["last_attempted"]),
             fail_count=int(row["fail_count"]),
             last_error=row["last_error"],
         )
-
-    def should_skip_retry(self, isbn: str, retry_days: int) -> bool:
-        """Return True if this ISBN was attempted within the last `retry_days` days."""
-        att = self.get_attempted(isbn)
-        if att is None or not att.last_attempted:
-            return False
-
-        last = datetime.fromisoformat(att.last_attempted)
-        now = datetime.now(timezone.utc)
-
-        return (now - last) < timedelta(days=retry_days)
 
     def upsert_attempted(
         self,
         *,
         isbn: str,
-        last_target: Optional[str],
+        target: str,
         last_error: Optional[str] = None,
-        attempted_time: Optional[str] = None,
+        attempted_date: Optional[int] = None,
     ) -> None:
         """
-        Record a failed attempt.
-        - If ISBN already exists in attempted, increment fail_count and update last_* fields.
+        Record a failed attempt for a specific (isbn, target).
+
+        - attempted_date stored as yyyymmdd int (defaults to today).
+        - On conflict (isbn, target), increments fail_count and updates last_attempted/last_error.
         """
-        attempted_time = attempted_time or utc_now_iso()
+        attempted_date = attempted_date or today_yyyymmdd()
 
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error)
+                INSERT INTO attempted (isbn, target, last_attempted, fail_count, last_error)
                 VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(isbn) DO UPDATE SET
-                    last_target = excluded.last_target,
+                ON CONFLICT(isbn, target) DO UPDATE SET
                     last_attempted = excluded.last_attempted,
                     fail_count = attempted.fail_count + 1,
                     last_error = excluded.last_error
                 """,
-                (isbn, last_target, attempted_time, last_error),
+                (isbn, target, attempted_date, last_error),
             )
             conn.commit()
 
-    def clear_attempted(self, isbn: str) -> None:
-        """Remove an ISBN from attempted table (useful once it succeeds)."""
+    def clear_attempted(self, isbn: str, target: Optional[str] = None) -> None:
+        """
+        Clear attempted entries.
+
+        - If target is provided: clears only that (isbn, target)
+        - If target is None: clears ALL attempted rows for that isbn
+        """
         with self.connect() as conn:
-            conn.execute("DELETE FROM attempted WHERE isbn = ?", (isbn,))
+            if target is None:
+                conn.execute("DELETE FROM attempted WHERE isbn = ?", (isbn,))
+            else:
+                conn.execute("DELETE FROM attempted WHERE isbn = ? AND target = ?", (isbn, target))
             conn.commit()
 
+    def should_skip_retry(self, isbn: str, target: str, retry_days: int) -> bool:
+        """
+        Return True if this (isbn, target) was attempted within the last `retry_days` days.
+        """
+        att = self.get_attempted(isbn, target)
+        if att is None or att.last_attempted is None:
+            return False
 
-# Quick smoke test (run from project root):
+        last_dt = yyyymmdd_to_date(att.last_attempted)
+        now_dt = yyyymmdd_to_date(today_yyyymmdd())
+
+        return (now_dt - last_dt).days < retry_days
+
+
+# Smoke test:
 #   python -m src.database.db_manager
 if __name__ == "__main__":
     db = DatabaseManager()
@@ -218,5 +243,5 @@ if __name__ == "__main__":
     db.upsert_main(MainRecord(isbn="9780132350884", lccn="QA76.76", source="LoC"))
     print("Main:", db.get_main("9780132350884"))
 
-    db.upsert_attempted(isbn="0000000000", last_target="Harvard", last_error="Not found")
-    print("Attempted:", db.get_attempted("0000000000"))
+    db.upsert_attempted(isbn="0000000000", target="Harvard", last_error="Not found")
+    print("Attempted:", db.get_attempted("0000000000", "Harvard"))

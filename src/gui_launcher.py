@@ -1,6 +1,6 @@
 """
 Module: gui_launcher.py
-Launcher script for the LCCN Harvester GUI.
+Launcher script for the LCCN Harvester GUI
 """
 import sys
 from pathlib import Path

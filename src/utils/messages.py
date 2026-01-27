@@ -57,3 +57,13 @@ class GuiMessages:
     
     warn_title_invalid = "Invalid ISBNs"
     warn_body_invalid = "The input file contained {count} invalid ISBNs. Check logs for details."
+
+
+class ConfigMessages:
+    """Messages related to configuration management."""
+    target_added = "Added target: {name}"
+    target_modified = "Modified target: {name}"
+    target_deleted = "Deleted target ID: {target_id}"
+    target_not_found = "Target with ID {target_id} not found."
+    load_error = "Error loading targets: {error}"
+    save_error = "Error saving targets: {error}"

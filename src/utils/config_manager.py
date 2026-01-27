@@ -11,6 +11,7 @@ import csv
 import os
 from dataclasses import dataclass, asdict
 from typing import List, Optional
+from utils.messages import ConfigMessages
 
 # Constants defining the storage location
 DATA_DIR = "data"
@@ -122,7 +123,7 @@ class ConfigManager:
                         )
                     )
         except Exception as e:
-            print(f"Error loading targets: {e}")
+            print(ConfigMessages.load_error.format(error=e))
         
         # Sort targets by their rank attribute (ascending)
         targets.sort(key=lambda x: x.rank)
@@ -162,7 +163,7 @@ class ConfigManager:
                         t.notes
                     ])
         except Exception as e:
-            print(f"Error saving targets: {e}")
+            print(ConfigMessages.save_error.format(error=e))
 
     def add_target(self, target: Target):
         """
@@ -184,7 +185,7 @@ class ConfigManager:
             
         targets.append(target)
         self.save_targets(targets)
-        print(f"Added target: {target.name}")
+        print(ConfigMessages.target_added.format(name=target.name))
 
     def modify_target(self, updated_target: Target):
         """
@@ -200,9 +201,9 @@ class ConfigManager:
         
         if found:
             self.save_targets(targets)
-            print(f"Modified target: {updated_target.name}")
+            print(ConfigMessages.target_modified.format(name=updated_target.name))
         else:
-            print(f"Target with ID {updated_target.target_id} not found.")
+            print(ConfigMessages.target_not_found.format(target_id=updated_target.target_id))
 
     def delete_target(self, target_id: str):
         """
@@ -215,8 +216,8 @@ class ConfigManager:
         
         if len(targets) < original_count:
             self.save_targets(targets)
-            print(f"Deleted target ID: {target_id}")
+            print(ConfigMessages.target_deleted.format(target_id=target_id))
         else:
-            print(f"Target ID {target_id} not found.")
+            print(ConfigMessages.target_not_found.format(target_id=target_id))
 
 

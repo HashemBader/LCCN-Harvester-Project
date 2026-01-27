@@ -10,6 +10,30 @@ This file uses lazy imports to avoid the RuntimeWarning that can happen when run
 src.database package exports.
 """
 
-from .db_manager import DatabaseManager, MainRecord, AttemptedRecord
+"""
+Package: src.database
+
+Lazy exports to avoid RuntimeWarning when running:
+  python -m src.database.db_manager
+"""
+
+from typing import TYPE_CHECKING, Any
 
 __all__ = ["DatabaseManager", "MainRecord", "AttemptedRecord"]
+
+if TYPE_CHECKING:
+    from .db_manager import DatabaseManager, MainRecord, AttemptedRecord
+
+
+def __getattr__(name: str) -> Any:
+    if name == "DatabaseManager":
+        from .db_manager import DatabaseManager
+        return DatabaseManager
+    if name == "MainRecord":
+        from .db_manager import MainRecord
+        return MainRecord
+    if name == "AttemptedRecord":
+        from .db_manager import AttemptedRecord
+        return AttemptedRecord
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+

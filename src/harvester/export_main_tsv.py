@@ -42,7 +42,7 @@ def export_main_to_tsv(db_path: Union[str, Path], out_path: Union[str, Path]) ->
 
         cursor.execute(
             """
-            SELECT isbn, lccn, nlmcn, loc_class, source, date_added
+            SELECT isbn, lccn, nlmcn, classification, source, date_added
             FROM main
             ORDER BY isbn
             """

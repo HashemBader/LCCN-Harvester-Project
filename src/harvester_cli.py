@@ -6,6 +6,7 @@ Initial command-line entry point for the LCCN Harvester.
 For Sprint 2 this script:
 - Accepts a required --input argument pointing to a TSV file of ISBNs.
 - Validates that the file exists and is a regular file.
+- Initializes the SQLite database (creates tables via schema.sql if needed).
 - Prints a summary of what would be done.
 
 Later sprints will replace the placeholder with a real call to the harvest
@@ -15,6 +16,8 @@ pipeline (e.g., run_harvest()).
 import argparse
 import sys
 from pathlib import Path
+
+from database import DatabaseManager
 
 
 def parse_args(argv=None):
@@ -91,6 +94,26 @@ def validate_input_file(path_str: str) -> Path:
     return path
 
 
+def init_database_or_exit() -> DatabaseManager:
+    """
+    Create/open the SQLite database and initialize tables using schema.sql.
+
+    Returns
+    -------
+    DatabaseManager
+        Initialized DatabaseManager instance.
+
+    Exits with status code 1 on error.
+    """
+    try:
+        db = DatabaseManager()  # default: data/lccn_harvester.db
+        db.init_db()
+        return db
+    except Exception as e:
+        print(f"ERROR: Failed to initialize database: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main(argv=None) -> int:
     """
     Main entry point for the CLI.
@@ -98,7 +121,8 @@ def main(argv=None) -> int:
     Steps:
     1. Parse arguments.
     2. Validate the input TSV path.
-    3. Print a confirmation message (no real harvesting yet).
+    3. Initialize the database (create tables if needed).
+    4. Print a confirmation message (no real harvesting yet).
 
     Returns
     -------
@@ -108,20 +132,31 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     input_path = validate_input_file(args.input_file)
 
-    # Placeholder for future integration with the real harvest pipeline.
-    # Example of what we will eventually call:
-    #   run_harvest(input_path=input_path, dry_run=args.dry_run)
+    db = None
+    try:
+        db = init_database_or_exit()
 
-    print("LCCN Harvester (CLI skeleton)")
-    print(f"- Input TSV: {input_path}")
-    print(f"- Dry run:   {args.dry_run}")
-    print()
-    print(
-        "No harvesting is performed yet. "
-        "This CLI only validates the file path and confirms the options."
-    )
+        # Placeholder for future integration with the real harvest pipeline.
+        # Example of what we will eventually call:
+        #   run_harvest(input_path=input_path, dry_run=args.dry_run)
 
-    return 0
+        print("LCCN Harvester (CLI skeleton)")
+        print(f"- Input TSV: {input_path}")
+        print(f"- Dry run:   {args.dry_run}")
+        print("- Database:  initialized (tables ready)")
+        print()
+        print(
+            "No harvesting is performed yet. "
+            "This CLI validates the file path and initializes the database."
+        )
+        return 0
+
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

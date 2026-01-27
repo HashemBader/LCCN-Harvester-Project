@@ -53,13 +53,13 @@ class DatabaseManager:
       - attempted: failed lookups + retry tracking
 
     Intended usage:
-      db = DatabaseManager(Path("data/lccn_harvester.sqlite3"))
+      db = DatabaseManager()  # uses default DB path
       db.init_db()
       db.upsert_main(...)
       db.upsert_attempted(...)
     """
 
-    def __init__(self, db_path: Path | str):
+    def __init__(self, db_path: Path | str = "data/lccn_harvester.sqlite3"):
         self.db_path = Path(db_path)
 
     def connect(self) -> sqlite3.Connection:
@@ -78,6 +78,15 @@ class DatabaseManager:
         with self.connect() as conn:
             conn.executescript(schema_sql)
             conn.commit()
+
+    def close(self) -> None:
+        """
+        Compatibility no-op.
+
+        This manager opens a new SQLite connection per operation (self.connect()).
+        There is no long-lived connection to close, but the CLI expects db.close().
+        """
+        return
 
     # -------------------------
     # MAIN TABLE HELPERS
@@ -159,7 +168,6 @@ class DatabaseManager:
         if att is None or not att.last_attempted:
             return False
 
-        # last_attempted stored as ISO string (e.g., '2026-01-27T02:11:02+00:00')
         last = datetime.fromisoformat(att.last_attempted)
         now = datetime.now(timezone.utc)
 
@@ -204,7 +212,7 @@ class DatabaseManager:
 # Quick smoke test (run from project root):
 #   python -m src.database.db_manager
 if __name__ == "__main__":
-    db = DatabaseManager("data/lccn_harvester.sqlite3")
+    db = DatabaseManager()
     db.init_db()
 
     db.upsert_main(MainRecord(isbn="9780132350884", lccn="QA76.76", source="LoC"))

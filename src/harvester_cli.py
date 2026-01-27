@@ -16,6 +16,11 @@ import argparse
 import sys
 from pathlib import Path
 
+from src.database import DatabaseManager
+
+from src.harvester.run_harvest import run_harvest
+
+
 
 def parse_args(argv=None):
     """
@@ -111,17 +116,24 @@ def main(argv=None) -> int:
     # Placeholder for future integration with the real harvest pipeline.
     # Example of what we will eventually call:
     #   run_harvest(input_path=input_path, dry_run=args.dry_run)
+    db = DatabaseManager()
+    db.init_db()
+    summary = run_harvest(input_path=input_path, dry_run=args.dry_run)
 
-    print("LCCN Harvester (CLI skeleton)")
+    print("LCCN Harvester")
     print(f"- Input TSV: {input_path}")
     print(f"- Dry run:   {args.dry_run}")
+    print("- Database:  initialized (tables ready)")
     print()
-    print(
-        "No harvesting is performed yet. "
-        "This CLI only validates the file path and confirms the options."
-    )
-
+    print("Summary:")
+    print(f"- Total ISBNs:          {summary.total_isbns}")
+    print(f"- Cached hits:          {summary.cached_hits}")
+    print(f"- Skipped recent fails: {summary.skipped_recent_fail}")
+    print(f"- Attempted:            {summary.attempted}")
+    print(f"- Successes:            {summary.successes}")
+    print(f"- Failures:             {summary.failures}")
     return 0
+
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ Developer Environment Setup (LCCN Harvester)
 Keep this file up to date as the repo evolves (Python version, run command, dependency file, packaging, tests).
 -->
 
-Developer Environment Setup
+# Developer Environment Setup
 
 This guide shows how to set up the project from scratch on macOS / Windows / Linux. It’s meant to be the one place a developer can follow to get running quickly, and it will be updated as the codebase grows.
 
@@ -99,24 +99,31 @@ Run this quick import test:
 python -c "import PyQt6; print('PyQt6 OK')"
 ```
 
-6) Run the app (current approach)
+6) Run the CLI
 
-Update this section as soon as the entrypoint is finalized.
+The harvester provides a command-line interface for processing ISBN files.
 
-Option A — run a module
+Basic usage:
 ```bash
-python -m <package_name>
+python src/harvester_cli.py --input path/to/input.tsv
 ```
 
-Option B — run a script
+Short flag:
 ```bash
-python src/<entrypoint>.py
+python src/harvester_cli.py -i path/to/input.tsv
 ```
 
-Option C — future: CLI entrypoint
+Dry-run mode (reserved for future use):
 ```bash
-lccn-harvester
+python src/harvester_cli.py -i path/to/input.tsv --dry-run
 ```
+
+Example with sample data:
+```bash
+python src/harvester_cli.py -i data/sample/sample_isbns.tsv
+```
+
+The CLI currently validates the input file and prints a summary. Full harvesting will be added in later sprints.
 
 7) Configuration & local files
 
@@ -132,19 +139,33 @@ Example:
 config/targets.tsv
 ```
 
-8) Run tests (if present)
+8) Run tests
 
-Keep this section synced with the toolchain the repo uses.
+The project uses pytest for testing.
 
+Run all tests:
+```bash
 pytest
-```bash
-pytest -q
 ```
 
-unittest
+Run tests with verbose output:
 ```bash
-python -m unittest
+pytest -v
 ```
+
+Run a specific test file:
+```bash
+pytest tests/test_isbn.py
+```
+
+Run tests matching a pattern:
+```bash
+pytest -k "isbn"
+```
+
+Test files are located in `tests/` and mirror the `src/` structure:
+- `tests/test_db.py` — Database tests
+- `tests/test_isbn.py` — ISBN validation tests
 
 9) Common problems & fixes
 

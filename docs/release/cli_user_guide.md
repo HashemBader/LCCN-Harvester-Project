@@ -2,8 +2,6 @@
 
 This guide explains how to use **LCCN Harvester** from the command line with an input TSV of ISBNs, what outputs to expect, and how the system is intended to behave as features are completed.
 
-> **Current status (sprint):** The CLI is a **skeleton**. It validates the input path and prints a confirmation summary. It does **not** harvest call numbers yet.
-
 ---
 
 ## Quick Start (CLI)

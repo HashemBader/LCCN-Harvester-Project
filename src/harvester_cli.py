@@ -18,6 +18,7 @@ import csv
 import sys
 from pathlib import Path
 from typing import List
+from utils import isbn_validator
 
 from database import DatabaseManager
 
@@ -172,7 +173,7 @@ def read_isbns_from_tsv(input_path: Path) -> List[str]:
                 continue
 
             isbn = normalize_isbn(first_cell)
-            if isbn:
+            if isbn_validator.validate_isbn(isbn):
                 isbns.append(isbn)
 
     return isbns

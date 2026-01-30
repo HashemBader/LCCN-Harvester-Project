@@ -29,3 +29,31 @@ def test_run_harvest_non_dry_run_writes_attempted(tmp_path: Path):
     assert summary.total_isbns == 1
     assert summary.attempted == 1
     assert summary.failures == 1
+
+
+class TestISBNValidation:
+
+    def test_valid_isbn10(self):
+        self.assertTrue(validate_isbn10("0471117099"))
+        self.assertTrue(validate_isbn("0471117099"))
+
+    def test_valid_isbn10_with_X(self):
+        self.assertTrue(validate_isbn10("0306406152"))
+        self.assertTrue(validate_isbn("0306406152"))
+
+    def test_valid_isbn13(self):
+        self.assertTrue(validate_isbn13("978-0-393-04002-9"))
+        self.assertTrue(validate_isbn("9780393040029"))
+
+    def test_invalid_isbn10(self):
+        self.assertFalse(validate_isbn10("0471117090"))
+        self.assertFalse(validate_isbn("0471117090"))
+
+    def test_invalid_isbn13(self):
+        self.assertFalse(validate_isbn13("9780393040020"))
+        self.assertFalse(validate_isbn("9780393040020"))
+
+    def test_garbage_input(self):
+        self.assertFalse(validate_isbn("not-an-isbn"))
+        self.assertFalse(validate_isbn("123456789"))
+        self.assertFalse(validate_isbn("978-ABC-DEF-GHI"))

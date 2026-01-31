@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QIcon, QFont, QColor, QPalette
+from mock_targets_tab import MockTargetsTab
 
 # --- Modern Dark Theme Stylesheet ---
 STYLESHEET = """
@@ -145,6 +146,7 @@ QTableWidget {
     border: 1px solid #313244;
     gridline-color: #313244;
     border-radius: 8px;
+    alternate-background-color: #181825; 
 }
 
 QTableWidget::item {
@@ -358,32 +360,11 @@ class ModernMainWindow(QMainWindow):
         pref_group.setLayout(pref_layout)
         
         # Group 2: Targets
-        target_group = QGroupBox("Z39.50 Search Targets")
-        target_layout = QVBoxLayout()
-        
-        btn_layout = QHBoxLayout()
-        self.btn_add_target = QPushButton("Add New Target")
-        self.btn_add_target.setObjectName("PrimaryButton")
-        self.btn_remove_target = QPushButton("Remove Selected")
-        
-        btn_layout.addWidget(self.btn_add_target)
-        btn_layout.addWidget(self.btn_remove_target)
-        btn_layout.addStretch()
-        
-        self.target_list = QTableWidget()
-        self.target_list.setColumnCount(4)
-        self.target_list.setHorizontalHeaderLabels(["Enabled", "Library Name", "Host / IP", "Port"])
-        self.target_list.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.target_list.verticalHeader().setVisible(False)
-        self.target_list.setShowGrid(False)
-        self.target_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        
-        target_layout.addLayout(btn_layout)
-        target_layout.addWidget(self.target_list)
-        target_group.setLayout(target_layout)
+        # Use our new persisted MockTargetsTab
+        self.targets_tab_widget = MockTargetsTab()
         
         layout.addWidget(pref_group)
-        layout.addWidget(target_group)
+        layout.addWidget(self.targets_tab_widget)
         
         tab.setLayout(layout)
         self.tabs.addTab(tab, "Configuration")

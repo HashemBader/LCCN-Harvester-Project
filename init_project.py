@@ -18,7 +18,7 @@ def create_project_structure():
         "src/gui": ["__init__.py", "main_window.py", "targets_tab.py"],
         
         # F4: Core Logic (ISBN cleaning, Validation, MARC parsing)
-        "src/utils": ["__init__.py", "isbn_validator.py", "marc_parser.py", "config_manager.py"],
+        "src/utils": ["__init__.py", "isbn_validator.py", "marc_parser.py", "targets_manager.py"],
         
         # F11: Quality Assurance (Unit & Integration Tests)
         "tests": ["__init__.py", "test_isbn.py", "test_db.py"],

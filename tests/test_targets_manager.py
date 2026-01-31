@@ -5,11 +5,11 @@ import unittest
 # Add src to path so we can import modules from the project source
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
-from utils.config_manager import ConfigManager, Target
+from utils.targets_manager import TargetsManager, Target
 
-class TestConfigManager(unittest.TestCase):
+class TestTargetsManager(unittest.TestCase):
     """
-    Test suite for ConfigManager.
+    Test suite for TargetsManager.
     
     This suite tests the CRUD (Create, Read, Update, Delete) operations
     on the actual 'targets.tsv' file.
@@ -18,7 +18,7 @@ class TestConfigManager(unittest.TestCase):
     """
     def setUp(self):
         """Prepare common test data and objects before each test method."""
-        self.cm = ConfigManager()
+        self.cm = TargetsManager()
         self.test_target_name = "Test Library"
         self.modified_target_name = "Modified Library"
 
@@ -44,7 +44,7 @@ class TestConfigManager(unittest.TestCase):
             return
 
         new_target = Target(
-            target_id="", # Empty ID tells ConfigManager to auto-assign one
+            target_id="", # Empty ID tells TargetsManager to auto-assign one
             name=self.test_target_name,
             target_type="Z3950",
             host="test.host",

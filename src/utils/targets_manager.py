@@ -1,5 +1,5 @@
 """
-Module: config_manager.py
+Module: targets_manager.py
 Purpose: Manage Z39.50 targets and configuration.
 
 This module handles the persistence and retrieval of connection details for
@@ -35,12 +35,12 @@ class Target:
     password: str = ""        # Authentication password (optional)
     notes: str = ""           # User notes or descriptions
 
-class ConfigManager:
+class TargetsManager:
     """
     Manager class for handling configuration file operations (CRUD).
     """
     def __init__(self):
-        """Initialize the ConfigManager and ensure the data file exists."""
+        """Initialize the TargetsManager and ensure the data file exists."""
         self._ensure_targets_file()
 
     def _ensure_targets_file(self):

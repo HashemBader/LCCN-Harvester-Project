@@ -3,7 +3,7 @@
 ## Purpose
 Define the normalization rules and standards used by the harvester.
 
-## Content (to fill)
+
 - ISBN-10 and ISBN-13 validation rules
 - MARC 050 (LCCN) parsing: first $a, $b → space
 - MARC 060 (NLMCN) parsing: first $a, $b → space
@@ -11,7 +11,8 @@ Define the normalization rules and standards used by the harvester.
 
 
 1. Overview of MARC Bibliographic Records
-MARC (MAchine-Readable Cataloging) is a standardized format used by libraries to encode bibliographic and holdings information. Each MARC record consists of:
+
+MARC (Machine-Readable Cataloging) is a standardized format used by libraries to encode bibliographic and holdings information. Each MARC record consists of:
 •	Fields (identified by a three-digit tag, e.g., 050, 060)
 •	Indicators (two characters providing additional meaning)
 •	Subfields (identified by a dollar sign $ followed by a letter or number)
@@ -19,7 +20,8 @@ For this project, the primary MARC fields of interest are 050 and 060, which con
 
 
 2. MARC Field 050 — Library of Congress Call Number (LCCN)
-Purpose
+
+
 The MARC 050 field stores the Library of Congress Call Number, which is used by many academic libraries for classification and shelving.
 Structure
 050  <ind1><ind2> $a <classification> $b <item number>
@@ -39,7 +41,8 @@ Z7164.N3 L34 no. 9
 
 
 3. MARC Field 060 — National Library of Medicine Call Number (NLMCN)
-Purpose
+
+
 The MARC 060 field stores National Library of Medicine Call Numbers, which are structurally similar to LCCNs but use a different classification system.
 Structure
 060  <ind1><ind2> $a <classification> $b <item number>
@@ -54,7 +57,7 @@ Normalization
 
 
 4. ISBN Standards and Usage
-What is an ISBN
+
 An ISBN (International Standard Book Number) is a unique identifier for books and book-like publications.
 Accepted Formats
 •	ISBN-10 (10 characters, may end with X)
@@ -71,6 +74,7 @@ Validation
 
 
 5. Linking ISBNs to Call Numbers
+
 •	ISBNs are used as the lookup key when querying APIs and Z39.50 targets
 •	A single ISBN may return:
 o	An LCCN
@@ -81,6 +85,7 @@ o	Neither
 
 
 6. Normalization Rules (Harvester Requirements)
+
 The harvester must follow these rules when processing call numbers:
 LCCN / NLMCN Normalization Rules
 •	Always use only the first $a subfield
@@ -98,6 +103,7 @@ ISBN Normalization Rules
 
 
 7. Validation Requirements
+
 Before accepting a call number:
 •	Ensure it originates from a valid MARC 050 or 060 field
 •	Ensure $a exists
@@ -108,9 +114,10 @@ Before attempting external lookups:
 
 
 8. Summary
+
 This document defines the authoritative rules for how the LCCN Harvester interprets and normalizes bibliographic data. Following these standards ensures:
 •	Consistent output
 •	Reliable database entries
 •	Interoperability with library systems
 •	Compliance with library cataloging practices
-This file should be included in the project documentation and referenced by both developers and testers.
+T

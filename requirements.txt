@@ -2,3 +2,6 @@ PyQt6>=6.4.0
 requests>=2.28.0
 pytest>=7.0.0
 python-stdnum
+pymarc
+ply
+git+https://github.com/asl2/PyZ3950.git

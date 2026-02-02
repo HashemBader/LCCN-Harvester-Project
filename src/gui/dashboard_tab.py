@@ -1,13 +1,12 @@
 """
 Module: dashboard_tab.py
-Live statistics dashboard with charts and visualizations.
+Live statistics dashboard with essential metrics.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QGroupBox, QGridLayout, QFrame
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
 import sys
 from pathlib import Path
 
@@ -47,10 +46,10 @@ class StatCard(QFrame):
         header_layout = QHBoxLayout()
 
         icon_label = QLabel(self.icon)
-        icon_label.setStyleSheet("font-size: 32px; border: none;")
+        icon_label.setStyleSheet("font-size: 32px; border: none; font-family: Arial, Helvetica;")
 
         title_label = QLabel(self.title)
-        title_label.setStyleSheet("font-size: 12px; color: #666666; font-weight: bold; border: none;")
+        title_label.setStyleSheet("font-size: 12px; color: #666666; font-weight: bold; border: none; font-family: Arial, Helvetica;")
 
         header_layout.addWidget(icon_label)
         header_layout.addStretch()
@@ -60,7 +59,13 @@ class StatCard(QFrame):
 
         # Value
         self.value_label = QLabel(self.value)
-        self.value_label.setStyleSheet(f"font-size: 36px; font-weight: bold; color: {self.color}; border: none;")
+        self.value_label.setStyleSheet(f"""
+            font-size: 36px;
+            font-weight: bold;
+            color: {self.color};
+            border: none;
+            font-family: Arial, Helvetica;
+        """)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.value_label)
 
@@ -68,88 +73,15 @@ class StatCard(QFrame):
 
     def update_value(self, new_value):
         """Update the displayed value."""
-        self.value = str(new_value)
-        self.value_label.setText(self.value)
-
-
-class SimpleBarChart(QWidget):
-    """Simple bar chart widget."""
-
-    def __init__(self, title="Chart", max_bars=5):
-        super().__init__()
-        self.title = title
-        self.data = {}  # {label: value}
-        self.max_bars = max_bars
-        self.setMinimumHeight(200)
-
-    def set_data(self, data_dict):
-        """Set chart data. data_dict = {label: value}"""
-        # Keep only top max_bars
-        sorted_items = sorted(data_dict.items(), key=lambda x: x[1], reverse=True)
-        self.data = dict(sorted_items[:self.max_bars])
-        self.update()
-
-    def paintEvent(self, event):
-        """Draw the bar chart."""
-        if not self.data:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # Dimensions
-        width = self.width()
-        height = self.height()
-        margin = 40
-        chart_height = height - margin * 2
-
-        # Calculate bar width
-        num_bars = len(self.data)
-        bar_spacing = 15
-        available_width = width - margin * 2 - (num_bars - 1) * bar_spacing
-        bar_width = available_width // num_bars if num_bars > 0 else 0
-
-        # Find max value for scaling
-        max_value = max(self.data.values()) if self.data else 1
-
-        # Colors
-        colors = [
-            QColor("#0066cc"),
-            QColor("#00cc66"),
-            QColor("#ff9900"),
-            QColor("#cc00cc"),
-            QColor("#00cccc")
-        ]
-
-        # Draw title
-        painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        painter.drawText(10, 20, self.title)
-
-        # Draw bars
-        x = margin
-        for i, (label, value) in enumerate(self.data.items()):
-            # Calculate bar height
-            bar_height = int((value / max_value) * chart_height) if max_value > 0 else 0
-
-            # Draw bar
-            color = colors[i % len(colors)]
-            painter.setBrush(color)
-            painter.setPen(QPen(color.darker(), 1))
-
-            bar_y = height - margin - bar_height
-            painter.drawRect(x, bar_y, bar_width, bar_height)
-
-            # Draw value on top
-            painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-            painter.drawText(x, bar_y - 5, bar_width, 20, Qt.AlignmentFlag.AlignCenter, str(value))
-
-            # Draw label at bottom
-            painter.setFont(QFont("Arial", 8))
-            label_text = label[:15] + "..." if len(label) > 15 else label
-            painter.drawText(x, height - margin + 5, bar_width, 30,
-                           Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, label_text)
-
-            x += bar_width + bar_spacing
+        # Convert to plain integer string to avoid Unicode issues
+        int_value = int(new_value)
+        # Format with commas for readability
+        if int_value >= 1000:
+            formatted_value = f"{int_value:,}"
+        else:
+            formatted_value = str(int_value)
+        self.value = formatted_value
+        self.value_label.setText(formatted_value)
 
 
 class DashboardTab(QWidget):
@@ -195,7 +127,7 @@ class DashboardTab(QWidget):
 
         self.success_rate_label = QLabel("0%")
         self.success_rate_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.success_rate_label.setStyleSheet("font-size: 48px; font-weight: bold; color: #00cc66;")
+        self.success_rate_label.setStyleSheet("font-size: 48px; font-weight: bold; color: #00cc66; font-family: Arial, Helvetica;")
         success_layout.addWidget(self.success_rate_label)
 
         self.success_subtitle = QLabel("Overall harvest success rate")
@@ -205,31 +137,6 @@ class DashboardTab(QWidget):
 
         success_group.setLayout(success_layout)
         layout.addWidget(success_group)
-
-        # Charts
-        charts_layout = QHBoxLayout()
-
-        # Source Breakdown Chart
-        source_group = QGroupBox("Sources Breakdown")
-        source_layout = QVBoxLayout()
-
-        self.source_chart = SimpleBarChart("Records by Source", max_bars=5)
-        source_layout.addWidget(self.source_chart)
-
-        source_group.setLayout(source_layout)
-        charts_layout.addWidget(source_group)
-
-        # Classification Chart
-        class_group = QGroupBox("Top Classifications")
-        class_layout = QVBoxLayout()
-
-        self.class_chart = SimpleBarChart("Top 5 Classifications", max_bars=5)
-        class_layout.addWidget(self.class_chart)
-
-        class_group.setLayout(class_layout)
-        charts_layout.addWidget(class_group)
-
-        layout.addLayout(charts_layout)
 
         # Last Updated
         self.last_updated_label = QLabel("Last updated: Never")
@@ -293,26 +200,8 @@ class DashboardTab(QWidget):
                     else:
                         color = "#ff3333"
                     self.success_rate_label.setStyleSheet(
-                        f"font-size: 48px; font-weight: bold; color: {color};"
+                        f"font-size: 48px; font-weight: bold; color: {color}; font-family: Arial, Helvetica;"
                     )
-
-                # Get source breakdown
-                source_data = {}
-                rows = conn.execute(
-                    "SELECT source, COUNT(*) as count FROM main WHERE source IS NOT NULL GROUP BY source ORDER BY count DESC LIMIT 5"
-                ).fetchall()
-                for row in rows:
-                    source_data[row[0]] = row[1]
-                self.source_chart.set_data(source_data)
-
-                # Get classification breakdown
-                class_data = {}
-                rows = conn.execute(
-                    "SELECT classification, COUNT(*) as count FROM main WHERE classification IS NOT NULL GROUP BY classification ORDER BY count DESC LIMIT 5"
-                ).fetchall()
-                for row in rows:
-                    class_data[row[0]] = row[1]
-                self.class_chart.set_data(class_data)
 
                 # Update timestamp
                 from datetime import datetime

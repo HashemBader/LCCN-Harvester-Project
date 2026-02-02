@@ -5,11 +5,18 @@ Harvest execution and progress tracking tab with threading support.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QTextEdit, QProgressBar,
-    QCheckBox, QSpinBox
+    QCheckBox, QSpinBox, QFrame, QGridLayout
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from datetime import datetime
 from pathlib import Path
+import time
+import sys
+
+# Add src to path for database import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from database import DatabaseManager
+from database.db_manager import MainRecord
 
 from .progress_dialog import ProgressDialog
 
@@ -21,6 +28,8 @@ class HarvestWorker(QThread):
     harvest_complete = pyqtSignal(bool, dict)  # success, statistics
     status_message = pyqtSignal(str)
     started = pyqtSignal()
+    milestone_reached = pyqtSignal(str, int)  # milestone_type, value
+    stats_update = pyqtSignal(dict)  # real-time statistics update
 
     def __init__(self, input_file, config, targets, advanced_settings=None):
         super().__init__()
@@ -37,13 +46,25 @@ class HarvestWorker(QThread):
             self.started.emit()
             self.status_message.emit("Starting harvest...")
 
+            # Initialize database
+            db = DatabaseManager()
+            db.init_db()
+
             # TODO: This is a placeholder - will be replaced with actual harvest logic
-            # For now, simulate some work
+            # For now, simulate some work and SAVE TO DATABASE
             from time import sleep
             import random
 
             isbns = self._read_isbns()
-            stats = {"total": len(isbns), "found": 0, "failed": 0}
+            total = len(isbns)
+            stats = {"total": total, "found": 0, "failed": 0}
+
+            # Sample LCCNs for random assignment
+            sample_lccns = [
+                "QA76.73.P98", "QA76.73.J39", "QA76.625", "QA76.758",
+                "QA76.76.D47", "QA76.9.D3", "T385", "Z253",
+                "PR6066.R6", "PS3552.R354", "HF5415.5", "BF636.5"
+            ]
 
             for i, isbn in enumerate(isbns):
                 if self._stop_requested:
@@ -56,16 +77,48 @@ class HarvestWorker(QThread):
                 # Simulate processing
                 sleep(0.1)  # Simulate API call
 
-                # Random success/failure for demo
+                # Random success/failure for demo (70% success rate)
                 if random.random() > 0.3:
-                    source = random.choice(["Cache", "LoC API", "Harvard API", "Z39.50"])
-                    self.progress_update.emit(isbn, "found", source, "LCCN retrieved")
+                    source = random.choice(["Cache", "LoC API", "Harvard API", "Z39.50: Yale"])
+                    lccn = random.choice(sample_lccns)
+
+                    # Save to database using MainRecord
+                    try:
+                        record = MainRecord(
+                            isbn=isbn,
+                            lccn=lccn,
+                            nlmcn=None,
+                            source=source
+                        )
+                        db.upsert_main(record)
+                    except Exception as db_err:
+                        self.status_message.emit(f"DB Error saving {isbn}: {db_err}")
+
+                    self.progress_update.emit(isbn, "found", source, f"LCCN: {lccn}")
                     stats["found"] += 1
                 else:
+                    # Save failed attempt to database
+                    try:
+                        db.upsert_attempted(
+                            isbn=isbn,
+                            last_target="All",
+                            last_error="No results found (simulated)"
+                        )
+                    except Exception as db_err:
+                        self.status_message.emit(f"DB Error saving failed {isbn}: {db_err}")
+
                     self.progress_update.emit(isbn, "failed", "All", "No results")
                     stats["failed"] += 1
 
-            self.status_message.emit("Harvest completed")
+                # Check for milestones
+                processed = i + 1
+                self._check_milestone(processed, total)
+
+                # Emit stats update every 5 ISBNs for smooth UI updates
+                if processed % 5 == 0 or processed == total:
+                    self.stats_update.emit(stats.copy())
+
+            self.status_message.emit("Harvest completed - Results saved to database")
             self.harvest_complete.emit(True, stats)
 
         except Exception as e:
@@ -94,11 +147,32 @@ class HarvestWorker(QThread):
         """Toggle pause state."""
         self._pause_requested = not self._pause_requested
 
+    def _check_milestone(self, processed, total):
+        """Check if a milestone has been reached and emit signal."""
+        # Count-based milestones
+        if processed == 100:
+            self.milestone_reached.emit("100_processed", 100)
+        elif processed == 500:
+            self.milestone_reached.emit("500_processed", 500)
+        elif processed == 1000:
+            self.milestone_reached.emit("1000_processed", 1000)
+
+        # Percentage-based milestones
+        if total > 0:
+            percent = (processed / total) * 100
+            if 49.5 <= percent < 50.5 and processed == int(total * 0.5):
+                self.milestone_reached.emit("50_percent", processed)
+            elif 74.5 <= percent < 75.5 and processed == int(total * 0.75):
+                self.milestone_reached.emit("75_percent", processed)
+            elif 89.5 <= percent < 90.5 and processed == int(total * 0.9):
+                self.milestone_reached.emit("90_percent", processed)
+
 
 class HarvestTab(QWidget):
     harvest_started = pyqtSignal()
     harvest_finished = pyqtSignal(bool, dict)  # success, statistics
     status_message = pyqtSignal(str)
+    milestone_reached = pyqtSignal(str, int)  # milestone_type, value
 
     def __init__(self):
         super().__init__()
@@ -107,49 +181,106 @@ class HarvestTab(QWidget):
         self.worker = None
         self.progress_dialog = None
         self.advanced_mode = False
+        self.start_time = None
+        self.processed_count = 0
+        self.total_count = 0
+
+        # Speed tracking
+        self.speed_timer = QTimer()
+        self.speed_timer.timeout.connect(self._update_speed)
+        self.last_processed = 0
+        self.current_speed = 0
+
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(20)
 
-        # Title
-        title_label = QLabel("Harvest Execution")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-        layout.addWidget(title_label)
+        # Header with status
+        header_layout = QHBoxLayout()
 
-        # Status group
-        status_group = QGroupBox("Harvest Status")
-        status_layout = QVBoxLayout()
+        title_label = QLabel("🚀 Harvest Execution")
+        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: black; font-family: Arial, Helvetica;")
+        header_layout.addWidget(title_label)
 
-        self.status_label = QLabel("Status: Ready")
-        self.status_label.setStyleSheet("font-size: 12px; font-weight: bold;")
-        status_layout.addWidget(self.status_label)
+        header_layout.addStretch()
 
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        status_layout.addWidget(self.progress_bar)
+        self.status_badge = QLabel("● Ready")
+        self.status_badge.setStyleSheet("""
+            color: #95a5a6;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 6px 12px;
+            background-color: #ecf0f1;
+            border-radius: 12px;
+        """)
+        header_layout.addWidget(self.status_badge)
 
-        # Stats
-        stats_layout = QHBoxLayout()
+        layout.addLayout(header_layout)
 
-        self.total_label = QLabel("Total: 0")
-        self.processed_label = QLabel("Processed: 0")
-        self.found_label = QLabel("Found: 0")
-        self.failed_label = QLabel("Failed: 0")
+        # Simple stats section
+        stats_group = QGroupBox("Harvest Statistics")
+        stats_group.setStyleSheet("QGroupBox { color: black; font-weight: bold; font-family: Arial, Helvetica; }")
+        stats_layout = QGridLayout()
+        stats_layout.setSpacing(15)
 
-        stats_layout.addWidget(self.total_label)
-        stats_layout.addWidget(self.processed_label)
-        stats_layout.addWidget(self.found_label)
-        stats_layout.addWidget(self.failed_label)
-        stats_layout.addStretch()
+        # Create simple stat displays
+        def create_stat_display(label_text):
+            container = QVBoxLayout()
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #666666; font-size: 11px; font-family: Arial, Helvetica;")
+            value = QLabel("0")
+            value.setStyleSheet("color: black; font-size: 28px; font-weight: bold; font-family: Arial, Helvetica;")
+            value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            container.addWidget(label)
+            container.addWidget(value)
+            return container, value
 
-        status_layout.addLayout(stats_layout)
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
+        # Total ISBNs
+        total_layout, self.total_value = create_stat_display("Total ISBNs")
+        stats_layout.addLayout(total_layout, 0, 0)
+
+        # Processed
+        processed_layout, self.processed_value = create_stat_display("Processed")
+        stats_layout.addLayout(processed_layout, 0, 1)
+
+        # Found
+        found_layout, self.found_value = create_stat_display("✓ Found")
+        stats_layout.addLayout(found_layout, 0, 2)
+
+        # Failed
+        failed_layout, self.failed_value = create_stat_display("✗ Failed")
+        stats_layout.addLayout(failed_layout, 0, 3)
+
+        # Progress info
+        progress_layout, self.progress_value = create_stat_display("Progress %")
+        stats_layout.addLayout(progress_layout, 1, 0)
+
+        # Time
+        time_layout, self.time_label = create_stat_display("Elapsed Time")
+        self.time_label.setText("00:00:00")
+        self.time_label.setStyleSheet("color: black; font-size: 16px; font-weight: bold; font-family: Arial, Helvetica;")
+        stats_layout.addLayout(time_layout, 1, 1)
+
+        # Speed
+        speed_layout, self.speed_label = create_stat_display("Speed (ISBN/s)")
+        self.speed_label.setText("0")
+        self.speed_label.setStyleSheet("color: black; font-size: 16px; font-weight: bold; font-family: Arial, Helvetica;")
+        stats_layout.addLayout(speed_layout, 1, 2)
+
+        # ETA
+        eta_layout, self.eta_label = create_stat_display("ETA")
+        self.eta_label.setText("--:--:--")
+        self.eta_label.setStyleSheet("color: black; font-size: 16px; font-weight: bold; font-family: Arial, Helvetica;")
+        stats_layout.addLayout(eta_layout, 1, 3)
+
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
 
         # Control buttons
         control_group = QGroupBox("Controls")
+        control_group.setStyleSheet("QGroupBox { color: black; font-weight: bold; font-family: Arial, Helvetica; }")
         control_layout = QVBoxLayout()
 
         buttons_layout = QHBoxLayout()
@@ -176,6 +307,7 @@ class HarvestTab(QWidget):
 
         # Advanced options (collapsed by default)
         self.advanced_group = QGroupBox("Advanced Options")
+        self.advanced_group.setStyleSheet("QGroupBox { color: black; font-weight: bold; font-family: Arial, Helvetica; }")
         self.advanced_group.setCheckable(True)
         self.advanced_group.setChecked(False)
         self.advanced_group.setVisible(False)  # Hidden until advanced mode
@@ -183,21 +315,26 @@ class HarvestTab(QWidget):
         advanced_layout = QVBoxLayout()
 
         parallel_layout = QHBoxLayout()
-        parallel_layout.addWidget(QLabel("Parallel Workers:"))
+        parallel_label = QLabel("Parallel Workers:")
+        parallel_label.setStyleSheet("color: black;")
+        parallel_layout.addWidget(parallel_label)
         self.parallel_spin = QSpinBox()
         self.parallel_spin.setRange(1, 10)
         self.parallel_spin.setValue(1)
         self.parallel_spin.setToolTip("Number of ISBNs to process in parallel")
+        self.parallel_spin.setStyleSheet("color: black;")
         parallel_layout.addWidget(self.parallel_spin)
         parallel_layout.addStretch()
         advanced_layout.addLayout(parallel_layout)
 
         self.auto_export_check = QCheckBox("Auto-export results after harvest")
         self.auto_export_check.setChecked(True)
+        self.auto_export_check.setStyleSheet("color: black;")
         advanced_layout.addWidget(self.auto_export_check)
 
         self.detailed_logging_check = QCheckBox("Enable detailed logging")
         self.detailed_logging_check.setChecked(False)
+        self.detailed_logging_check.setStyleSheet("color: black;")
         advanced_layout.addWidget(self.detailed_logging_check)
 
         self.advanced_group.setLayout(advanced_layout)
@@ -208,11 +345,19 @@ class HarvestTab(QWidget):
 
         # Log output
         log_group = QGroupBox("Harvest Log")
+        log_group.setStyleSheet("QGroupBox { color: black; font-weight: bold; font-family: Arial, Helvetica; }")
         log_layout = QVBoxLayout()
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText("Harvest log will appear here...")
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                color: black;
+                background-color: white;
+                border: 1px solid #e0e0e0;
+            }
+        """)
 
         log_layout.addWidget(self.log_text)
 
@@ -269,6 +414,8 @@ class HarvestTab(QWidget):
         self.worker.harvest_complete.connect(self._on_harvest_complete)
         self.worker.status_message.connect(self._on_status_message)
         self.worker.started.connect(self._on_harvest_started)
+        self.worker.milestone_reached.connect(self.milestone_reached.emit)  # Forward to main window
+        self.worker.stats_update.connect(self._update_stats)  # Update animated stats in real-time
 
         self.worker.start()
 
@@ -277,7 +424,21 @@ class HarvestTab(QWidget):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.detailed_progress_button.setEnabled(True)
-        self.status_label.setText("Status: Running...")
+
+        # Update status badge
+        self.status_badge.setText("● Running")
+        self.status_badge.setStyleSheet("""
+            color: #27ae60;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 6px 12px;
+            background-color: #d5f4e6;
+            border-radius: 12px;
+        """)
+
+        # Start timers
+        self.start_time = time.time()
+        self.speed_timer.start(1000)  # Update every second
 
         # Create progress dialog if advanced mode
         if self.advanced_mode:
@@ -331,7 +492,11 @@ class HarvestTab(QWidget):
 
     def _on_harvest_started(self):
         """Handle harvest started."""
-        pass  # Already handled in _start_harvest
+        # Reset stats
+        self.processed_count = 0
+        self.total_count = 0
+        self.last_processed = 0
+        self.current_speed = 0
 
     def _on_progress_update(self, isbn, status, source, message):
         """Handle progress update from worker."""
@@ -339,9 +504,10 @@ class HarvestTab(QWidget):
         if self.progress_dialog:
             self.progress_dialog.update_progress(isbn, status, source, message)
 
-        # Update stats
-        # This would be better handled by accumulating stats...
-        # For now, just log
+        # Increment processed count
+        self.processed_count += 1
+
+        # Log
         self._log(f"{isbn}: {status}" + (f" - {source}" if source else ""))
 
     def _on_harvest_complete(self, success, statistics):
@@ -351,11 +517,35 @@ class HarvestTab(QWidget):
         self.stop_button.setEnabled(False)
         self.detailed_progress_button.setEnabled(False)
 
+        # Stop speed timer
+        self.speed_timer.stop()
+
+        # Update stats with final values
+        self._update_stats(statistics)
+
         if success:
-            self.status_label.setText("Status: Completed")
+            # Update status badge
+            self.status_badge.setText("● Completed")
+            self.status_badge.setStyleSheet("""
+                color: #27ae60;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 6px 12px;
+                background-color: #d5f4e6;
+                border-radius: 12px;
+            """)
             self._log(f"Harvest completed - Found: {statistics.get('found', 0)}, Failed: {statistics.get('failed', 0)}")
         else:
-            self.status_label.setText("Status: Stopped")
+            # Update status badge
+            self.status_badge.setText("● Stopped")
+            self.status_badge.setStyleSheet("""
+                color: #e74c3c;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 6px 12px;
+                background-color: #fadbd8;
+                border-radius: 12px;
+            """)
             self._log("Harvest stopped by user")
 
         # Update progress dialog
@@ -372,7 +562,57 @@ class HarvestTab(QWidget):
     def _on_status_message(self, message):
         """Handle status message from worker."""
         self._log(message)
-        self.status_message.emit(message)
+
+    def _update_stats(self, statistics):
+        """Update the stat displays."""
+        total = statistics.get('total', 0)
+        found = statistics.get('found', 0)
+        failed = statistics.get('failed', 0)
+        processed = found + failed
+
+        # Update simple stat labels
+        self.total_value.setText(str(total))
+        self.processed_value.setText(str(processed))
+        self.found_value.setText(str(found))
+        self.failed_value.setText(str(failed))
+
+        # Update progress percentage
+        if total > 0:
+            progress_percent = (processed / total) * 100
+            self.progress_value.setText(f"{progress_percent:.1f}%")
+        else:
+            self.progress_value.setText("0%")
+
+        # Update total count
+        self.total_count = total
+
+    def _update_speed(self):
+        """Update speed and time indicators."""
+        if not self.is_running or not self.start_time:
+            return
+
+        # Calculate elapsed time
+        elapsed = time.time() - self.start_time
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        self.time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+        # Calculate speed (ISBNs per second)
+        if elapsed > 0:
+            self.current_speed = self.processed_count / elapsed
+            self.speed_label.setText(f"{self.current_speed:.1f}")
+
+        # Calculate ETA
+        if self.total_count > 0 and self.current_speed > 0:
+            remaining = self.total_count - self.processed_count
+            eta_seconds = remaining / self.current_speed
+            eta_hours = int(eta_seconds // 3600)
+            eta_minutes = int((eta_seconds % 3600) // 60)
+            eta_secs = int(eta_seconds % 60)
+            self.eta_label.setText(f"{eta_hours:02d}:{eta_minutes:02d}:{eta_secs:02d}")
+        else:
+            self.eta_label.setText("--:--:--")
 
     def _get_config(self):
         """Get configuration from config tab."""

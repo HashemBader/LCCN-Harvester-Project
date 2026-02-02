@@ -27,7 +27,6 @@ from src.database import DatabaseManager
 from src.harvester.run_harvest import run_harvest
 
 
-
 def parse_args(argv=None):
     """
     Parse command-line arguments for the harvester CLI.
@@ -122,16 +121,16 @@ def init_database_or_exit() -> DatabaseManager:
         sys.exit(1)
 
 
-def normalize_isbn(raw: str) -> str:
-    """
-    Normalize ISBN input into a clean string.
-
-    Rules:
-    - Strip leading/trailing whitespace
-    - Remove hyphens and spaces
-    - Keep as text (never convert to int)
-    """
-    return raw.strip().replace("-", "").replace(" ", "")
+# def normalize_isbn(raw: str) -> str:
+#     """
+#     Normalize ISBN input into a clean string.
+#
+#     Rules:
+#     - Strip leading/trailing whitespace
+#     - Remove hyphens and spaces
+#     - Keep as text (never convert to int)
+#     """
+#     return raw.strip().replace("-", "").replace(" ", "")
 
 
 def read_isbns_from_tsv(input_path: Path) -> List[str]:
@@ -172,7 +171,7 @@ def read_isbns_from_tsv(input_path: Path) -> List[str]:
             if row_index == 1 and first_cell.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
                 continue
 
-            isbn = normalize_isbn(first_cell)
+            isbn = isbn_validator.normalize_isbn(first_cell)
             if isbn_validator.validate_isbn(isbn):
                 isbns.append(isbn)
 
@@ -227,7 +226,6 @@ def main(argv=None) -> int:
                 db.close()
             except Exception:
                 pass
-
 
 
 if __name__ == "__main__":

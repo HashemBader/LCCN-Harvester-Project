@@ -9,8 +9,12 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMessageBox, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt
+import os
+import sys
+import subprocess
 from pathlib import Path
 from datetime import datetime
+from harvester.export_manager import ExportManager
 
 
 class ExportDialog(QDialog):
@@ -55,10 +59,7 @@ class ExportDialog(QDialog):
         format_layout.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
         self.format_combo.addItems([
-            "Tab-Separated Values (TSV)",
-            "Comma-Separated Values (CSV)",
-            "JSON",
-            "Excel (XLSX)"
+            "Tab-Separated Values (TSV)"
         ])
         self.format_combo.currentTextChanged.connect(self._on_format_changed)
         format_layout.addWidget(self.format_combo)
@@ -172,24 +173,15 @@ class ExportDialog(QDialog):
 
     def _on_format_changed(self, format_text):
         """Handle format selection change."""
-        is_json = "JSON" in format_text
-        self.pretty_print_check.setEnabled(is_json)
+        self.pretty_print_check.setEnabled(False)
 
         # Update file extension
         if self.export_path:
             path = Path(self.export_path)
             stem = path.stem
-
-            if "TSV" in format_text:
-                ext = ".tsv"
-            elif "CSV" in format_text:
-                ext = ".csv"
-            elif "JSON" in format_text:
-                ext = ".json"
-            elif "XLSX" in format_text:
-                ext = ".xlsx"
-            else:
-                ext = ".txt"
+            
+            # Since only TSV is supported
+            ext = ".tsv"
 
             self.export_path = str(path.parent / (stem + ext))
             self.file_path_edit.setText(self.export_path)
@@ -208,23 +200,9 @@ class ExportDialog(QDialog):
 
     def _browse_output_file(self):
         """Browse for output file location."""
-        format_text = self.format_combo.currentText()
-
-        if "TSV" in format_text:
-            filter_str = "TSV Files (*.tsv);;All Files (*.*)"
-            default_ext = ".tsv"
-        elif "CSV" in format_text:
-            filter_str = "CSV Files (*.csv);;All Files (*.*)"
-            default_ext = ".csv"
-        elif "JSON" in format_text:
-            filter_str = "JSON Files (*.json);;All Files (*.*)"
-            default_ext = ".json"
-        elif "XLSX" in format_text:
-            filter_str = "Excel Files (*.xlsx);;All Files (*.*)"
-            default_ext = ".xlsx"
-        else:
-            filter_str = "All Files (*.*)"
-            default_ext = ".txt"
+        
+        filter_str = "TSV Files (*.tsv);;All Files (*.*)"
+        default_ext = ".tsv"
 
         default_filename = f"lccn_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}{default_ext}"
 
@@ -241,18 +219,8 @@ class ExportDialog(QDialog):
 
     def _auto_generate_path(self):
         """Auto-generate export file path."""
-        format_text = self.format_combo.currentText()
-
-        if "TSV" in format_text:
-            ext = ".tsv"
-        elif "CSV" in format_text:
-            ext = ".csv"
-        elif "JSON" in format_text:
-            ext = ".json"
-        elif "XLSX" in format_text:
-            ext = ".xlsx"
-        else:
-            ext = ".txt"
+        # Always TSV
+        ext = ".tsv"
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -302,22 +270,40 @@ class ExportDialog(QDialog):
         if not self._validate_export():
             return
 
-        # TODO: Implement actual export logic
-        # For now, show success message
         config = self.get_export_config()
+        
+        try:
+            # Show processing message or cursor?
+            # For now, just run it
+            manager = ExportManager()
+            result = manager.export(config)
+            
+            if result["success"]:
+                msg = result["message"]
+                QMessageBox.information(self, "Export Successful", msg)
+                
+                if config["open_after"] and result.get("files"):
+                    for file_path in result["files"]:
+                        self._open_file(file_path)
+                
+                self.accept()
+            else:
+                QMessageBox.critical(self, "Export Failed", result["message"])
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"An unexpected error occurred: {str(e)}")
 
-        QMessageBox.information(
-            self,
-            "Export",
-            f"Export configured:\n\n"
-            f"Source: {config['source']}\n"
-            f"Format: {config['format']}\n"
-            f"Columns: {len(config['columns'])}\n"
-            f"Output: {config['output_path']}\n\n"
-            f"Note: Export functionality will be fully implemented in integration phase."
-        )
-
-        self.accept()
+    def _open_file(self, file_path):
+        """Open file with default system application."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(file_path)
+            elif sys.platform == "darwin":
+                subprocess.call(["open", file_path])
+            else:
+                subprocess.call(["xdg-open", file_path])
+        except Exception as e:
+            print(f"Failed to open file {file_path}: {e}")
 
     def get_export_config(self):
         """Return export configuration."""
@@ -337,15 +323,7 @@ class ExportDialog(QDialog):
             source = "both"
 
         # Determine format
-        format_text = self.format_combo.currentText()
-        if "TSV" in format_text:
-            format_type = "tsv"
-        elif "CSV" in format_text:
-            format_type = "csv"
-        elif "JSON" in format_text:
-            format_type = "json"
-        else:
-            format_type = "xlsx"
+        format_type = "tsv"
 
         return {
             "source": source,

@@ -1,6 +1,9 @@
-
 import pytest
 from unittest.mock import MagicMock, patch
+
+# Skip if dependency missing
+pytest.importorskip("PyZ3950")
+
 from src.z3950.client import Z3950Client
 from PyZ3950 import zoom
 from pymarc import Record

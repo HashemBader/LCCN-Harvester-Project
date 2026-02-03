@@ -20,6 +20,7 @@ from src.utils import isbn_validator
 from src.database import DatabaseManager
 from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
 from src.harvester.api_targets import build_default_api_targets
+from src.harvester.z3950_targets import build_default_z3950_targets
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +112,11 @@ def run_harvest(
 
     isbns = read_isbns_from_tsv(input_path)
 
-    #  Default to Abdo API targets if none provided
+    # Default to Abdo API targets if none provided
     if targets is None:
-        targets = build_default_api_targets()
+        targets = []
+        targets.extend(build_default_api_targets())
+        targets.extend(build_default_z3950_targets())
 
     orch = HarvestOrchestrator(
         db=db,

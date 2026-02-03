@@ -33,7 +33,6 @@ class Target:
     selected: bool            # Whether this target is currently active
     username: str = ""        # Authentication username (optional)
     password: str = ""        # Authentication password (optional)
-    notes: str = ""           # User notes or descriptions
 
 class TargetsManager:
     """
@@ -64,8 +63,7 @@ class TargetsManager:
                     database="",
                     record_syntax="",
                     rank=1,
-                    selected=True,
-                    notes="https://www.loc.gov/apis/"
+                    selected=True
                 ),
                 Target(
                     target_id="2",
@@ -76,8 +74,7 @@ class TargetsManager:
                     database="",
                     record_syntax="",
                     rank=2,
-                    selected=True,
-                    notes="Harvard Library API"
+                    selected=True
                 )
             ]
             self.save_targets(default_targets)
@@ -118,8 +115,7 @@ class TargetsManager:
                             rank=int(row["rank"]) if row.get("rank") else 0,
                             selected=is_selected,
                             username=row.get("username", ""),
-                            password=row.get("password", ""),
-                            notes=row.get("notes", "")
+                            password=row.get("password", "")
                         )
                     )
         except Exception as e:
@@ -143,7 +139,7 @@ class TargetsManager:
                 writer.writerow([
                     "target_id", "name", "target_type", "host", "port", 
                     "database", "record_syntax", "rank", "selected", 
-                    "username", "password", "notes"
+                    "username", "password"
                 ])
 
                 # Write data rows
@@ -159,8 +155,7 @@ class TargetsManager:
                         t.rank,
                         str(t.selected), # Serialize boolean to "True" or "False"
                         t.username,
-                        t.password,
-                        t.notes
+                        t.password
                     ])
         except Exception as e:
             print(ConfigMessages.save_error.format(error=e))

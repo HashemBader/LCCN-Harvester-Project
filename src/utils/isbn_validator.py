@@ -6,7 +6,7 @@ Part of the LCCN Harvester Project.
 from stdnum import isbn
 from datetime import datetime
 from pathlib import Path
-import messages
+from . import messages
 
 INVALID_ISBN_LOG = Path("invalid_isbns.log")
 

@@ -6,9 +6,21 @@ Part of the LCCN Harvester Project.
 from stdnum import isbn
 from datetime import datetime
 from pathlib import Path
-import messages
+from src.utils import messages
 
 INVALID_ISBN_LOG = Path("invalid_isbns.log")
+
+
+def normalize_isbn(raw: str) -> str:
+    """
+    Normalize ISBN input into a clean string.
+
+    Rules:
+    - Strip leading/trailing whitespace
+    - Remove hyphens and spaces
+    - Keep as text (never convert to int)
+    """
+    return raw.strip().replace("-", "").replace(" ", "")
 
 
 def log_invalid_isbn(isbn_value: str, reason: str = messages.GuiMessages.warn_title_invalid) -> None:
@@ -18,18 +30,6 @@ def log_invalid_isbn(isbn_value: str, reason: str = messages.GuiMessages.warn_ti
     timestamp = datetime.now().isoformat()
     with INVALID_ISBN_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{timestamp}\t{isbn_value}\n")
-    return False
-
-def normalize_isbn(isbn_str: str) -> str:
-    """
-    Normalize an ISBN string to a valid ISBN string.
-    """
-    try:
-        normalized_isbn_str = isbn.validate(isbn_str)
-        return normalized_isbn_str
-    except Exception:
-        log_invalid_isbn(isbn_str, messages.GuiMessages.warn_title_invalid)
-        return ""
 
 
 def validate_isbn(isbn_str: str) -> bool:

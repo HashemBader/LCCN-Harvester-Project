@@ -15,7 +15,7 @@ import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-
+from src.utils import isbn_validator
 from src.database import DatabaseManager
 from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
 
@@ -42,7 +42,8 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
     - header with an 'isbn' column, or
     - no header (ISBN in first column)
 
-    Returns unique ISBN strings (keeps leading zeros).
+    Returns unique, normalized ISBN strings.
+    Invalid ISBNs are logged via isbn_validator and skipped.
     """
     isbns: list[str] = []
 
@@ -59,29 +60,33 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
                 if not row:
                     continue
                 raw = (row[0] or "").strip()
-                if raw:
-                    isbns.append(raw)
+                norm = isbn_validator.normalize_isbn(raw)
+                if norm:
+                    isbns.append(norm)
         else:
             raw0 = (first_row[0] or "").strip() if first_row else ""
-            if raw0:
-                isbns.append(raw0)
+            norm0 = isbn_validator.normalize_isbn(raw0)
+            if norm0:
+                isbns.append(norm0)
 
             for row in reader:
                 if not row:
                     continue
                 raw = (row[0] or "").strip()
-                if raw:
-                    isbns.append(raw)
+                norm = isbn_validator.normalize_isbn(raw)
+                if norm:
+                    isbns.append(norm)
 
     # De-dup while preserving order
     seen = set()
     uniq: list[str] = []
-    for isbn in isbns:
-        if isbn not in seen:
-            uniq.append(isbn)
-            seen.add(isbn)
+    for v in isbns:
+        if v not in seen:
+            uniq.append(v)
+            seen.add(v)
 
     return uniq
+
 
 
 def run_harvest(

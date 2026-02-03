@@ -163,13 +163,13 @@ class TargetsTab(QWidget):
         rank_group.setLayout(rank_layout)
         layout.addWidget(rank_group)
 
-        # Save button
-        save_layout = QHBoxLayout()
-        self.save_button = QPushButton("Save Target Configuration")
-        self.save_button.clicked.connect(self._save_targets)
-        save_layout.addWidget(self.save_button)
-        save_layout.addStretch()
-        layout.addLayout(save_layout)
+        # Info label
+        info_layout = QHBoxLayout()
+        info_label = QLabel("💡 Changes are automatically saved")
+        info_label.setStyleSheet("font-style: italic; color: #666666; font-size: 11px;")
+        info_layout.addWidget(info_label)
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
 
         layout.addStretch()
         self.setLayout(layout)
@@ -255,6 +255,9 @@ class TargetsTab(QWidget):
             self.targets.append(target_data)
             self._refresh_target_list()
 
+            # Auto-save the changes
+            self._auto_save_targets()
+
     def _edit_target(self):
         """Edit selected target."""
         current_item = self.target_list.currentItem()
@@ -281,6 +284,9 @@ class TargetsTab(QWidget):
             idx = self.targets.index(target)
             self.targets[idx] = updated_data
             self._refresh_target_list()
+
+            # Auto-save the changes
+            self._auto_save_targets()
 
     def _remove_target(self):
         """Remove selected target."""
@@ -309,6 +315,9 @@ class TargetsTab(QWidget):
             self.targets.remove(target)
             self._refresh_target_list()
 
+            # Auto-save the changes
+            self._auto_save_targets()
+
     def _toggle_target(self):
         """Toggle selection status of target."""
         current_item = self.target_list.currentItem()
@@ -319,25 +328,31 @@ class TargetsTab(QWidget):
         target["selected"] = not target.get("selected", True)
         self._refresh_target_list()
 
+        # Auto-save the changes
+        self._auto_save_targets()
+
     def _move_target_up(self):
         """Move target up in priority."""
         current_row = self.target_list.currentRow()
         if current_row <= 0:
             return
 
-        # Swap ranks
-        current_item = self.target_list.item(current_row)
-        prev_item = self.target_list.item(current_row - 1)
+        # Get sorted targets (same as displayed)
+        sorted_targets = sorted(self.targets, key=lambda x: x.get("rank", 999))
 
-        current_target = current_item.data(Qt.ItemDataRole.UserRole)
-        prev_target = prev_item.data(Qt.ItemDataRole.UserRole)
+        # Swap the two targets in the sorted list
+        sorted_targets[current_row], sorted_targets[current_row - 1] = \
+            sorted_targets[current_row - 1], sorted_targets[current_row]
 
-        current_rank = current_target["rank"]
-        current_target["rank"] = prev_target["rank"]
-        prev_target["rank"] = current_rank
+        # Reassign ranks based on new order
+        for idx, target in enumerate(sorted_targets):
+            target["rank"] = idx + 1
 
         self._refresh_target_list()
         self.target_list.setCurrentRow(current_row - 1)
+
+        # Auto-save the changes
+        self._auto_save_targets()
 
     def _move_target_down(self):
         """Move target down in priority."""
@@ -345,22 +360,40 @@ class TargetsTab(QWidget):
         if current_row < 0 or current_row >= self.target_list.count() - 1:
             return
 
-        # Swap ranks
-        current_item = self.target_list.item(current_row)
-        next_item = self.target_list.item(current_row + 1)
+        # Get sorted targets (same as displayed)
+        sorted_targets = sorted(self.targets, key=lambda x: x.get("rank", 999))
 
-        current_target = current_item.data(Qt.ItemDataRole.UserRole)
-        next_target = next_item.data(Qt.ItemDataRole.UserRole)
+        # Swap the two targets in the sorted list
+        sorted_targets[current_row], sorted_targets[current_row + 1] = \
+            sorted_targets[current_row + 1], sorted_targets[current_row]
 
-        current_rank = current_target["rank"]
-        current_target["rank"] = next_target["rank"]
-        next_target["rank"] = current_rank
+        # Reassign ranks based on new order
+        for idx, target in enumerate(sorted_targets):
+            target["rank"] = idx + 1
 
         self._refresh_target_list()
         self.target_list.setCurrentRow(current_row + 1)
 
+        # Auto-save the changes
+        self._auto_save_targets()
+
+    def _auto_save_targets(self):
+        """Auto-save targets to file (without showing success message)."""
+        try:
+            self.targets_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.targets_file, 'w') as f:
+                json.dump(self.targets, f, indent=2)
+
+            self.targets_changed.emit(self.targets)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to auto-save targets: {str(e)}"
+            )
+
     def _save_targets(self):
-        """Save targets to file."""
+        """Save targets to file with confirmation message."""
         try:
             self.targets_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.targets_file, 'w') as f:

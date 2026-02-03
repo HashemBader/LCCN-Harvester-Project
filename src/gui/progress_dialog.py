@@ -156,7 +156,7 @@ class ProgressDialog(QDialog):
         # Log text area
         self.log_text_advanced = QTextEdit()
         self.log_text_advanced.setReadOnly(True)
-        self.log_text_advanced.setFont(QFont("Courier", 9))
+        self.log_text_advanced.setFont(QFont("Arial", 9))
         layout.addWidget(self.log_text_advanced)
 
         widget.setLayout(layout)

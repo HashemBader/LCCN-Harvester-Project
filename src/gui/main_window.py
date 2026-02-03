@@ -5,7 +5,7 @@ Main application window for the LCCN Harvester GUI.
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QStatusBar, QLabel, QToolBar, QPushButton
 )
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from pathlib import Path
 import json
@@ -18,6 +18,8 @@ from .results_tab import ResultsTab
 from .dashboard_tab import DashboardTab
 from .ai_assistant_tab import AIAssistantTab
 from .advanced_settings_dialog import AdvancedSettingsDialog
+from .notifications import NotificationManager
+from .shortcuts_dialog import ShortcutsDialog
 
 
 class MainWindow(QMainWindow):
@@ -32,9 +34,14 @@ class MainWindow(QMainWindow):
         self.settings_file = Path("data/gui_settings.json")
         self.advanced_mode = self._load_advanced_mode()
 
+        # Setup notification manager and system tray
+        self.notification_manager = NotificationManager(self)
+        self.notification_manager.setup_system_tray()
+
         self._setup_menu_bar()
         self._setup_central_widget()
         self._setup_status_bar()
+        self._setup_keyboard_shortcuts()
         self._apply_advanced_mode()
 
     def _load_advanced_mode(self):
@@ -134,6 +141,7 @@ class MainWindow(QMainWindow):
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
         self.harvest_tab.status_message.connect(self._update_status)
+        self.harvest_tab.milestone_reached.connect(self._on_milestone_reached)
 
         # Add tabs to widget
         self.tabs.addTab(self.dashboard_tab, "📊 Dashboard")
@@ -161,6 +169,29 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         self.status_bar.addPermanentWidget(spacer, 1)
 
+        # Keyboard shortcuts hint button
+        shortcuts_hint_btn = QPushButton("⌨️ Shortcuts (Ctrl+/)")
+        shortcuts_hint_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #7f8c8d;
+                font-size: 10px;
+                font-family: Arial, Helvetica;
+                border: 1px solid #bdc3c7;
+                border-radius: 3px;
+                padding: 4px 8px;
+                margin-right: 5px;
+            }
+            QPushButton:hover {
+                background: #ecf0f1;
+                color: #3498db;
+                border: 1px solid #3498db;
+            }
+        """)
+        shortcuts_hint_btn.clicked.connect(self._show_shortcuts)
+        shortcuts_hint_btn.setToolTip("View all keyboard shortcuts (Ctrl+/)")
+        self.status_bar.addPermanentWidget(shortcuts_hint_btn)
+
         # Advanced Mode Toggle Button in status bar
         self.advanced_toggle_btn = QPushButton()
         self.advanced_toggle_btn.setCheckable(True)
@@ -170,6 +201,71 @@ class MainWindow(QMainWindow):
         self.advanced_toggle_btn.setMinimumWidth(150)
         self._update_toggle_button_style()
         self.status_bar.addPermanentWidget(self.advanced_toggle_btn)
+
+    def _setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts for the application."""
+        # Toggle Advanced Mode - Ctrl+A
+        toggle_advanced = QShortcut(QKeySequence("Ctrl+A"), self)
+        toggle_advanced.activated.connect(lambda: self.advanced_toggle_btn.click())
+
+        # Tab Navigation - Ctrl+1 through Ctrl+6
+        for i in range(6):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{i+1}"), self)
+            shortcut.activated.connect(lambda idx=i: self.tabs.setCurrentIndex(idx))
+
+        # Start Harvest - Ctrl+H
+        start_harvest = QShortcut(QKeySequence("Ctrl+H"), self)
+        start_harvest.activated.connect(self._shortcut_start_harvest)
+
+        # Stop Harvest - Escape or Ctrl+.
+        stop_harvest_esc = QShortcut(QKeySequence("Esc"), self)
+        stop_harvest_esc.activated.connect(self._shortcut_stop_harvest)
+
+        stop_harvest_ctrl = QShortcut(QKeySequence("Ctrl+."), self)
+        stop_harvest_ctrl.activated.connect(self._shortcut_stop_harvest)
+
+        # Refresh Dashboard - Ctrl+R
+        refresh_dashboard = QShortcut(QKeySequence("Ctrl+R"), self)
+        refresh_dashboard.activated.connect(self._shortcut_refresh_dashboard)
+
+        # Go to Harvest Tab - Ctrl+Shift+H
+        go_harvest = QShortcut(QKeySequence("Ctrl+Shift+H"), self)
+        go_harvest.activated.connect(lambda: self.tabs.setCurrentWidget(self.harvest_tab))
+
+        # Go to Results Tab - Ctrl+Shift+R
+        go_results = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
+        go_results.activated.connect(lambda: self.tabs.setCurrentWidget(self.results_tab))
+
+        # Go to Dashboard Tab - Ctrl+Shift+D
+        go_dashboard = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
+        go_dashboard.activated.connect(lambda: self.tabs.setCurrentWidget(self.dashboard_tab))
+
+        # Show Keyboard Shortcuts - Ctrl+/
+        show_shortcuts = QShortcut(QKeySequence("Ctrl+/"), self)
+        show_shortcuts.activated.connect(self._show_shortcuts)
+
+    def _shortcut_start_harvest(self):
+        """Handle Ctrl+H shortcut to start harvest."""
+        if not self.harvest_tab.is_running:
+            # Switch to harvest tab
+            self.tabs.setCurrentWidget(self.harvest_tab)
+            # Trigger start if button is enabled
+            if self.harvest_tab.start_button.isEnabled():
+                self.harvest_tab.start_button.click()
+                self._update_status("Harvest started via keyboard shortcut (Ctrl+H)")
+            else:
+                self._update_status("Cannot start harvest - select an input file first")
+
+    def _shortcut_stop_harvest(self):
+        """Handle Esc or Ctrl+. shortcut to stop harvest."""
+        if self.harvest_tab.is_running:
+            self.harvest_tab.stop_button.click()
+            self._update_status("Harvest stopped via keyboard shortcut")
+
+    def _shortcut_refresh_dashboard(self):
+        """Handle Ctrl+R shortcut to refresh dashboard."""
+        self.dashboard_tab.refresh_data()
+        self._update_status("Dashboard refreshed (Ctrl+R)")
 
     def _toggle_advanced_mode(self, checked):
         """Toggle advanced mode on/off."""
@@ -256,6 +352,12 @@ class MainWindow(QMainWindow):
     def _on_harvest_started(self):
         """Handle harvest start."""
         self._update_status("Harvest started...")
+        # Send notification (will be updated with actual count from harvest tab)
+        self.notification_manager.show_notification(
+            "Harvest Started",
+            "Processing ISBNs...",
+            "info"
+        )
 
     def _on_harvest_finished(self, success, stats):
         """Handle harvest completion."""
@@ -263,12 +365,23 @@ class MainWindow(QMainWindow):
             self._update_status(f"Harvest completed: {stats.get('found', 0)} found, {stats.get('failed', 0)} failed")
             self.results_tab.refresh()
             self.dashboard_tab.refresh_data()  # Refresh dashboard
+
+            # Send success notification
+            self.notification_manager.notify_harvest_completed(stats)
         else:
             self._update_status("Harvest failed or cancelled")
+
+            # Send error notification
+            error_msg = stats.get('error', 'Unknown error') if isinstance(stats, dict) else 'Harvest was cancelled'
+            self.notification_manager.notify_harvest_error(error_msg)
 
     def _update_status(self, message):
         """Update status bar message."""
         self.status_label.setText(message)
+
+    def _on_milestone_reached(self, milestone_type, value):
+        """Handle harvest milestone notifications."""
+        self.notification_manager.notify_milestone(milestone_type, value)
 
     def _refresh_results(self):
         """Refresh results tab."""
@@ -332,31 +445,8 @@ class MainWindow(QMainWindow):
 
     def _show_shortcuts(self):
         """Show keyboard shortcuts."""
-        from PyQt6.QtWidgets import QMessageBox
-        shortcuts_text = """
-Keyboard Shortcuts:
-
-General:
-  Ctrl+Q        - Quit application
-  F1            - Show documentation
-  F5            - Refresh results
-  Ctrl+A        - Toggle Advanced Mode
-
-Navigation:
-  Ctrl+1-5      - Switch between tabs
-  Tab           - Next field
-  Shift+Tab     - Previous field
-
-Harvest:
-  Ctrl+H        - Start harvest
-  Ctrl+.        - Stop harvest
-  Ctrl+P        - Pause/Resume harvest
-"""
-        QMessageBox.information(
-            self,
-            "Keyboard Shortcuts",
-            shortcuts_text
-        )
+        dialog = ShortcutsDialog(self)
+        dialog.exec()
 
     def _show_about(self):
         from PyQt6.QtWidgets import QMessageBox

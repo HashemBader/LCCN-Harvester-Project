@@ -9,12 +9,16 @@ from src.harvester.orchestrator import PlaceholderTarget
 
 def test_run_harvest_dry_run_counts(tmp_path: Path):
     tsv = tmp_path / "isbns.tsv"
-    # Both are checksum-valid. 0000000000 is mathematically valid.
-    tsv.write_text("isbn\n9780132350884\n0000000000\n", encoding="utf-8")
+    # Both are valid.
+    tsv.write_text("isbn\n9780132350884\n0321584104\n", encoding="utf-8")
 
     # Mock build_default_api_targets to return a placeholder (always fails/not_found)
-    with patch("src.harvester.run_harvest.build_default_api_targets") as mock_build:
+    # Mock build_default_api_targets to return a placeholder (always fails/not_found)
+    # AND mock build_default_z3950_targets to return empty, effectively testing ONLY the placeholder.
+    with patch("src.harvester.run_harvest.build_default_api_targets") as mock_build, \
+         patch("src.harvester.run_harvest.build_default_z3950_targets") as mock_z3950:
         mock_build.return_value = [PlaceholderTarget()]
+        mock_z3950.return_value = []
         summary = run_harvest(tsv, dry_run=True, db_path=tmp_path / "db.sqlite3", retry_days=7)
 
     assert summary.total_isbns == 2
@@ -28,8 +32,10 @@ def test_run_harvest_non_dry_run_writes_attempted(tmp_path: Path):
     # Use a valid ISBN-10: 0-13-110362-8
     tsv.write_text("isbn\n0-13-110362-8\n", encoding="utf-8")
 
-    with patch("src.harvester.run_harvest.build_default_api_targets") as mock_build:
+    with patch("src.harvester.run_harvest.build_default_api_targets") as mock_build, \
+         patch("src.harvester.run_harvest.build_default_z3950_targets") as mock_z3950:
         mock_build.return_value = [PlaceholderTarget()]
+        mock_z3950.return_value = []
         summary = run_harvest(tsv, dry_run=False, db_path=tmp_path / "db.sqlite3", retry_days=7)
 
     # Sprint 2 placeholder: records attempted failure

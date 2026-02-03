@@ -1,20 +1,23 @@
-
 import pytest
 from unittest.mock import MagicMock, patch
+
+# Skip if dependency missing
+pytest.importorskip("PyZ3950")
+
 from src.z3950.client import Z3950Client
 from PyZ3950 import zoom
 from pymarc import Record
 
 @pytest.fixture
 def mock_zoom_connection():
-    with patch('src.z3950.client.zoom.Connection') as mock_conn_cls:
+    with patch('PyZ3950.zoom.Connection') as mock_conn_cls:
         mock_conn_instance = MagicMock()
         mock_conn_cls.return_value = mock_conn_instance
         yield mock_conn_cls, mock_conn_instance
 
 @pytest.fixture
 def mock_record():
-    with patch('src.z3950.client.Record') as mock_rec_cls:
+    with patch('pymarc.Record') as mock_rec_cls:
         yield mock_rec_cls
 
 def test_initialization():

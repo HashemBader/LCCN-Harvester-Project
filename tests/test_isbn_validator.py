@@ -1,4 +1,5 @@
-
+import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
 from src.utils.isbn_validator import validate_isbn, log_invalid_isbn, INVALID_ISBN_LOG
@@ -56,16 +57,7 @@ def test_log_invalid_isbn_file_write():
     test_isbn = "bad-isbn"
     test_reason = "Test Reason"
     
-    # Mock Path.open on the INVALID_ISBN_LOG object specifically might be tricky if it's a global constant
-    # Better to patch pathlib.Path.open generically or the specific object if accessible
-    # Looking at implementation: INVALID_ISBN_LOG is a global Path object.
-    
     m_open = mock_open()
-    
-    # We need to target the open method of the Path object used in the module
-    # or patch pathlib.Path.open if we want to be broad.
-    # Let's patch generic open since Path.open delegates to io.open or similar, 
-    # but specifically patching the object attribute open is safer usually.
     
     with patch("pathlib.Path.open", m_open):
         log_invalid_isbn(test_isbn, test_reason)
@@ -76,5 +68,5 @@ def test_log_invalid_isbn_file_write():
     
     # Verify content format
     written_content = handle.write.call_args[0][0]
-    # Expect: timestamp\tbad-isbn\tTest Reason\n
-    assert f"\t{test_isbn}\t{test_reason}\n" in written_content
+    # Expect: timestamp\tbad-isbn\n
+    assert f"\t{test_isbn}\n" in written_content

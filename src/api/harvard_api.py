@@ -23,7 +23,7 @@ import urllib.parse
 import xml.etree.ElementTree as et
 from typing import Any, Dict, List, Optional, Tuple
 
-from api.base_api import ApiResult, BaseApiClient
+from src.api.base_api import ApiResult, BaseApiClient
 
 
 class HarvardApiClient(BaseApiClient):
@@ -37,6 +37,26 @@ class HarvardApiClient(BaseApiClient):
 
     source_name = "harvard"
     base_url = "https://api.lib.harvard.edu/v2/items.json"
+
+    @property
+    def source(self) -> str:
+        return self.source_name
+
+    def fetch(self, isbn: str) -> Any:
+        url = self.build_url(isbn)
+        import urllib.request
+        
+        req = urllib.request.Request(url)
+        # Harvard might require UA too
+        req.add_header("User-Agent", "LCCNHarvester/0.1 (edu)")
+        
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                if resp.status != 200:
+                    raise Exception(f"HTTP {resp.status}")
+                return self.parse_response(resp.read())
+        except Exception:
+            raise
 
     def build_url(self, isbn: str) -> str:
         """

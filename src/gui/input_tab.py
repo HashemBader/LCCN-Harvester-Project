@@ -5,7 +5,7 @@ Input file selection tab for ISBN list.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QFileDialog, QGroupBox,
-    QTextEdit, QFrame
+    QTextEdit, QFrame, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
@@ -21,16 +21,16 @@ class ClickableDropZone(QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.normal_style = """
             QFrame {
-                border: 3px dashed #0066cc;
-                border-radius: 10px;
-                background-color: #f0f8ff;
-                min-height: 120px;
+                border: 3px dashed #f4b860;
+                border-radius: 12px;
+                background-color: #20262d;
             }
             QFrame:hover {
-                background-color: #e6f2ff;
-                border-color: #0052a3;
+                background-color: #232a32;
+                border-color: #5fb3a1;
             }
         """
         self.setStyleSheet(self.normal_style)
@@ -50,10 +50,9 @@ class ClickableDropZone(QFrame):
                     event.acceptProposedAction()
                     self.setStyleSheet("""
                         QFrame {
-                            border: 3px dashed #00cc66;
-                            border-radius: 10px;
-                            background-color: #e6ffe6;
-                            min-height: 120px;
+                            border: 3px dashed #7bc96f;
+                            border-radius: 12px;
+                            background-color: #1f2a22;
                         }
                     """)
                     return
@@ -75,10 +74,9 @@ class ClickableDropZone(QFrame):
             # Animate success
             self.setStyleSheet("""
                 QFrame {
-                    border: 3px solid #00cc66;
-                    border-radius: 10px;
-                    background-color: #d4ffd4;
-                    min-height: 120px;
+                    border: 3px solid #7bc96f;
+                    border-radius: 12px;
+                    background-color: #243329;
                 }
             """)
 
@@ -126,26 +124,30 @@ class InputTab(QWidget):
 
         # Drag & Drop Zone
         self.drop_zone = ClickableDropZone()
+        self.drop_zone.setObjectName("DropZone")  # For styling
         self.drop_zone.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        self.drop_zone.setMinimumHeight(120)
         self.drop_zone.clicked.connect(self._browse_file)  # Connect click to browse
         self.drop_zone.fileDropped.connect(self._handle_file_drop)  # Connect drop to handler
 
         drop_layout = QVBoxLayout()
         drop_icon = QLabel("📁")
         drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_icon.setStyleSheet("font-size: 48px; border: none;")
+        drop_icon.setStyleSheet("font-size: 48px; border: none; background: transparent;")
 
         drop_text = QLabel("Drag & Drop ISBN File Here\nor click anywhere to browse")
         drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_text.setStyleSheet("font-size: 14px; color: #0066cc; font-weight: bold; border: none;")
+        drop_text.setStyleSheet("font-size: 14px; color: #f4b860; font-weight: bold; border: none; background: transparent;")
 
         drop_hint = QLabel("Supports: .tsv, .txt, .csv files")
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_hint.setStyleSheet("font-size: 11px; color: #666666; border: none;")
+        drop_hint.setStyleSheet("font-size: 11px; color: #a7a199; border: none; background: transparent;")
 
         drop_layout.addWidget(drop_icon)
         drop_layout.addWidget(drop_text)
         drop_layout.addWidget(drop_hint)
+        drop_layout.setContentsMargins(16, 16, 16, 16)
+        drop_layout.setSpacing(6)
 
         self.drop_zone.setLayout(drop_layout)
         layout.addWidget(self.drop_zone)

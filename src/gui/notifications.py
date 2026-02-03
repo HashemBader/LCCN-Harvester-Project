@@ -2,7 +2,7 @@
 Module: notifications.py
 Desktop notifications and system tray integration for LCCN Harvester.
 """
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
+from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QMessageBox
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QObject, pyqtSignal
 from pathlib import Path
@@ -99,6 +99,11 @@ class NotificationManager(QObject):
             duration: Duration in milliseconds (default 5000 = 5 seconds)
         """
         if not self.notifications_enabled:
+            return
+
+        # Always show errors as modal popups for visibility
+        if notification_type == "error" and self.main_window:
+            QMessageBox.warning(self.main_window, title, message)
             return
 
         # Map notification types to icons

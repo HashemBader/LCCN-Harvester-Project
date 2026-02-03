@@ -30,7 +30,6 @@ def log_invalid_isbn(isbn_value: str, reason: str = messages.GuiMessages.warn_ti
     timestamp = datetime.now().isoformat()
     with INVALID_ISBN_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{timestamp}\t{isbn_value}\n")
-    return False
 
 def _simple_normalize_isbn(isbn_str: str) -> str:
     """Simple ISBN normalization when stdnum is not available."""

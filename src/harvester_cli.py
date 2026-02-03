@@ -17,6 +17,7 @@ from pathlib import Path
 
 from src.database import DatabaseManager
 from src.harvester.run_harvest import run_harvest, read_isbns_from_tsv
+from utils import isbn_validator
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(

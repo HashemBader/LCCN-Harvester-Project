@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +101,7 @@ def run_harvest(
     db_path: Path | str = "data/lccn_harvester.sqlite3",
     retry_days: int = 7,
     targets: list[HarvestTarget] | None = None,
+    bypass_retry_isbns: set[str] | None = None,
     progress_cb: ProgressCallback | None = None,
 ) -> HarvestSummary:
     """
@@ -122,6 +124,7 @@ def run_harvest(
         db=db,
         targets=targets,
         retry_days=retry_days,
+        bypass_retry_isbns=bypass_retry_isbns,
         progress_cb=progress_cb,
     )
 

@@ -1,6 +1,12 @@
 """
-Module: loc_api.py
-Part of the LCCN Harvester Project.
+loc_api.py
+
+Library of Congress (LoC) JSON API client.
+
+Implements ISBN search using the LoC JSON endpoint and extracts identifiers
+(e.g., LCCN) and call number fields when available.
+
+This module is part of Sprint 3 Task 2: Implement Library of Congress API.
 """
 
 from __future__ import annotations

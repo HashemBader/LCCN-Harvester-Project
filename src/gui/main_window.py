@@ -3,7 +3,8 @@ Module: main_window.py
 Main application window for the LCCN Harvester GUI.
 """
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QWidget, QStatusBar, QLabel, QToolBar, QPushButton
+    QMainWindow, QTabWidget, QWidget, QStatusBar, QLabel, QToolBar, QPushButton,
+    QVBoxLayout, QHBoxLayout, QScrollArea
 )
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
@@ -20,6 +21,7 @@ from .ai_assistant_tab import AIAssistantTab
 from .advanced_settings_dialog import AdvancedSettingsDialog
 from .notifications import NotificationManager
 from .shortcuts_dialog import ShortcutsDialog
+from utils import messages
 
 
 class MainWindow(QMainWindow):
@@ -27,7 +29,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LCCN Harvester")
+        self.setWindowTitle("LCCN Harvester Pro")
         self.setGeometry(100, 100, 1200, 800)
 
         # Load advanced mode preference
@@ -123,6 +125,23 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def _setup_central_widget(self):
+        # Main container with header + tabs
+        container = QWidget()
+        main_layout = QVBoxLayout(container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet("background-color: #1f201d; border-bottom: 1px solid #2d2e2b;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 16, 20, 16)
+
+        title = QLabel("LCCN Harvester Pro")
+        title.setStyleSheet("font-size: 24px; font-weight: 700; color: #c2d07f; background: transparent;")
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        main_layout.addWidget(header)
+
         # Create tab widget
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
@@ -155,10 +174,18 @@ class MainWindow(QMainWindow):
         self.ai_tab_index = self.tabs.addTab(self.ai_assistant_tab, "🤖 AI Assistant")
         self.tabs.setTabVisible(self.ai_tab_index, False)  # Hidden by default
 
-        self.setCentralWidget(self.tabs)
+        # Scroll wrapper for smaller windows
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setWidget(self.tabs)
+        main_layout.addWidget(scroll)
+        self.setCentralWidget(container)
 
     def _setup_status_bar(self):
         self.status_bar = QStatusBar()
+        self.status_bar.setMinimumHeight(32)
         self.setStatusBar(self.status_bar)
 
         # Main status label
@@ -173,19 +200,18 @@ class MainWindow(QMainWindow):
         shortcuts_hint_btn = QPushButton("⌨️ Shortcuts (Ctrl+/)")
         shortcuts_hint_btn.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                color: #7f8c8d;
+                background: #242521;
+                color: #c2d07f;
                 font-size: 10px;
-                font-family: Arial, Helvetica;
-                border: 1px solid #bdc3c7;
+                border: 1px solid #2d2e2b;
                 border-radius: 3px;
                 padding: 4px 8px;
                 margin-right: 5px;
             }
             QPushButton:hover {
-                background: #ecf0f1;
-                color: #3498db;
-                border: 1px solid #3498db;
+                background: #2b2c28;
+                color: #d2df8e;
+                border: 1px solid #3a3b35;
             }
         """)
         shortcuts_hint_btn.clicked.connect(self._show_shortcuts)
@@ -254,7 +280,10 @@ class MainWindow(QMainWindow):
                 self.harvest_tab.start_button.click()
                 self._update_status("Harvest started via keyboard shortcut (Ctrl+H)")
             else:
-                self._update_status("Cannot start harvest - select an input file first")
+                self._update_status(messages.GuiMessages.err_body_no_input)
+                self.notification_manager.notify_harvest_error(
+                    messages.GuiMessages.err_body_no_input
+                )
 
     def _shortcut_stop_harvest(self):
         """Handle Esc or Ctrl+. shortcut to stop harvest."""
@@ -286,39 +315,39 @@ class MainWindow(QMainWindow):
             self.advanced_toggle_btn.setText("🔧 Advanced Mode")
             style = """
                 QPushButton {
-                    background-color: #7c3aed;
-                    color: white;
+                    background-color: #c2d07f;
+                    color: #1a1a18;
                     font-weight: bold;
                     font-size: 11px;
-                    border: 1px solid #6d28d9;
+                    border: 1px solid #c2d07f;
                     border-radius: 3px;
                     padding: 4px 12px;
                 }
                 QPushButton:hover {
-                    background-color: #6d28d9;
+                    background-color: #d2df8e;
                 }
                 QPushButton:pressed {
-                    background-color: #5b21b6;
+                    background-color: #b7c66e;
                 }
             """
         else:
             self.advanced_toggle_btn.setText("📋 Simple Mode")
             style = """
                 QPushButton {
-                    background-color: #f0f0f0;
-                    color: #333333;
+                    background-color: #242521;
+                    color: #e8e6df;
                     font-weight: normal;
                     font-size: 11px;
-                    border: 1px solid #cccccc;
+                    border: 1px solid #2d2e2b;
                     border-radius: 3px;
                     padding: 4px 12px;
                 }
                 QPushButton:hover {
-                    background-color: #e0e0e0;
-                    border: 1px solid #999999;
+                    background-color: #2b2c28;
+                    border: 1px solid #3a3b35;
                 }
                 QPushButton:pressed {
-                    background-color: #d0d0d0;
+                    background-color: #1f201d;
                 }
             """
 

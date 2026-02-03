@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional, Protocol
 
-from src.database import DatabaseManager, MainRecord
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from database import DatabaseManager, MainRecord
 
 
 # Progress callback signature (Sprint 4 GUI signals can wrap this easily)
@@ -74,10 +79,12 @@ class HarvestOrchestrator:
         targets: Optional[list[HarvestTarget]] = None,
         *,
         retry_days: int = 7,
+        bypass_retry_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
     ):
         self.db = db
         self.retry_days = retry_days
+        self.bypass_retry_isbns = set(bypass_retry_isbns or [])
         self.progress_cb = progress_cb
 
         # If no real targets wired yet, keep Sprint-2 behavior with a placeholder.
@@ -100,7 +107,9 @@ class HarvestOrchestrator:
             return "cached"
 
         # 2) retry-skip check
-        if self.db.should_skip_retry(isbn, retry_days=self.retry_days):
+        if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
+            isbn, retry_days=self.retry_days
+        ):
             self._emit("skip_retry", {"isbn": isbn, "retry_days": self.retry_days})
             return "skip_retry"
 

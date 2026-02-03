@@ -1,6 +1,13 @@
 """
-Module: openlibrary_api.py
-Part of the LCCN Harvester Project.
+openlibrary_api.py
+
+OpenLibrary API client.
+
+Performs ISBN-based lookup using OpenLibrary's Books API and extracts
+best-effort identifiers/classifications (e.g., LCCN identifiers and LC
+classification strings when present).
+
+Sprint 3 Task 4: Implement OpenLibrary API.
 """
 
 from __future__ import annotations

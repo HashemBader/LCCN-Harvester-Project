@@ -23,7 +23,6 @@ class ShortcutItem(QFrame):
 
         layout = QHBoxLayout()
 
-        # Keys display
         keys_label = QLabel(keys)
         keys_label.setStyleSheet(
             "QLabel { background: #242521; color: #c2d07f; font-size: 12px; font-weight: bold; "
@@ -32,7 +31,6 @@ class ShortcutItem(QFrame):
         keys_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(keys_label)
 
-        # Description
         desc_label = QLabel(description)
         desc_label.setStyleSheet(
             "QLabel { color: #e8e6df; font-size: 13px; padding-left: 10px; border: none; background: transparent; }"
@@ -53,10 +51,8 @@ class ShortcutsDialog(QDialog):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Setup the dialog UI."""
         layout = QVBoxLayout()
 
-        # Header
         header = QLabel("⌨️ Keyboard Shortcuts")
         header.setStyleSheet(
             "QLabel { color: #c2d07f; font-size: 24px; font-weight: bold; padding: 10px; background: transparent; border: none; }"
@@ -71,7 +67,6 @@ class ShortcutsDialog(QDialog):
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
-        # Platform switcher
         platform_row = QHBoxLayout()
         platform_row.addStretch()
         platform_label = QLabel("Platform:")
@@ -95,7 +90,6 @@ class ShortcutsDialog(QDialog):
         platform_row.addStretch()
         layout.addLayout(platform_row)
 
-        # Scrollable content area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("QScrollArea { border: none; background: #171716; }")
@@ -107,7 +101,6 @@ class ShortcutsDialog(QDialog):
         scroll.setWidget(content_widget)
         layout.addWidget(scroll)
 
-        # Close button
         close_layout = QHBoxLayout()
         close_layout.addStretch()
 

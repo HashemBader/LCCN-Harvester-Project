@@ -36,16 +36,36 @@ class ResultsTab(QWidget):
         search_layout = QHBoxLayout()
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search ISBN...")
+        self.search_input.setPlaceholderText("Search ISBN... (press Enter)")
+        self.search_input.returnPressed.connect(self._search_results)  # Search on Enter key
+        self.search_input.textChanged.connect(self._on_search_text_changed)  # Auto-load when cleared
 
         self.table_selector = QComboBox()
-        self.table_selector.addItems(["Main Results", "Failed Attempts"])
+        self.table_selector.addItems(["Main Results (Successful)", "Failed Attempts"])
+        self.table_selector.currentIndexChanged.connect(self._on_table_changed)  # Auto-load on change
 
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self._search_results)
 
-        self.refresh_button = QPushButton("Refresh All")
+        self.refresh_button = QPushButton("🔄 Refresh")
         self.refresh_button.clicked.connect(self._load_all_results)
+        self.refresh_button.setToolTip("Reload data from database")
+
+        self.clear_button = QPushButton("🗑️ Clear Results")
+        self.clear_button.clicked.connect(self._clear_results)
+        self.clear_button.setToolTip("Delete all results from database")
+        self.clear_button.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                font-weight: bold;
+                padding: 5px 10px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
 
         search_layout.addWidget(QLabel("Table:"))
         search_layout.addWidget(self.table_selector)
@@ -53,6 +73,7 @@ class ResultsTab(QWidget):
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.search_button)
         search_layout.addWidget(self.refresh_button)
+        search_layout.addWidget(self.clear_button)
 
         search_group.setLayout(search_layout)
         layout.addWidget(search_group)
@@ -96,6 +117,8 @@ class ResultsTab(QWidget):
         try:
             self.db = DatabaseManager()
             self.db.init_db()
+            # Auto-load main results on startup
+            self._load_all_results()
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -103,17 +126,78 @@ class ResultsTab(QWidget):
                 f"Failed to initialize database: {str(e)}"
             )
 
+    def _on_table_changed(self, index):
+        """Handle table selector change - auto-load results."""
+        self._load_all_results()
+
+    def _on_search_text_changed(self, text):
+        """Handle search text change - auto-load all when cleared."""
+        if not text.strip():
+            # Search field is empty, show all results
+            self._load_all_results()
+
+    def _clear_results(self):
+        """Clear all results from the database."""
+        if not self.db:
+            return
+
+        # Confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Clear All Results",
+            "This will permanently delete ALL harvest results from the database:\n\n"
+            "• All successful harvests (Main Results)\n"
+            "• All failed attempts (Failed Attempts)\n\n"
+            "This action CANNOT be undone!\n\n"
+            "Are you sure you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No  # Default to No for safety
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                with self.db.connect() as conn:
+                    # Delete from both tables
+                    conn.execute("DELETE FROM main")
+                    conn.execute("DELETE FROM attempted")
+                    conn.commit()
+
+                # Clear the table view
+                self.results_table.clear()
+                self.results_table.setRowCount(0)
+                self.stats_label.setText("All results cleared from database")
+
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    "All results have been cleared from the database."
+                )
+
+                # Reload to show empty state
+                self._load_all_results()
+
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Database Error",
+                    f"Failed to clear results: {str(e)}"
+                )
+
     def _load_all_results(self):
         """Load all results from selected table."""
         if not self.db:
             return
 
         try:
-            table_name = "main" if self.table_selector.currentText() == "Main Results" else "attempted"
+            # Show loading indicator
+            self.stats_label.setText("Loading...")
+
+            table_name = "main" if "Main Results" in self.table_selector.currentText() else "attempted"
 
             with self.db.connect() as conn:
                 if table_name == "main":
-                    cursor = conn.execute("SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main ORDER BY date_added DESC LIMIT 1000")
+                    # Main Results: Only show successful records (with LCCN found)
+                    cursor = conn.execute("SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main WHERE lccn IS NOT NULL ORDER BY date_added DESC LIMIT 1000")
                     headers = ["ISBN", "LCCN", "NLMCN", "Classification", "Source", "Date Added"]
                 else:
                     cursor = conn.execute("SELECT isbn, last_target, last_attempted, fail_count, last_error FROM attempted ORDER BY last_attempted DESC LIMIT 1000")
@@ -122,7 +206,15 @@ class ResultsTab(QWidget):
                 rows = cursor.fetchall()
 
             self._populate_table(rows, headers)
-            self.stats_label.setText(f"Showing {len(rows)} records from '{table_name}' table")
+
+            # Show results count with table name
+            table_display = "Main Results" if table_name == "main" else "Failed Attempts"
+            if len(rows) == 0:
+                self.stats_label.setText(f"No records found in {table_display}")
+            elif len(rows) == 1000:
+                self.stats_label.setText(f"Showing {len(rows)} most recent records from {table_display} (limit reached)")
+            else:
+                self.stats_label.setText(f"Showing {len(rows)} records from {table_display}")
 
         except Exception as e:
             QMessageBox.critical(
@@ -130,20 +222,30 @@ class ResultsTab(QWidget):
                 "Database Error",
                 f"Failed to load results: {str(e)}"
             )
+            self.stats_label.setText("Error loading data")
 
     def _search_results(self):
         """Search for specific ISBN."""
         isbn = self.search_input.text().strip()
-        if not isbn or not self.db:
+        if not isbn:
+            # If search is empty, show all results
+            self._load_all_results()
+            return
+
+        if not self.db:
             return
 
         try:
-            table_name = "main" if self.table_selector.currentText() == "Main Results" else "attempted"
+            # Show searching indicator
+            self.stats_label.setText(f"Searching for '{isbn}'...")
+
+            table_name = "main" if "Main Results" in self.table_selector.currentText() else "attempted"
 
             with self.db.connect() as conn:
                 if table_name == "main":
+                    # Main Results: Only show successful records (with LCCN found)
                     cursor = conn.execute(
-                        "SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main WHERE isbn LIKE ?",
+                        "SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main WHERE lccn IS NOT NULL AND isbn LIKE ?",
                         (f"%{isbn}%",)
                     )
                     headers = ["ISBN", "LCCN", "NLMCN", "Classification", "Source", "Date Added"]
@@ -157,7 +259,13 @@ class ResultsTab(QWidget):
                 rows = cursor.fetchall()
 
             self._populate_table(rows, headers)
-            self.stats_label.setText(f"Found {len(rows)} matching records")
+
+            # Show search results count
+            table_display = "Main Results" if table_name == "main" else "Failed Attempts"
+            if len(rows) == 0:
+                self.stats_label.setText(f"No matches found for '{isbn}' in {table_display}")
+            else:
+                self.stats_label.setText(f"Found {len(rows)} matching record(s) for '{isbn}' in {table_display}")
 
         except Exception as e:
             QMessageBox.critical(
@@ -165,6 +273,7 @@ class ResultsTab(QWidget):
                 "Database Error",
                 f"Search failed: {str(e)}"
             )
+            self.stats_label.setText("Search error")
 
     def _populate_table(self, rows, headers):
         """Populate table with data."""
@@ -220,3 +329,10 @@ class ResultsTab(QWidget):
     def refresh(self):
         """Refresh the results display."""
         self._load_all_results()
+
+    def showEvent(self, event):
+        """Auto-refresh when tab is shown."""
+        super().showEvent(event)
+        # Only auto-refresh if table is empty
+        if self.results_table.rowCount() == 0:
+            self._load_all_results()

@@ -7,9 +7,95 @@ from PyQt6.QtWidgets import (
     QPushButton, QLineEdit, QFileDialog, QGroupBox,
     QTextEdit, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
 from pathlib import Path
+
+
+class ClickableDropZone(QFrame):
+    """A clickable and droppable frame widget."""
+    clicked = pyqtSignal()
+    fileDropped = pyqtSignal(str)  # Emits file path when dropped
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.normal_style = """
+            QFrame {
+                border: 3px dashed #0066cc;
+                border-radius: 10px;
+                background-color: #f0f8ff;
+                min-height: 120px;
+            }
+            QFrame:hover {
+                background-color: #e6f2ff;
+                border-color: #0052a3;
+            }
+        """
+        self.setStyleSheet(self.normal_style)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press to trigger click signal."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter event."""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                if file_path.endswith(('.tsv', '.txt', '.csv')):
+                    event.acceptProposedAction()
+                    self.setStyleSheet("""
+                        QFrame {
+                            border: 3px dashed #00cc66;
+                            border-radius: 10px;
+                            background-color: #e6ffe6;
+                            min-height: 120px;
+                        }
+                    """)
+                    return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        """Handle drag leave event."""
+        self.setStyleSheet(self.normal_style)
+
+    def dropEvent(self, event: QDropEvent):
+        """Handle drop event."""
+        files = [url.toLocalFile() for url in event.mimeData().urls()]
+        valid_files = [f for f in files if f.endswith(('.tsv', '.txt', '.csv'))]
+
+        if valid_files:
+            file_path = valid_files[0]
+            self.fileDropped.emit(file_path)
+
+            # Animate success
+            self.setStyleSheet("""
+                QFrame {
+                    border: 3px solid #00cc66;
+                    border-radius: 10px;
+                    background-color: #d4ffd4;
+                    min-height: 120px;
+                }
+            """)
+
+            # Reset after delay
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: self.setStyleSheet(self.normal_style))
+
+            event.acceptProposedAction()
+        else:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Invalid File",
+                "Please drop a valid TSV, TXT, or CSV file."
+            )
+            event.ignore()
+            self.setStyleSheet(self.normal_style)
 
 
 class InputTab(QWidget):
@@ -18,7 +104,6 @@ class InputTab(QWidget):
     def __init__(self):
         super().__init__()
         self.input_file = None
-        self.setAcceptDrops(True)  # Enable drag & drop
         self._setup_ui()
 
     def _setup_ui(self):
@@ -40,28 +125,17 @@ class InputTab(QWidget):
         layout.addWidget(instructions)
 
         # Drag & Drop Zone
-        self.drop_zone = QFrame()
+        self.drop_zone = ClickableDropZone()
         self.drop_zone.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
-        self.drop_zone.setAcceptDrops(True)
-        self.drop_zone.setStyleSheet("""
-            QFrame {
-                border: 3px dashed #0066cc;
-                border-radius: 10px;
-                background-color: #f0f8ff;
-                min-height: 120px;
-            }
-            QFrame:hover {
-                background-color: #e6f2ff;
-                border-color: #0052a3;
-            }
-        """)
+        self.drop_zone.clicked.connect(self._browse_file)  # Connect click to browse
+        self.drop_zone.fileDropped.connect(self._handle_file_drop)  # Connect drop to handler
 
         drop_layout = QVBoxLayout()
         drop_icon = QLabel("📁")
         drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_icon.setStyleSheet("font-size: 48px; border: none;")
 
-        drop_text = QLabel("Drag & Drop ISBN File Here\nor click Browse below")
+        drop_text = QLabel("Drag & Drop ISBN File Here\nor click anywhere to browse")
         drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_text.setStyleSheet("font-size: 14px; color: #0066cc; font-weight: bold; border: none;")
 
@@ -130,19 +204,28 @@ class InputTab(QWidget):
         # but we keep the method for consistency
 
     def _browse_file(self):
+        """Open file browser dialog."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select ISBN Input File",
             "",
-            "TSV Files (*.tsv);;Text Files (*.txt);;All Files (*.*)"
+            "TSV Files (*.tsv);;Text Files (*.txt);;CSV Files (*.csv);;All Files (*.*)"
         )
 
         if file_path:
-            self.input_file = Path(file_path)
-            self.file_path_edit.setText(str(self.input_file))
-            self._load_file_preview()
-            self._update_file_info()
-            self.file_selected.emit(str(self.input_file))
+            self._load_file(file_path)
+
+    def _handle_file_drop(self, file_path):
+        """Handle file dropped onto drop zone."""
+        self._load_file(file_path)
+
+    def _load_file(self, file_path):
+        """Load a file (from browse or drop)."""
+        self.input_file = Path(file_path)
+        self.file_path_edit.setText(str(self.input_file))
+        self._load_file_preview()
+        self._update_file_info()
+        self.file_selected.emit(str(self.input_file))
 
     def _load_file_preview(self):
         if not self.input_file or not self.input_file.exists():
@@ -182,90 +265,3 @@ class InputTab(QWidget):
     def get_input_file(self):
         """Return the selected input file path."""
         return str(self.input_file) if self.input_file else None
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        """Handle drag enter event."""
-        if event.mimeData().hasUrls():
-            # Check if any of the files are valid
-            for url in event.mimeData().urls():
-                file_path = url.toLocalFile()
-                if file_path.endswith(('.tsv', '.txt', '.csv')):
-                    event.acceptProposedAction()
-                    self.drop_zone.setStyleSheet("""
-                        QFrame {
-                            border: 3px dashed #00cc66;
-                            border-radius: 10px;
-                            background-color: #e6ffe6;
-                            min-height: 120px;
-                        }
-                    """)
-                    return
-        event.ignore()
-
-    def dragLeaveEvent(self, event):
-        """Handle drag leave event."""
-        self.drop_zone.setStyleSheet("""
-            QFrame {
-                border: 3px dashed #0066cc;
-                border-radius: 10px;
-                background-color: #f0f8ff;
-                min-height: 120px;
-            }
-            QFrame:hover {
-                background-color: #e6f2ff;
-                border-color: #0052a3;
-            }
-        """)
-
-    def dropEvent(self, event: QDropEvent):
-        """Handle drop event."""
-        files = [url.toLocalFile() for url in event.mimeData().urls()]
-
-        # Filter valid files
-        valid_files = [f for f in files if f.endswith(('.tsv', '.txt', '.csv'))]
-
-        if valid_files:
-            # Use the first valid file
-            file_path = valid_files[0]
-            self.input_file = Path(file_path)
-            self.file_path_edit.setText(str(self.input_file))
-            self._load_file_preview()
-            self._update_file_info()
-            self.file_selected.emit(str(self.input_file))
-
-            # Animate success
-            self.drop_zone.setStyleSheet("""
-                QFrame {
-                    border: 3px solid #00cc66;
-                    border-radius: 10px;
-                    background-color: #d4ffd4;
-                    min-height: 120px;
-                }
-            """)
-
-            # Reset after delay
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(500, lambda: self.drop_zone.setStyleSheet("""
-                QFrame {
-                    border: 3px dashed #0066cc;
-                    border-radius: 10px;
-                    background-color: #f0f8ff;
-                    min-height: 120px;
-                }
-                QFrame:hover {
-                    background-color: #e6f2ff;
-                    border-color: #0052a3;
-                }
-            """))
-
-            event.acceptProposedAction()
-        else:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self,
-                "Invalid File",
-                "Please drop a valid TSV, TXT, or CSV file."
-            )
-            event.ignore()
-
-        self.dragLeaveEvent(event)

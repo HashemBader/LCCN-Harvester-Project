@@ -1,12 +1,12 @@
 """
 run_harvest.py
 
-Sprint 2: Define the harvest pipeline interface.
+Sprint 3+: Define the harvest pipeline interface using HarvestOrchestrator.
 
-This module provides:
-- run_harvest(input_path, dry_run): loops through ISBNs, checks DB cache,
-  applies retry-skip logic, and records attempts (placeholder until real
-  target lookups are implemented in Sprint 3+).
+Responsibilities:
+- Read ISBNs from input TSV
+- Initialize database
+- Delegate cache/retry/target order logic to HarvestOrchestrator
 """
 
 from __future__ import annotations
@@ -15,10 +15,9 @@ import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
 
 from src.database import DatabaseManager
-
+from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +52,9 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
         if first_row is None:
             return []
 
-        # Detect header by seeing if first cell is "isbn"
         has_header = len(first_row) > 0 and first_row[0].strip().lower() == "isbn"
 
         if has_header:
-            # Read remaining rows, take first column under header
             for row in reader:
                 if not row:
                     continue
@@ -65,7 +62,6 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
                 if raw:
                     isbns.append(raw)
         else:
-            # First row is data
             raw0 = (first_row[0] or "").strip() if first_row else ""
             if raw0:
                 isbns.append(raw0)
@@ -88,78 +84,42 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
     return uniq
 
 
-
 def run_harvest(
     input_path: Path,
     dry_run: bool = False,
     *,
     db_path: Path | str = "data/lccn_harvester.sqlite3",
     retry_days: int = 7,
+    targets: list[HarvestTarget] | None = None,
+    progress_cb: ProgressCallback | None = None,
 ) -> HarvestSummary:
     """
-    Sprint 2 pipeline interface.
-
-    Loop all ISBNs in input TSV:
-      1) If main cache hit => skip (cached_hits++)
-      2) If attempted within retry_days => skip (skipped_recent_fail++)
-      3) Else:
-         - In dry_run: count as attempted but do not write DB
-         - In non-dry_run (Sprint 2 placeholder): record attempted failure
-           because real target lookup isn't implemented yet.
-
-    Later sprints will replace the placeholder "failure" block with real
-    target calls and upsert_main() on success.
+    Sprint 3 pipeline interface (delegates to HarvestOrchestrator).
     """
     input_path = input_path.expanduser().resolve()
+
     db = DatabaseManager(db_path)
     db.init_db()
 
     isbns = read_isbns_from_tsv(input_path)
 
-    cached_hits = 0
-    skipped_recent_fail = 0
-    attempted = 0
-    successes = 0
-    failures = 0
+    orch = HarvestOrchestrator(
+        db=db,
+        targets=targets,
+        retry_days=retry_days,
+        progress_cb=progress_cb,
+    )
 
-    for isbn in isbns:
-        # 1) cache check
-        existing = db.get_main(isbn)
-        if existing is not None:
-            cached_hits += 1
-            continue
+    orch_summary = orch.run(isbns, dry_run=dry_run)
 
-        # 2) retry skip check
-        if db.should_skip_retry(isbn, retry_days=retry_days):
-            skipped_recent_fail += 1
-            continue
-
-        # 3) attempt
-        attempted += 1
-
-        if dry_run:
-            # Do not write anything in dry-run
-            continue
-
-        # Sprint 2 placeholder: no real harvesting yet
-        # Record attempted so retry logic behaves correctly.
-        db.upsert_attempted(
-            isbn=isbn,
-            last_target="(pipeline)",
-            last_error="Harvest not implemented yet (Sprint 2 placeholder)",
-        )
-        failures += 1
-
-        # Example of what success will look like in later sprints:
-        # db.upsert_main(MainRecord(isbn=isbn, lccn="...", nlmcn="...", source="LoC"))
-
+    # Map orchestrator summary into the Sprint-2-compatible summary shape.
     return HarvestSummary(
-        total_rows=len(isbns),          # treated as unique isbn count here
-        total_isbns=len(isbns),
-        cached_hits=cached_hits,
-        skipped_recent_fail=skipped_recent_fail,
-        attempted=attempted,
-        successes=successes,
-        failures=failures,
-        dry_run=dry_run,
+        total_rows=orch_summary.total_isbns,
+        total_isbns=orch_summary.total_isbns,
+        cached_hits=orch_summary.cached_hits,
+        skipped_recent_fail=orch_summary.skipped_recent_fail,
+        attempted=orch_summary.attempted,
+        successes=orch_summary.successes,
+        failures=orch_summary.failures,
+        dry_run=orch_summary.dry_run,
     )

@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Optional, Protocol
+from src.database import DatabaseManager, MainRecord, utc_now_iso
+from concurrent.futures import ThreadPoolExecutor
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from database import DatabaseManager, MainRecord
 
 
 # Progress callback signature (Sprint 4 GUI signals can wrap this easily)
@@ -79,6 +75,8 @@ class HarvestOrchestrator:
         targets: Optional[list[HarvestTarget]] = None,
         *,
         retry_days: int = 7,
+        batch_size: int = 50,
+        max_workers: int = 1,
         bypass_retry_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
     ):
@@ -86,6 +84,9 @@ class HarvestOrchestrator:
         self.retry_days = retry_days
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
         self.progress_cb = progress_cb
+        self.batch_size = max(1, int(batch_size))
+        self.max_workers = max(1, int(max_workers))
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
 
         # If no real targets wired yet, keep Sprint-2 behavior with a placeholder.
         self.targets: list[HarvestTarget] = targets if targets else [PlaceholderTarget()]
@@ -94,7 +95,15 @@ class HarvestOrchestrator:
         if self.progress_cb:
             self.progress_cb(event, payload)
 
-    def process_isbn(self, isbn: str, *, dry_run: bool) -> str:
+    def process_isbn(
+        self,
+        isbn: str,
+        *,
+        dry_run: bool,
+        pending_main: list[MainRecord],
+        pending_attempted: list[tuple[str, Optional[str], Optional[str], Optional[str]]],
+    ) -> str:
+
         """
         Process one ISBN.
         Returns status string: "cached" | "skip_retry" | "success" | "failed"
@@ -133,7 +142,8 @@ class HarvestOrchestrator:
                         nlmcn=result.nlmcn,
                         source=result.source or last_target,
                     )
-                    self.db.upsert_main(rec, clear_attempted_on_success=True)
+                    pending_main.append(rec)
+
 
                 return "success"
 
@@ -147,14 +157,9 @@ class HarvestOrchestrator:
         )
 
         if not dry_run:
-            self.db.upsert_attempted(
-                isbn=isbn,
-                last_target=last_target,
-                last_error=last_error,
-            )
+            pending_attempted.append((isbn, last_target, utc_now_iso(), last_error))
 
         return "failed"
-
     def run(self, isbns: list[str], *, dry_run: bool) -> HarvestSummary:
         cached_hits = 0
         skipped_recent_fail = 0
@@ -162,19 +167,143 @@ class HarvestOrchestrator:
         successes = 0
         failures = 0
 
-        for isbn in isbns:
-            status = self.process_isbn(isbn, dry_run=dry_run)
+        # --- Sprint 5: batching buffers ---
+        pending_main: list[MainRecord] = []
+        pending_attempted: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
 
-            if status == "cached":
-                cached_hits += 1
-            elif status == "skip_retry":
-                skipped_recent_fail += 1
-            else:
-                attempted += 1
-                if status == "success":
-                    successes += 1
+        def flush() -> None:
+            """Flush buffered DB writes in a single transaction."""
+            if dry_run:
+                pending_main.clear()
+                pending_attempted.clear()
+                return
+
+            if not pending_main and not pending_attempted:
+                return
+
+            with self.db.transaction() as conn:
+                self.db.upsert_main_many(conn, pending_main, clear_attempted_on_success=True)
+                self.db.upsert_attempted_many(conn, pending_attempted)
+
+            pending_main.clear()
+            pending_attempted.clear()
+        # --- end Sprint 5 batching ---
+
+        def _one(isbn: str) -> str:
+            # NOTE: This will append into pending_main / pending_attempted.
+            # That is NOT thread-safe, so we only use threads if max_workers == 1.
+            # Parallel mode is handled below with a safe path.
+            return self.process_isbn(
+                isbn,
+                dry_run=dry_run,
+                pending_main=pending_main,
+                pending_attempted=pending_attempted,
+            )
+
+        if self.max_workers <= 1:
+            # --- sequential (your current behavior) ---
+            for isbn in isbns:
+                status = _one(isbn)
+
+                if (len(pending_main) + len(pending_attempted)) >= self.batch_size:
+                    flush()
+
+                if status == "cached":
+                    cached_hits += 1
+                elif status == "skip_retry":
+                    skipped_recent_fail += 1
                 else:
-                    failures += 1
+                    attempted += 1
+                    if status == "success":
+                        successes += 1
+                    else:
+                        failures += 1
+
+                self._emit("stats", {
+                    "total": len(isbns),
+                    "cached": cached_hits,
+                    "skipped": skipped_recent_fail,
+                    "attempted": attempted,
+                    "successes": successes,
+                    "failures": failures,
+                })
+
+        else:
+            # --- parallel mode (SAFE): threads do lookup only, main thread writes DB in batches ---
+            def worker(isbn: str):
+                # Only compute outcome; do NOT touch shared pending_* lists here.
+                # Also: emitting progress from threads is okay only if your GUI callback is thread-safe.
+                self._emit("isbn_start", {"isbn": isbn})
+
+                if self.db.get_main(isbn) is not None:
+                    self._emit("cached", {"isbn": isbn})
+                    return ("cached", None, None)
+
+                if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(isbn, retry_days=self.retry_days):
+                    self._emit("skip_retry", {"isbn": isbn, "retry_days": self.retry_days})
+                    return ("skip_retry", None, None)
+
+                last_error = None
+                last_target = None
+
+                for target in self.targets:
+                    last_target = getattr(target, "name", target.__class__.__name__)
+                    self._emit("target_start", {"isbn": isbn, "target": last_target})
+
+                    result = target.lookup(isbn)
+                    if result.success:
+                        self._emit("success", {"isbn": isbn, "target": last_target})
+
+                        rec = None
+                        if not dry_run:
+                            rec = MainRecord(
+                                isbn=isbn,
+                                lccn=result.lccn,
+                                nlmcn=result.nlmcn,
+                                source=result.source or last_target,
+                            )
+                        return ("success", rec, None)
+
+                    last_error = result.error or "Unknown error"
+
+                self._emit("failed", {"isbn": isbn, "last_target": last_target, "last_error": last_error})
+
+                att = None
+                if not dry_run:
+                    att = (isbn, last_target, utc_now_iso(), last_error)
+                return ("failed", None, att)
+
+            with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+                for status, rec, att in ex.map(worker, isbns):
+                    # main-thread batching writes
+                    if rec is not None:
+                        pending_main.append(rec)
+                    if att is not None:
+                        pending_attempted.append(att)
+
+                    if (len(pending_main) + len(pending_attempted)) >= self.batch_size:
+                        flush()
+
+                    if status == "cached":
+                        cached_hits += 1
+                    elif status == "skip_retry":
+                        skipped_recent_fail += 1
+                    else:
+                        attempted += 1
+                        if status == "success":
+                            successes += 1
+                        else:
+                            failures += 1
+
+                    self._emit("stats", {
+                        "total": len(isbns),
+                        "cached": cached_hits,
+                        "skipped": skipped_recent_fail,
+                        "attempted": attempted,
+                        "successes": successes,
+                        "failures": failures,
+                    })
+
 
         return HarvestSummary(
             total_isbns=len(isbns),
@@ -185,3 +314,4 @@ class HarvestOrchestrator:
             failures=failures,
             dry_run=dry_run,
         )
+

@@ -3,17 +3,14 @@ run_harvest.py
 
 Sprint 3+: Define the harvest pipeline interface using HarvestOrchestrator.
 
-Responsibilities:
-- Read ISBNs from input TSV
-- Initialize database
-- Delegate cache/retry/target order logic to HarvestOrchestrator
+Sprint 5:
+- Pass batch_size so orchestrator writes in transactions instead of per-ISBN.
 """
 
 from __future__ import annotations
 
 import csv
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,16 +36,6 @@ class HarvestSummary:
 
 
 def read_isbns_from_tsv(input_path: Path) -> list[str]:
-    """
-    Read ISBNs from a TSV file.
-
-    Accepts either:
-    - header with an 'isbn' column, or
-    - no header (ISBN in first column)
-
-    Returns unique, normalized ISBN strings.
-    Invalid ISBNs are skipped (and logged by isbn_validator).
-    """
     isbns: list[str] = []
 
     with input_path.open("r", encoding="utf-8-sig", newline="") as f:
@@ -66,31 +53,22 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
 
         if has_header:
             for row in reader:
-                if not row:
-                    continue
-                raw = (row[0] or "").strip()
-                if raw:
-                    add_raw(raw)
+                if row and (row[0] or "").strip():
+                    add_raw((row[0] or "").strip())
         else:
-            raw0 = (first_row[0] or "").strip() if first_row else ""
-            if raw0:
-                add_raw(raw0)
-
+            if first_row and (first_row[0] or "").strip():
+                add_raw((first_row[0] or "").strip())
             for row in reader:
-                if not row:
-                    continue
-                raw = (row[0] or "").strip()
-                if raw:
-                    add_raw(raw)
+                if row and (row[0] or "").strip():
+                    add_raw((row[0] or "").strip())
 
-    # De-dup while preserving order
+    # de-dup preserve order
     seen = set()
     uniq: list[str] = []
-    for isbn in isbns:
-        if isbn not in seen:
-            uniq.append(isbn)
-            seen.add(isbn)
-
+    for v in isbns:
+        if v not in seen:
+            uniq.append(v)
+            seen.add(v)
     return uniq
 
 
@@ -101,12 +79,10 @@ def run_harvest(
     db_path: Path | str = "data/lccn_harvester.sqlite3",
     retry_days: int = 7,
     targets: list[HarvestTarget] | None = None,
-    bypass_retry_isbns: set[str] | None = None,
     progress_cb: ProgressCallback | None = None,
+    max_workers: int = 1,
 ) -> HarvestSummary:
-    """
-    Sprint 3 pipeline interface (delegates to HarvestOrchestrator).
-    """
+
     input_path = input_path.expanduser().resolve()
 
     db = DatabaseManager(db_path)
@@ -114,7 +90,6 @@ def run_harvest(
 
     isbns = read_isbns_from_tsv(input_path)
 
-    # Default to Abdo API targets if none provided
     if targets is None:
         targets = []
         targets.extend(build_default_api_targets())
@@ -124,8 +99,8 @@ def run_harvest(
         db=db,
         targets=targets,
         retry_days=retry_days,
-        bypass_retry_isbns=bypass_retry_isbns,
         progress_cb=progress_cb,
+        max_workers=max_workers,
     )
 
     orch_summary = orch.run(isbns, dry_run=dry_run)

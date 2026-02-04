@@ -74,12 +74,10 @@ class HarvestWorker(QThread):
                     self.progress_update.emit(isbn, "processing", "", messages.HarvestMessages.processing_isbn)
 
                 elif event == "cached":
-                    self.stats["cached"] += 1
                     self.progress_update.emit(isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache)
                     self._update_processed()
 
                 elif event == "skip_retry":
-                    self.stats["skipped"] += 1
                     self.progress_update.emit(isbn, "skipped", "", messages.HarvestMessages.skipped_recent_failure)
                     self._update_processed()
 
@@ -93,17 +91,24 @@ class HarvestWorker(QThread):
                     )
 
                 elif event == "success":
-                    self.stats["found"] += 1
                     source = payload.get("target", "")
                     self.progress_update.emit(isbn, "found", source, "Found")
                     self._update_processed()
 
                 elif event == "failed":
-                    self.stats["failed"] += 1
                     error = payload.get("last_error") or payload.get("error", "No results")
                     source = payload.get("last_target") or "All"
                     self.progress_update.emit(isbn, "failed", source, error)
                     self._update_processed()
+                
+                elif event == "stats":
+                    self.stats["total"] = payload.get("total", self.stats["total"])
+                    self.stats["found"] = payload.get("successes", 0)
+                    self.stats["failed"] = payload.get("failures", 0)
+                    self.stats["cached"] = payload.get("cached", 0)
+                    self.stats["skipped"] = payload.get("skipped", 0)
+                    # Force stats update to UI
+                    self.stats_update.emit(self.stats.copy())
 
             # Build targets list from config
             targets = self._build_targets()

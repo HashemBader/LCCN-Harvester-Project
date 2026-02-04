@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable, Sequence
+
+
 
 
 def utc_now_iso() -> str:
@@ -13,7 +16,10 @@ def utc_now_iso() -> str:
 
 
 def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
-    """Derive LoC classification letters (1-3 leading letters) from an LCCN string."""
+    """
+    Best-effort: derive LoC classification letters (1-3 leading letters) from an LCCN.
+    Example: 'QA76.73.P98' -> 'QA'
+    """
     if not lccn:
         return None
     letters: list[str] = []
@@ -48,45 +54,77 @@ class AttemptedRecord:
 
 class DatabaseManager:
     """
-    Minimal SQLite manager for:
+    SQLite manager for:
       - main: successful ISBN -> call number results
       - attempted: failed lookups + retry tracking
 
-    Intended usage:
-      db = DatabaseManager()  # uses default DB path
-      db.init_db()
-      db.upsert_main(...)
-      db.upsert_attempted(...)
+    Sprint 5 requirement:
+      - provide transactions + batch upserts for performance and atomicity.
     """
 
     def __init__(self, db_path: Path | str = "data/lccn_harvester.sqlite3"):
         self.db_path = Path(db_path)
 
     def connect(self) -> sqlite3.Connection:
-        """Open a connection and ensure foreign keys are enabled."""
+        """Open a connection and apply performance-friendly PRAGMAs."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+
+        # timeout helps when multiple threads/processes try to write
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+
+        # Safety + perf pragmas
         conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")      # better concurrent reads/writes
+        conn.execute("PRAGMA synchronous = NORMAL;")    # faster than FULL, still safe enough
+        conn.execute("PRAGMA temp_store = MEMORY;")     # faster temp operations
+        conn.execute("PRAGMA busy_timeout = 5000;")     # wait up to 5s if db is busy
+
         return conn
 
-    def init_db(self) -> None:
-        """Initialize database schema from schema.sql located in this package folder."""
-        schema_path = Path(__file__).with_name("schema.sql")
+
+    def init_db(self, schema_path: Optional[Path] = None) -> None:
+        """
+        Initialize database using schema.sql.
+        If schema_path is None, it loads schema.sql from the same folder as this file.
+        """
+        if schema_path is None:
+            schema_path = Path(__file__).with_name("schema.sql")
+
         schema_sql = schema_path.read_text(encoding="utf-8")
 
         with self.connect() as conn:
             conn.executescript(schema_sql)
             conn.commit()
 
+    @contextmanager
+    def transaction(self) -> sqlite3.Connection:
+        """
+        Open a transaction connection.
+        - Commits if the block succeeds
+        - Rolls back if an exception is raised
+        """
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN;")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def close(self) -> None:
         """
         Compatibility no-op.
 
-        This manager opens a new SQLite connection per operation (self.connect()).
-        There is no long-lived connection to close, but the CLI expects db.close().
+        This manager uses short-lived connections for single ops,
+        and explicit transaction() for batch operations.
         """
         return
+
+
 
     # -------------------------
     # MAIN TABLE HELPERS
@@ -111,35 +149,71 @@ class DatabaseManager:
         )
 
     def upsert_main(self, record: MainRecord, *, clear_attempted_on_success: bool = True) -> None:
-        """
-        Insert/update a main record.
-        - isbn is the key
-        - if date_added missing, set to now
-        - if classification missing, derive from lccn
-        - optionally clear attempted record once it succeeds
-        """
+        with self.transaction() as conn:
+            self._upsert_main_conn(conn, record, clear_attempted_on_success=clear_attempted_on_success)
+
+    def upsert_main_many(
+        self,
+        conn: sqlite3.Connection,
+        records: Sequence[MainRecord],
+        *,
+        clear_attempted_on_success: bool = True,
+    ) -> None:
+        """Batch upsert main records within an existing transaction connection."""
+        if not records:
+            return
+
+        rows: list[tuple] = []
+        isbns: list[str] = []
+        for r in records:
+            date_added = r.date_added or utc_now_iso()
+            classification = r.classification or classification_from_lccn(r.lccn)
+            rows.append((r.isbn, r.lccn, r.nlmcn, classification, r.source, date_added))
+            isbns.append(r.isbn)
+
+        conn.executemany(
+            """
+            INSERT INTO main (isbn, lccn, nlmcn, classification, source, date_added)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(isbn) DO UPDATE SET
+                lccn = excluded.lccn,
+                nlmcn = excluded.nlmcn,
+                classification = excluded.classification,
+                source = excluded.source,
+                date_added = excluded.date_added
+            """,
+            rows,
+        )
+
+        if clear_attempted_on_success:
+            self.clear_attempted_many(conn, isbns)
+
+    def _upsert_main_conn(
+        self,
+        conn: sqlite3.Connection,
+        record: MainRecord,
+        *,
+        clear_attempted_on_success: bool,
+    ) -> None:
         date_added = record.date_added or utc_now_iso()
         classification = record.classification or classification_from_lccn(record.lccn)
 
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO main (isbn, lccn, nlmcn, classification, source, date_added)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(isbn) DO UPDATE SET
-                    lccn = excluded.lccn,
-                    nlmcn = excluded.nlmcn,
-                    classification = excluded.classification,
-                    source = excluded.source,
-                    date_added = excluded.date_added
-                """,
-                (record.isbn, record.lccn, record.nlmcn, classification, record.source, date_added),
-            )
+        conn.execute(
+            """
+            INSERT INTO main (isbn, lccn, nlmcn, classification, source, date_added)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(isbn) DO UPDATE SET
+                lccn = excluded.lccn,
+                nlmcn = excluded.nlmcn,
+                classification = excluded.classification,
+                source = excluded.source,
+                date_added = excluded.date_added
+            """,
+            (record.isbn, record.lccn, record.nlmcn, classification, record.source, date_added),
+        )
 
-            if clear_attempted_on_success:
-                conn.execute("DELETE FROM attempted WHERE isbn = ?", (record.isbn,))
-
-            conn.commit()
+        if clear_attempted_on_success:
+            conn.execute("DELETE FROM attempted WHERE isbn = ?", (record.isbn,))
 
     # -------------------------
     # ATTEMPTED TABLE HELPERS
@@ -170,7 +244,6 @@ class DatabaseManager:
 
         last = datetime.fromisoformat(att.last_attempted)
         now = datetime.now(timezone.utc)
-
         return (now - last) < timedelta(days=retry_days)
 
     def upsert_attempted(
@@ -181,38 +254,91 @@ class DatabaseManager:
         last_error: Optional[str] = None,
         attempted_time: Optional[str] = None,
     ) -> None:
+        with self.transaction() as conn:
+            self._upsert_attempted_conn(
+                conn,
+                isbn=isbn,
+                last_target=last_target,
+                last_error=last_error,
+                attempted_time=attempted_time,
+            )
+
+    def upsert_attempted_many(
+        self,
+        conn: sqlite3.Connection,
+        rows: Sequence[tuple[str, Optional[str], Optional[str], Optional[str]]],
+    ) -> None:
         """
-        Record a failed attempt.
-        - If ISBN already exists in attempted, increment fail_count and update last_* fields.
+        Batch upsert attempted rows within an existing transaction connection.
+
+        rows items are:
+          (isbn, last_target, attempted_time, last_error)
         """
+        if not rows:
+            return
+
+        fixed_rows = []
+        for isbn, last_target, attempted_time, last_error in rows:
+            fixed_rows.append((isbn, last_target, attempted_time or utc_now_iso(), last_error))
+
+        conn.executemany(
+            """
+            INSERT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(isbn) DO UPDATE SET
+                last_target = excluded.last_target,
+                last_attempted = excluded.last_attempted,
+                fail_count = attempted.fail_count + 1,
+                last_error = excluded.last_error
+            """,
+            fixed_rows,
+        )
+
+    def _upsert_attempted_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        isbn: str,
+        last_target: Optional[str],
+        last_error: Optional[str],
+        attempted_time: Optional[str],
+    ) -> None:
         attempted_time = attempted_time or utc_now_iso()
 
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error)
-                VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(isbn) DO UPDATE SET
-                    last_target = excluded.last_target,
-                    last_attempted = excluded.last_attempted,
-                    fail_count = attempted.fail_count + 1,
-                    last_error = excluded.last_error
-                """,
-                (isbn, last_target, attempted_time, last_error),
-            )
-            conn.commit()
+        conn.execute(
+            """
+            INSERT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(isbn) DO UPDATE SET
+                last_target = excluded.last_target,
+                last_attempted = excluded.last_attempted,
+                fail_count = attempted.fail_count + 1,
+                last_error = excluded.last_error
+            """,
+            (isbn, last_target, attempted_time, last_error),
+        )
 
     def clear_attempted(self, isbn: str) -> None:
-        """Remove an ISBN from attempted table (useful once it succeeds)."""
         with self.connect() as conn:
             conn.execute("DELETE FROM attempted WHERE isbn = ?", (isbn,))
             conn.commit()
 
+    def clear_attempted_many(self, conn: sqlite3.Connection, isbns: Iterable[str]) -> None:
+        isbns_list = list(isbns)
+        if not isbns_list:
+            return
 
-# Quick smoke test (run from project root):
-#   python -m src.database.db_manager
+        # SQLite has a limit on variables; chunk if needed
+        CHUNK = 900
+        for i in range(0, len(isbns_list), CHUNK):
+            chunk = isbns_list[i : i + CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            conn.execute(f"DELETE FROM attempted WHERE isbn IN ({placeholders})", tuple(chunk))
+            
+
+
 if __name__ == "__main__":
-    db = DatabaseManager()
+    db = DatabaseManager("data/lccn_harvester.sqlite3")
     db.init_db()
 
     db.upsert_main(MainRecord(isbn="9780132350884", lccn="QA76.76", source="LoC"))

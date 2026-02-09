@@ -17,6 +17,14 @@ from utils.messages import ConfigMessages
 DATA_DIR = "data"
 TARGETS_FILE = os.path.join(DATA_DIR, "targets.tsv")
 
+try:
+    from z3950.session_manager import validate_connection
+except ImportError:
+    # Fallback or mock if z3950 module is not available in some contexts
+    def validate_connection(host, port, timeout=5):
+        return False
+
+
 @dataclass
 class Target:
     """
@@ -133,6 +141,9 @@ class TargetsManager:
             targets (List[Target]): The list of targets to save.
         """
         try:
+            # Always save in rank order
+            targets.sort(key=lambda x: x.rank)
+            
             with open(TARGETS_FILE, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f, delimiter="\t")
                 # Write header row
@@ -203,16 +214,37 @@ class TargetsManager:
     def delete_target(self, target_id: str):
         """
         Remove a target from the configuration by its ID.
+        Re-sequences the ranks of remaining targets to ensure they are continuous.
         """
         targets = self.get_all_targets()
         original_count = len(targets)
         # Filter out the target with the matching ID
-        targets = [t for t in targets if t.target_id != target_id]
+        remaining_targets = [t for t in targets if t.target_id != target_id]
         
-        if len(targets) < original_count:
-            self.save_targets(targets)
+        if len(remaining_targets) < original_count:
+            # Re-sequence ranks
+            # Since get_all_targets sorts by rank, remaining_targets should still be roughly in order.
+            # We enforce 1..N order.
+            for i, target in enumerate(remaining_targets):
+                target.rank = i + 1
+            
+            self.save_targets(remaining_targets)
             print(ConfigMessages.target_deleted.format(target_id=target_id))
         else:
             print(ConfigMessages.target_not_found.format(target_id=target_id))
+
+    def test_target_connection(self, host: str, port: int) -> bool:
+        """
+        Test connection to a Z39.50 target.
+        
+        Args:
+            host (str): Hostname or IP
+            port (int): Port number
+            
+        Returns:
+            bool: True if connection successful
+        """
+        return validate_connection(host, port)
+
 
 

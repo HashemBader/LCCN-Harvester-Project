@@ -1,0 +1,337 @@
+"""
+Module: modern_window.py
+V2 Professional Window: Custom Collapsible Sidebar + Stacked Layout.
+"""
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QStackedWidget, QFrame, QStatusBar, QMessageBox, QButtonGroup, QScrollArea
+)
+from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
+from pathlib import Path
+import json
+
+# Import Tabs
+from .input_tab import InputTab
+from .targets_tab_v2 import TargetsTabV2
+from .config_tab import ConfigTab
+from .harvest_tab_v2 import HarvestTabV2
+from .results_tab import ResultsTab
+from .dashboard_v2 import DashboardTabV2
+from .ai_assistant_tab import AIAssistantTab
+
+# Dialogs & Utils
+from .advanced_settings_dialog import AdvancedSettingsDialog
+from .notifications import NotificationManager
+from .styles_v2 import CATPPUCCIN_THEME
+from .icons import (
+    get_icon, get_pixmap, 
+    SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
+    SVG_HARVEST, SVG_RESULTS, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
+)
+
+class ModernMainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("LCCN Harvester Pro")
+        self.setGeometry(100, 100, 1380, 900)
+        
+        # Data
+        self.settings_file = Path("data/gui_settings.json")
+        self.advanced_mode = self._load_advanced_mode()
+        self.sidebar_collapsed = False
+        
+        # Core Services
+        self.notification_manager = NotificationManager(self)
+        self.notification_manager.setup_system_tray()
+
+        # UI Setup
+        self.setStyleSheet(CATPPUCCIN_THEME)
+        self._setup_layout()
+        self._apply_advanced_mode()
+
+    def _setup_layout(self):
+        """Build the Sidebar + Content Layout."""
+        # Main Container
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 1. Left Sidebar
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(240)
+        
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 20)
+        sidebar_layout.setSpacing(5)
+
+        # Header (Toggle + Title)
+        header_frame = QWidget()
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(10, 15, 10, 15)
+        
+        self.title_label = QLabel("LCCN Pro")
+        self.title_label.setObjectName("SidebarTitle")
+        self.title_label.setContentsMargins(10, 0, 0, 0) # Offset for icon alignment
+        
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setIcon(get_icon(SVG_CHEVRON_LEFT, "#8aadf4"))
+        self.toggle_btn.setFixedSize(30, 30)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.setStyleSheet("background: transparent; border: none;")
+        self.toggle_btn.clicked.connect(self._toggle_sidebar)
+        
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.toggle_btn)
+        
+        sidebar_layout.addWidget(header_frame)
+
+        # Nav Button Group
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self.nav_group.buttonClicked.connect(self._on_nav_clicked)
+
+        # Navigation Buttons (Icon + Text)
+        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
+        self.btn_input = self._create_nav_btn("Input", SVG_INPUT, 1)
+        self.btn_targets = self._create_nav_btn("Targets", SVG_TARGETS, 2)
+        self.btn_config = self._create_nav_btn("Settings", SVG_SETTINGS, 3)
+        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 4)
+        self.btn_results = self._create_nav_btn("Results", SVG_RESULTS, 5)
+        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 6)
+
+        sidebar_layout.addWidget(self.btn_dashboard)
+        sidebar_layout.addWidget(self.btn_input)
+        sidebar_layout.addWidget(self.btn_targets)
+        sidebar_layout.addWidget(self.btn_config)
+        sidebar_layout.addWidget(self.btn_harvest)
+        sidebar_layout.addWidget(self.btn_results)
+        sidebar_layout.addWidget(self.btn_ai)
+
+        sidebar_layout.addStretch() # Spacer
+
+        # Clean "Status Pill"
+        self.status_pill = QLabel("Idle")
+        self.status_pill.setObjectName("StatusPill") # Matches styles_v2
+        self.status_pill.setProperty("class", "StatusPill") # Helper for some qt styles
+        self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_pill.setFixedSize(100, 30)
+        self.status_pill.setStyleSheet("background-color: #363a4f; color: #a5adcb; border-radius: 15px; font-weight: bold;")
+        
+        status_frame = QWidget()
+        status_layout = QHBoxLayout(status_frame)
+        status_layout.addWidget(self.status_pill)
+        sidebar_layout.addWidget(status_frame)
+
+        # Advanced Settings Cog (Bottom)
+        self.btn_advanced = QPushButton("Advanced")
+        self.btn_advanced.setIcon(get_icon(SVG_SETTINGS, "#a5adcb")) # Use settings icon or gear
+        self.btn_advanced.setObjectName("NavButton")
+        self.btn_advanced.setProperty("class", "NavButton") 
+        self.btn_advanced.setCheckable(True)
+        self.btn_advanced.setChecked(self.advanced_mode)
+        self.btn_advanced.clicked.connect(self._toggle_advanced_mode)
+        
+        sidebar_layout.addWidget(self.btn_advanced)
+
+        main_layout.addWidget(self.sidebar)
+
+        # 2. Right Content Area
+        content_container = QWidget()
+        content_container.setObjectName("ContentArea")
+        content_layout = QVBoxLayout(content_container)
+        content_layout.setContentsMargins(30, 30, 30, 30)
+        content_layout.setSpacing(20)
+
+        # Page Header (Dynamic)
+        self.page_title = QLabel("Dashboard")
+        self.page_title.setObjectName("PageTitle")
+        content_layout.addWidget(self.page_title)
+
+        # Stacked Pages
+        self.stack = QStackedWidget()
+        
+        # Instantiate Pages (Using V2 tabs)
+        self.dashboard_tab = DashboardTabV2()
+        self.input_tab = InputTab()
+        self.targets_tab = TargetsTabV2()
+        self.config_tab = ConfigTab()
+        self.harvest_tab = HarvestTabV2()
+        self.results_tab = ResultsTab()
+        self.ai_assistant_tab = AIAssistantTab()
+
+        self.stack.addWidget(self.dashboard_tab) # 0
+        self.stack.addWidget(self.input_tab)     # 1
+        self.stack.addWidget(self.targets_tab)   # 2
+        self.stack.addWidget(self.config_tab)    # 3
+        self.stack.addWidget(self.harvest_tab)   # 4
+        self.stack.addWidget(self.results_tab)   # 5
+        self.stack.addWidget(self.ai_assistant_tab) # 6
+
+        content_layout.addWidget(self.stack)
+        main_layout.addWidget(content_container)
+
+        # --- Wire Up V2 Data Flow ---
+        # HarvestTab needs access to Config and Targets to run
+        self.harvest_tab.set_data_sources(
+            config_getter=self.config_tab.get_config,
+            targets_getter=self.targets_tab.get_selected_targets
+        )
+
+        self._connect_signals()
+        
+        # Select default
+        self.btn_dashboard.setChecked(True)
+
+    def _create_nav_btn(self, text, svg_icon, index):
+        btn = QPushButton(text)
+        btn.setProperty("class", "NavButton")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setIcon(get_icon(svg_icon, "#a5adcb"))
+        btn.setIconSize(QSize(20, 20))
+        btn.setProperty("page_index", index)
+        # Store original text for expanding/collapsing
+        btn.setProperty("full_text", text)
+        self.nav_group.addButton(btn)
+        return btn
+
+    def _toggle_sidebar(self):
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        
+        width = 72 if self.sidebar_collapsed else 240
+        
+        # Animate width
+        self.anim = QPropertyAnimation(self.sidebar, b"minimumWidth")
+        self.anim.setDuration(300)
+        self.anim.setStartValue(self.sidebar.width())
+        self.anim.setEndValue(width)
+        self.anim.setEasingCurve(QEasingCurve.Type.InOutQuart)
+        
+        self.anim2 = QPropertyAnimation(self.sidebar, b"maximumWidth")
+        self.anim2.setDuration(300)
+        self.anim2.setStartValue(self.sidebar.width())
+        self.anim2.setEndValue(width)
+        
+        self.anim_group = QParallelAnimationGroup()
+        self.anim_group.addAnimation(self.anim)
+        self.anim_group.addAnimation(self.anim2)
+        self.anim_group.start()
+        
+        # Update Icon
+        icon = SVG_CHEVRON_RIGHT if self.sidebar_collapsed else SVG_CHEVRON_LEFT
+        self.toggle_btn.setIcon(get_icon(icon, "#8aadf4"))
+        
+        # Update Text Visibility
+        self.title_label.setVisible(not self.sidebar_collapsed)
+        self.status_pill.setVisible(not self.sidebar_collapsed)
+        
+        for btn in self.nav_group.buttons():
+            if self.sidebar_collapsed:
+                btn.setText("") # Icon only
+                btn.setToolTip(btn.property("full_text"))
+            else:
+                btn.setText("  " + btn.property("full_text"))
+                btn.setToolTip("")
+
+    def _on_nav_clicked(self, btn):
+        index = btn.property("page_index")
+        self.stack.setCurrentIndex(index)
+        self.page_title.setText(btn.property("full_text"))
+
+    def _connect_signals(self):
+        self.input_tab.file_selected.connect(self._on_file_selected)
+        
+        # Harvest Signals
+        self.harvest_tab.harvest_started.connect(self._on_harvest_started)
+        self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
+        self.harvest_tab.milestone_reached.connect(
+            lambda t, v: self.notification_manager.notify_milestone(t, v)
+        )
+        
+        # Live Dashboard Updates
+        self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
+
+        # Target Updates
+        self.targets_tab.targets_changed.connect(self.harvest_tab.on_targets_changed)
+
+    def _on_harvest_progress(self, isbn, status, source, message):
+        """Pass real-time harvest events to dashboard."""
+        # Calculate approximate progress if possible, or just pass 0 if unknown
+        # We can store total in harvest_tab and pass it, but for now let's pass dummy %
+        # or ask dashboard to use its own logic.
+        # Actually LiveActivityPanel takes (target, isbn, progress, msg).
+        
+        # We need progress %. HarvestTab has it but doesn't pass it in this signal.
+        # Let's peek at harvest_tab.progress_bar.value() or processed_count
+        
+        try:
+            total = self.harvest_tab.total_count
+            current = self.harvest_tab.processed_count
+            pct = (current / total * 100) if total > 0 else 0
+        except:
+            pct = 0
+            
+        self.dashboard_tab.update_live_status(
+            target=source,
+            isbn=isbn,
+            progress=pct,
+            msg=message
+        )
+
+    # --- Logic ---
+
+    def _load_advanced_mode(self):
+        try:
+            if self.settings_file.exists():
+                with open(self.settings_file, 'r') as f:
+                    return json.load(f).get("advanced_mode", False)
+        except: pass
+        return False
+
+    def _toggle_advanced_mode(self, checked):
+        self.advanced_mode = checked
+        try:
+            self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.settings_file, 'w') as f:
+                json.dump({"advanced_mode": self.advanced_mode}, f)
+        except: pass
+        self._apply_advanced_mode()
+
+    def _apply_advanced_mode(self):
+        # AI Button now always visible, so we don't toggle it here
+        # self.btn_ai.setVisible(self.advanced_mode) <--- REMOVED
+        
+        for tab in [self.dashboard_tab, self.input_tab, self.targets_tab, 
+                   self.config_tab, self.harvest_tab, self.results_tab]:
+            if hasattr(tab, 'set_advanced_mode'):
+                tab.set_advanced_mode(self.advanced_mode)
+
+    def _on_file_selected(self, path):
+        self.harvest_tab.set_input_file(path)
+
+    def _on_harvest_started(self):
+        self.status_pill.setText("Running")
+        self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        self.btn_harvest.click()
+
+    def _on_harvest_finished(self, success, stats):
+        self.status_pill.setText("Idle")
+        self.status_pill.setStyleSheet("background-color: #363a4f; color: #a5adcb; border-radius: 15px; font-weight: bold;")
+        self.results_tab.refresh()
+        self.dashboard_tab.refresh_data()
+        self.notification_manager.notify_harvest_completed(stats)
+
+    def closeEvent(self, event):
+        if self.harvest_tab.is_running:
+            reply = QMessageBox.question(self, "Harvesting", "Stop harvest and exit?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+            self.harvest_tab.stop_harvest()
+        event.accept()

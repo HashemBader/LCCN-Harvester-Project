@@ -305,6 +305,9 @@ class HarvestOrchestrator:
                     })
 
 
+        # Final flush for remaining records
+        flush()
+
         return HarvestSummary(
             total_isbns=len(isbns),
             cached_hits=cached_hits,

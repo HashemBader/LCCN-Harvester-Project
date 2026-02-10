@@ -296,6 +296,7 @@ class ResultsTab(QWidget):
         for row_idx, row_data in enumerate(rows):
             for col_idx, value in enumerate(row_data):
                 item = QTableWidgetItem(str(value) if value is not None else "")
+                item.setForeground(Qt.GlobalColor.white)
                 self.results_table.setItem(row_idx, col_idx, item)
 
         # Smart column sizing (stretch last column for the new info column)

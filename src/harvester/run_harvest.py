@@ -81,6 +81,7 @@ def run_harvest(
     targets: list[HarvestTarget] | None = None,
     progress_cb: ProgressCallback | None = None,
     max_workers: int = 1,
+    bypass_retry_isbns: set[str] | None = None,
 ) -> HarvestSummary:
 
     input_path = input_path.expanduser().resolve()
@@ -101,6 +102,7 @@ def run_harvest(
         retry_days=retry_days,
         progress_cb=progress_cb,
         max_workers=max_workers,
+        bypass_retry_isbns=bypass_retry_isbns,
     )
 
     orch_summary = orch.run(isbns, dry_run=dry_run)

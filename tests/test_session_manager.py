@@ -1,4 +1,5 @@
-
+import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
 from src.z3950.session_manager import validate_connection

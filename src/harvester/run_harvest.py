@@ -3,10 +3,8 @@ run_harvest.py
 
 Sprint 3+: Define the harvest pipeline interface using HarvestOrchestrator.
 
-Responsibilities:
-- Read ISBNs from input TSV
-- Initialize database
-- Delegate cache/retry/target order logic to HarvestOrchestrator
+Sprint 5:
+- Pass batch_size so orchestrator writes in transactions instead of per-ISBN.
 """
 
 from __future__ import annotations
@@ -16,8 +14,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.utils import isbn_validator
 from src.database import DatabaseManager
 from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
+from src.harvester.api_targets import build_default_api_targets
+from src.harvester.z3950_targets import build_default_z3950_targets
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +36,6 @@ class HarvestSummary:
 
 
 def read_isbns_from_tsv(input_path: Path) -> list[str]:
-    """
-    Read ISBNs from a TSV file.
-
-    Accepts either:
-    - header with an 'isbn' column, or
-    - no header (ISBN in first column)
-
-    Returns unique ISBN strings (keeps leading zeros).
-    """
     isbns: list[str] = []
 
     with input_path.open("r", encoding="utf-8-sig", newline="") as f:
@@ -54,33 +46,29 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
 
         has_header = len(first_row) > 0 and first_row[0].strip().lower() == "isbn"
 
+        def add_raw(raw_val: str) -> None:
+            norm = isbn_validator.normalize_isbn(raw_val)
+            if norm:
+                isbns.append(norm)
+
         if has_header:
             for row in reader:
-                if not row:
-                    continue
-                raw = (row[0] or "").strip()
-                if raw:
-                    isbns.append(raw)
+                if row and (row[0] or "").strip():
+                    add_raw((row[0] or "").strip())
         else:
-            raw0 = (first_row[0] or "").strip() if first_row else ""
-            if raw0:
-                isbns.append(raw0)
-
+            if first_row and (first_row[0] or "").strip():
+                add_raw((first_row[0] or "").strip())
             for row in reader:
-                if not row:
-                    continue
-                raw = (row[0] or "").strip()
-                if raw:
-                    isbns.append(raw)
+                if row and (row[0] or "").strip():
+                    add_raw((row[0] or "").strip())
 
-    # De-dup while preserving order
+    # de-dup preserve order
     seen = set()
     uniq: list[str] = []
-    for isbn in isbns:
-        if isbn not in seen:
-            uniq.append(isbn)
-            seen.add(isbn)
-
+    for v in isbns:
+        if v not in seen:
+            uniq.append(v)
+            seen.add(v)
     return uniq
 
 
@@ -92,10 +80,9 @@ def run_harvest(
     retry_days: int = 7,
     targets: list[HarvestTarget] | None = None,
     progress_cb: ProgressCallback | None = None,
+    max_workers: int = 1,
 ) -> HarvestSummary:
-    """
-    Sprint 3 pipeline interface (delegates to HarvestOrchestrator).
-    """
+
     input_path = input_path.expanduser().resolve()
 
     db = DatabaseManager(db_path)
@@ -103,16 +90,21 @@ def run_harvest(
 
     isbns = read_isbns_from_tsv(input_path)
 
+    if targets is None:
+        targets = []
+        targets.extend(build_default_api_targets())
+        targets.extend(build_default_z3950_targets())
+
     orch = HarvestOrchestrator(
         db=db,
         targets=targets,
         retry_days=retry_days,
         progress_cb=progress_cb,
+        max_workers=max_workers,
     )
 
     orch_summary = orch.run(isbns, dry_run=dry_run)
 
-    # Map orchestrator summary into the Sprint-2-compatible summary shape.
     return HarvestSummary(
         total_rows=orch_summary.total_isbns,
         total_isbns=orch_summary.total_isbns,

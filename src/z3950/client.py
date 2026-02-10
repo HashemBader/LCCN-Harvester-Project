@@ -1,8 +1,11 @@
 
 import logging
-from typing import List, Optional, Generator
-from PyZ3950 import zoom
-from pymarc import Record, MARCReader
+from typing import List, Optional, Generator, TYPE_CHECKING
+
+# Lazy imports to allow graceful degradation when dependencies are missing or incompatible
+if TYPE_CHECKING:
+    from PyZ3950 import zoom  # type: ignore
+    from pymarc import Record, MARCReader
 
 class Z3950Client:
     """
@@ -33,6 +36,9 @@ class Z3950Client:
         Establish a connection to the Z39.50 server.
         """
         try:
+            # Lazy import to avoid import errors when PyZ3950 is missing/broken
+            from PyZ3950 import zoom  # type: ignore
+            
             self.logger.info(f"Connecting to {self.host}:{self.port}/{self.database}")
             self.conn = zoom.Connection(
                 self.host,
@@ -58,6 +64,9 @@ class Z3950Client:
         if not self.conn:
             raise ConnectionError("Not connected to server. Call connect() first.")
 
+        # Lazy import
+        from PyZ3950 import zoom  # type: ignore
+        
         # Remove hyphens from ISBN just in case
         clean_isbn = isbn.replace("-", "").strip()
         
@@ -84,10 +93,13 @@ class Z3950Client:
             finally:
                 self.conn = None
 
-    def _process_results(self, result_set) -> List[Record]:
+    def _process_results(self, result_set) -> list:
         """
         Process the result set from a Z39.50 search and convert to pymarc Records.
         """
+        # Lazy import
+        from pymarc import Record  # type: ignore
+        
         records = []
         try:
            for res in result_set:

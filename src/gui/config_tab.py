@@ -49,8 +49,8 @@ class ConfigTab(QWidget):
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setStyleSheet("""
             QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
+                background-color: #1b1f24;
+                border: 1px solid #2c3440;
                 border-radius: 6px;
                 padding: 12px;
             }
@@ -62,7 +62,7 @@ class ConfigTab(QWidget):
         # Title row
         title_row = QHBoxLayout()
         title = QLabel("Configuration Profile")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #e6e1d5;")
         title_row.addWidget(title)
         title_row.addStretch()
         layout.addLayout(title_row)
@@ -76,27 +76,27 @@ class ConfigTab(QWidget):
         self.profile_combo.setStyleSheet("""
             QComboBox {
                 padding: 6px 10px;
-                border: 1px solid #ced4da;
+                border: 1px solid #2c3440;
                 border-radius: 4px;
-                background: white;
-                color: black;
+                background: #232a32;
+                color: #e6e1d5;
                 font-size: 13px;
             }
             QComboBox:hover {
-                border-color: #80bdff;
+                border-color: #f4b860;
             }
             QComboBox QAbstractItemView {
-                background: white;
-                color: black;
-                selection-background-color: #007bff;
-                selection-color: white;
+                background: #1b1f24;
+                color: #e6e1d5;
+                selection-background-color: #2e3943;
+                selection-color: #f4b860;
             }
         """)
         self._refresh_profile_list()
         self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
 
         active_label = QLabel("Active:")
-        active_label.setStyleSheet("color: black; font-weight: 500;")
+        active_label.setStyleSheet("color: #e6e1d5; font-weight: 500;")
         selector_row.addWidget(active_label)
         selector_row.addWidget(self.profile_combo)
         selector_row.addStretch()
@@ -152,7 +152,7 @@ class ConfigTab(QWidget):
 
         # Title
         title = QLabel("Settings")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: black; margin-top: 5px;")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #e6e1d5; margin-top: 5px;")
         layout.addWidget(title)
 
         # Call Number Collection
@@ -162,12 +162,12 @@ class ConfigTab(QWidget):
         self.lccn_checkbox = QCheckBox("Collect Library of Congress Call Numbers (LCCN)")
         self.lccn_checkbox.setChecked(True)
         self.lccn_checkbox.stateChanged.connect(self._mark_unsaved)
-        self.lccn_checkbox.setStyleSheet("color: black;")
+        self.lccn_checkbox.setStyleSheet("color: #e6e1d5;")
         collection_layout.addWidget(self.lccn_checkbox)
 
         self.nlmcn_checkbox = QCheckBox("Collect NLM Call Numbers (NLMCN)")
         self.nlmcn_checkbox.stateChanged.connect(self._mark_unsaved)
-        self.nlmcn_checkbox.setStyleSheet("color: black;")
+        self.nlmcn_checkbox.setStyleSheet("color: #e6e1d5;")
         collection_layout.addWidget(self.nlmcn_checkbox)
 
         collection_group.setLayout(collection_layout)
@@ -178,14 +178,14 @@ class ConfigTab(QWidget):
         retry_layout = QHBoxLayout()
 
         retry_label = QLabel("Days before retrying failed ISBNs:")
-        retry_label.setStyleSheet("color: black;")
+        retry_label.setStyleSheet("color: #e6e1d5;")
         self.retry_spinbox = QSpinBox()
         self.retry_spinbox.setMinimum(0)
         self.retry_spinbox.setMaximum(365)
         self.retry_spinbox.setValue(7)
         self.retry_spinbox.setSuffix(" days")
         self.retry_spinbox.valueChanged.connect(self._mark_unsaved)
-        self.retry_spinbox.setStyleSheet("padding: 4px; color: black; background: white;")
+        self.retry_spinbox.setStyleSheet("padding: 4px; color: #e6e1d5; background: #232a32; border: 1px solid #2c3440;")
 
         retry_layout.addWidget(retry_label)
         retry_layout.addWidget(self.retry_spinbox)
@@ -201,13 +201,13 @@ class ConfigTab(QWidget):
         self.tsv_checkbox = QCheckBox("Generate TSV output file")
         self.tsv_checkbox.setChecked(True)
         self.tsv_checkbox.stateChanged.connect(self._mark_unsaved)
-        self.tsv_checkbox.setStyleSheet("color: black;")
+        self.tsv_checkbox.setStyleSheet("color: #e6e1d5;")
         output_layout.addWidget(self.tsv_checkbox)
 
         self.invalid_isbn_checkbox = QCheckBox("Generate invalid ISBN file")
         self.invalid_isbn_checkbox.setChecked(True)
         self.invalid_isbn_checkbox.stateChanged.connect(self._mark_unsaved)
-        self.invalid_isbn_checkbox.setStyleSheet("color: black;")
+        self.invalid_isbn_checkbox.setStyleSheet("color: #e6e1d5;")
         output_layout.addWidget(self.invalid_isbn_checkbox)
 
         output_group.setLayout(output_layout)
@@ -222,8 +222,8 @@ class ConfigTab(QWidget):
         group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
-                color: black;
-                border: 1px solid #dee2e6;
+                color: #f0c989;
+                border: 1px solid #2c3440;
                 border-radius: 4px;
                 margin-top: 8px;
                 padding-top: 10px;
@@ -232,7 +232,7 @@ class ConfigTab(QWidget):
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px;
-                color: black;
+                color: #f0c989;
             }
         """)
         return group

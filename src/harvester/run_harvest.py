@@ -14,11 +14,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.utils import isbn_validator
-from src.database import DatabaseManager
-from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
-from src.harvester.api_targets import build_default_api_targets
-from src.harvester.z3950_targets import build_default_z3950_targets
+from utils import isbn_validator
+from database import DatabaseManager
+from harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
+from harvester.api_targets import build_default_api_targets
+from harvester.z3950_targets import build_default_z3950_targets
 
 logger = logging.getLogger(__name__)
 

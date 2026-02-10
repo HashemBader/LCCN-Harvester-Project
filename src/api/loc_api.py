@@ -15,7 +15,7 @@ import json
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
-from src.api.base_api import ApiResult, BaseApiClient
+from api.base_api import ApiResult, BaseApiClient
 
 
 class LocApiClient(BaseApiClient):

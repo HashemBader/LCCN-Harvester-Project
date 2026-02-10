@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from src.api.base_api import ApiResult, BaseApiClient
+from api.base_api import ApiResult, BaseApiClient
 
 
 class OpenLibraryApiClient(BaseApiClient):

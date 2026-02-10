@@ -8,12 +8,12 @@ from typing import List, Dict, Any, Union, Optional
 from dataclasses import asdict
 
 if __name__ == "__main__":
-    from src.database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
+    from database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
 else:
     try:
         from ..database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
     except ImportError:
-         from src.database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
+         from database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
 
 class ExportManager:
     """

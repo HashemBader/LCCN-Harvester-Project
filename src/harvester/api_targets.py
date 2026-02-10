@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from src.api.base_api import BaseApiClient, ApiResult
-from src.harvester.orchestrator import HarvestTarget, TargetResult, PlaceholderTarget
+from api.base_api import BaseApiClient, ApiResult
+from harvester.orchestrator import HarvestTarget, TargetResult, PlaceholderTarget
 
 logger = logging.getLogger(__name__)
 
@@ -46,21 +46,21 @@ def build_default_api_targets() -> list[HarvestTarget]:
 
     # LoC
     try:
-        from src.api.loc_api import LocApiClient
+        from api.loc_api import LocApiClient
         targets.append(ApiClientTarget(LocApiClient(), name="loc"))
     except Exception as e:
         logger.warning("LoC API target not available: %s", e)
 
     # Harvard
     try:
-        from src.api.harvard_api import HarvardApiClient
+        from api.harvard_api import HarvardApiClient
         targets.append(ApiClientTarget(HarvardApiClient(), name="harvard"))
     except Exception as e:
         logger.warning("Harvard API target not available: %s", e)
 
     # OpenLibrary
     try:
-        from src.api.openlibrary_api import OpenLibraryApiClient
+        from api.openlibrary_api import OpenLibraryApiClient
         targets.append(ApiClientTarget(OpenLibraryApiClient(), name="openlibrary"))
     except Exception as e:
         logger.warning("OpenLibrary API target not available: %s", e)

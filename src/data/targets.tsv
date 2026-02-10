@@ -1,0 +1,3 @@
+target_id	name	target_type	host	port	database	record_syntax	rank	selected	username	password
+1	Library of Congress API	API					1	True		
+2	Harvard Library API	API					2	True		

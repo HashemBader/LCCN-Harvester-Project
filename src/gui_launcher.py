@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from PyQt6.QtWidgets import QApplication
 from gui.main_window import MainWindow
-from gui.styles import MODERN_STYLE
+#from gui.styles import MODERN_STYLE
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     app.setApplicationVersion("1.0.0")
 
     # Apply global stylesheet
-    app.setStyleSheet(MODERN_STYLE)
+    #app.setStyleSheet(MODERN_STYLE)
 
     # Create and show main window
     window = MainWindow()

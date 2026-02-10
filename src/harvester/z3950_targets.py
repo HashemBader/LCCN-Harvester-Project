@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
 
-from src.harvester.orchestrator import HarvestTarget, TargetResult
+from harvester.orchestrator import HarvestTarget, TargetResult
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class Z3950Target(HarvestTarget):
         try:
             # Try both common layouts (you keep whichever matches your repo)
             try:
-                from src.z3950.client import Z3950Client  # type: ignore
+                from z3950.client import Z3950Client  # type: ignore
             except Exception:
                 from z3950.client import Z3950Client  # type: ignore
         except Exception as e:

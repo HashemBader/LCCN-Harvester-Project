@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
-from src.database import DatabaseManager, MainRecord, utc_now_iso
+from database import DatabaseManager, MainRecord, utc_now_iso
 from concurrent.futures import ThreadPoolExecutor
 
 

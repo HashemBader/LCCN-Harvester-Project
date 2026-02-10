@@ -49,6 +49,7 @@ class ProgressDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(10)
 
         # Header with overall status
         header_group = QGroupBox("Overall Progress")
@@ -86,6 +87,7 @@ class ProgressDialog(QDialog):
         if self.advanced_mode:
             # Tabs for different views
             tabs = QTabWidget()
+            tabs.setUsesScrollButtons(False)
 
             # Log tab
             log_tab = self._create_log_tab()
@@ -184,14 +186,17 @@ class ProgressDialog(QDialog):
         """Create performance metrics tab."""
         widget = QWidget()
         layout = QVBoxLayout()
+        layout.setSpacing(10)
 
         # Time statistics
         time_group = QGroupBox("Time Statistics")
         time_layout = QVBoxLayout()
+        time_layout.setContentsMargins(12, 10, 12, 10)
+        time_layout.setSpacing(8)
 
-        self.elapsed_label = QLabel("Elapsed: 0:00:00")
-        self.estimated_label = QLabel("Estimated Remaining: Unknown")
-        self.avg_time_label = QLabel("Average per ISBN: 0.0s")
+        self.elapsed_label = self._metric_label("Elapsed: 0:00:00")
+        self.estimated_label = self._metric_label("Estimated Remaining: Unknown")
+        self.avg_time_label = self._metric_label("Average per ISBN: 0.0s")
 
         time_layout.addWidget(self.elapsed_label)
         time_layout.addWidget(self.estimated_label)
@@ -203,10 +208,12 @@ class ProgressDialog(QDialog):
         # Source breakdown
         source_group = QGroupBox("Source Breakdown")
         source_layout = QVBoxLayout()
+        source_layout.setContentsMargins(12, 10, 12, 10)
+        source_layout.setSpacing(8)
 
-        self.cached_label = QLabel("From Cache: 0 (0%)")
-        self.api_label = QLabel("From APIs: 0 (0%)")
-        self.z3950_label = QLabel("From Z39.50: 0 (0%)")
+        self.cached_label = self._metric_label("From Cache: 0 (0%)")
+        self.api_label = self._metric_label("From APIs: 0 (0%)")
+        self.z3950_label = self._metric_label("From Z39.50: 0 (0%)")
 
         source_layout.addWidget(self.cached_label)
         source_layout.addWidget(self.api_label)
@@ -218,9 +225,11 @@ class ProgressDialog(QDialog):
         # Memory/Resource usage (placeholder)
         resource_group = QGroupBox("Resource Usage")
         resource_layout = QVBoxLayout()
+        resource_layout.setContentsMargins(12, 10, 12, 10)
+        resource_layout.setSpacing(8)
 
-        self.memory_label = QLabel("Memory: N/A")
-        self.threads_label = QLabel("Active Threads: 1")
+        self.memory_label = self._metric_label("Memory: N/A")
+        self.threads_label = self._metric_label("Active Threads: 1")
 
         resource_layout.addWidget(self.memory_label)
         resource_layout.addWidget(self.threads_label)
@@ -231,6 +240,14 @@ class ProgressDialog(QDialog):
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def _metric_label(self, text: str) -> QLabel:
+        """Create labels that do not clip under compact layout/theme settings."""
+        lbl = QLabel(text)
+        lbl.setMinimumHeight(24)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setWordWrap(False)
+        return lbl
 
     def _start_timer(self):
         """Start timer for updating elapsed time and rate."""
@@ -285,9 +302,14 @@ class ProgressDialog(QDialog):
 
     def update_progress(self, isbn, status, source=None, message=""):
         """Update progress with current ISBN status."""
-        self.stats["processed"] += 1
+        status_l = (status or "").strip().lower()
+        terminal = {"found", "failed", "cached", "skipped"}
+        if status_l in terminal:
+            self.stats["processed"] += 1
+            if self.stats["total"] > 0:
+                self.stats["processed"] = min(self.stats["processed"], self.stats["total"])
 
-        if status == "found":
+        if status_l == "found":
             self.stats["found"] += 1
             if source:
                 if "cache" in source.lower():
@@ -303,7 +325,7 @@ class ProgressDialog(QDialog):
                 self.target_stats[source]["queries"] += 1
                 self.target_stats[source]["found"] += 1
 
-        elif status == "failed":
+        elif status_l == "failed":
             self.stats["failed"] += 1
             if source:
                 if source not in self.target_stats:
@@ -313,7 +335,7 @@ class ProgressDialog(QDialog):
 
         self.current_label.setText(f"Processing: {isbn}")
         self._update_displays()
-        self._log(f"{isbn} - {status.upper()}" + (f" ({source})" if source else "") + (f": {message}" if message else ""))
+        self._log(f"{isbn} - {status_l.upper()}" + (f" ({source})" if source else "") + (f": {message}" if message else ""))
 
         # Update target statistics table in advanced mode
         if self.advanced_mode:

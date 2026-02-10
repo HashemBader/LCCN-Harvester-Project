@@ -84,8 +84,7 @@ class TargetsTab(QWidget):
 
         # Instructions
         instructions = QLabel(
-            "Manage the order and selection of API and Z39.50 targets.\n"
-            "Targets are checked in order from top to bottom until a result is found."
+            "Manage source order and selection. Targets are checked from top to bottom until a match is found."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
@@ -94,15 +93,34 @@ class TargetsTab(QWidget):
         api_group = QGroupBox("Built-in API Targets (Non-Z39.50)")
         api_layout = QVBoxLayout()
 
-        api_note = QLabel(
-            "These API targets are built into the application:\n"
-            "• Library of Congress API\n"
-            "• Harvard API\n"
-            "• OpenLibrary API\n\n"
-            "Use the ranking controls below to set their priority."
-        )
-        api_note.setWordWrap(True)
+        api_note = QLabel("Enable/disable APIs here, then use priority controls below to set lookup order.")
+        api_note.setWordWrap(False)
+        api_note.setMinimumHeight(22)
+        api_note.setStyleSheet("color: #a7a59b; font-size: 12px;")
         api_layout.addWidget(api_note)
+
+        self.api_checkboxes: dict[str, QCheckBox] = {}
+        self._api_name_map = {
+            "Library of Congress": {"Library of Congress"},
+            "Harvard": {"Harvard", "Harvard LibraryCloud"},
+            "OpenLibrary": {"OpenLibrary"},
+        }
+
+        for api_name in self._api_name_map:
+            checkbox = QCheckBox(api_name)
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(
+                lambda state, name=api_name: self._toggle_api_checkbox(name, state)
+            )
+            self.api_checkboxes[api_name] = checkbox
+            api_layout.addWidget(checkbox)
+
+        self.api_status_label = QLabel("Enabled APIs: 3/3")
+        self.api_status_label.setStyleSheet(
+            "font-size: 11px; color: #a7a59b; "
+            "padding: 6px 10px; border: 1px solid #2d2e2b; border-radius: 6px; background: #1f201d;"
+        )
+        api_layout.addWidget(self.api_status_label)
 
         api_group.setLayout(api_layout)
         layout.addWidget(api_group)
@@ -205,10 +223,12 @@ class TargetsTab(QWidget):
             )
             self.targets = self._load_default_targets()
 
+        self._sync_api_checkboxes()
         self._refresh_target_list()
 
     def _refresh_target_list(self):
         """Refresh the target list display."""
+        self._sync_api_checkboxes()
         self.target_list.clear()
 
         # Sort by rank
@@ -235,6 +255,8 @@ class TargetsTab(QWidget):
                 item.setForeground(Qt.GlobalColor.gray)
 
             self.target_list.addItem(item)
+
+        self._update_api_status_label()
 
     def _add_target(self):
         """Add a new Z39.50 target."""
@@ -331,6 +353,19 @@ class TargetsTab(QWidget):
         # Auto-save the changes
         self._auto_save_targets()
 
+    def _toggle_api_checkbox(self, api_name: str, state: int):
+        """Toggle selected state for a built-in API from checkbox."""
+        enabled = state == Qt.CheckState.Checked.value
+        valid_names = self._api_name_map.get(api_name, {api_name})
+
+        for target in self.targets:
+            if target.get("name") in valid_names and target.get("type", "api") == "api":
+                target["selected"] = enabled
+                break
+
+        self._refresh_target_list()
+        self._auto_save_targets()
+
     def _move_target_up(self):
         """Move target up in priority."""
         current_row = self.target_list.currentRow()
@@ -415,3 +450,28 @@ class TargetsTab(QWidget):
     def get_targets(self):
         """Return list of targets."""
         return self.targets
+
+    def _sync_api_checkboxes(self):
+        """Sync checkbox states from current target config."""
+        enabled_count = 0
+        for label, valid_names in self._api_name_map.items():
+            selected = True
+            for target in self.targets:
+                if target.get("name") in valid_names and target.get("type", "api") == "api":
+                    selected = target.get("selected", True)
+                    break
+            checkbox = self.api_checkboxes.get(label)
+            if checkbox is not None:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(selected)
+                checkbox.blockSignals(False)
+            if selected:
+                enabled_count += 1
+        self.api_status_label.setText(f"Enabled APIs: {enabled_count}/{len(self.api_checkboxes)}")
+
+    def _update_api_status_label(self):
+        enabled_count = 0
+        for checkbox in self.api_checkboxes.values():
+            if checkbox.isChecked():
+                enabled_count += 1
+        self.api_status_label.setText(f"Enabled APIs: {enabled_count}/{len(self.api_checkboxes)}")

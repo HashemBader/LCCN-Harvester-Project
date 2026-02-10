@@ -8,45 +8,51 @@ DARK_THEME = """
 QWidget {
     background-color: #171716;
     color: #e8e6df;
-    font-size: 14px;
+    font-size: 13px;
 }
 
 QLabel {
     color: #e8e6df;
     background: transparent;
+    padding: 0px;
 }
 
 QMainWindow {
     background-color: #151514;
 }
 
-/* Tabs - Premium Design */
+/* Tabs - Left Nav Rail */
 QTabWidget::pane {
     border: 1px solid #2d2e2b;
     background: #171716;
     border-radius: 12px;
+    margin-left: 8px;
 }
 
 QTabBar::tab {
-    background: #1f201d;
+    background: #1b1c1a;
     color: #a7a59b;
-    padding: 14px 28px;
-    margin-right: 4px;
-    border-top-left-radius: 10px;
-    border-top-right-radius: 10px;
+    min-width: 186px;
+    min-height: 48px;
+    text-align: left;
+    padding: 10px 14px;
+    margin: 2px 0;
+    border-radius: 10px;
+    border: 1px solid transparent;
     font-weight: 600;
     font-size: 14px;
 }
 
 QTabBar::tab:selected {
-    background: #171716;
+    background: #20211e;
     color: #c2d07f;
-    border-bottom: 3px solid #c2d07f;
+    border: 1px solid #35372f;
 }
 
 QTabBar::tab:hover:!selected {
     background: #262723;
     color: #c2d07f;
+    border: 1px solid #31322d;
 }
 
 /* Buttons - Colored Variants */
@@ -117,16 +123,26 @@ QGroupBox {
     border: 1px solid #2d2e2b;
     border-radius: 12px;
     margin-top: 16px;
-    padding: 20px;
+    padding: 12px 14px 14px 14px;
     font-weight: 700;
-    font-size: 15px;
+    font-size: 14px;
     color: #c2d07f;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 16px;
-    padding: 0 10px;
+    padding: 0 8px;
+}
+
+QCheckBox {
+    spacing: 8px;
+    padding: 2px 0;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
 }
 
 /* Input Fields */
@@ -290,6 +306,15 @@ QFrame#SectionDivider {
     background-color: #2d2e2b;
     margin: 6px 0 8px 0;
 }
+
+QToolTip {
+    background-color: #1f201d;
+    color: #e8e6df;
+    border: 1px solid #3a3b35;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+}
 """
 
 # Keep light theme as fallback
@@ -302,23 +327,33 @@ QTabWidget::pane {
     border: 1px solid #e1e8ed;
     background-color: white;
     border-radius: 8px;
+    margin-left: 8px;
 }
 
 QTabBar::tab {
-    background-color: #f5f7fa;
+    background-color: #f4f6f8;
     color: #657786;
-    padding: 12px 24px;
-    margin-right: 4px;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
+    min-width: 186px;
+    min-height: 48px;
+    text-align: left;
+    padding: 10px 14px;
+    margin: 2px 0;
+    border-radius: 8px;
+    border: 1px solid transparent;
     font-weight: 500;
     font-size: 13px;
 }
 
 QTabBar::tab:selected {
-    background-color: white;
+    background-color: #ffffff;
     color: #1da1f2;
-    border-bottom: 3px solid #1da1f2;
+    border: 1px solid #d7e0e8;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #edf2f7;
+    color: #1a91da;
+    border: 1px solid #dfe7ef;
 }
 
 QPushButton {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
-from src.database import DatabaseManager, MainRecord, utc_now_iso
+from database import DatabaseManager, MainRecord, utc_now_iso
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -78,11 +78,13 @@ class HarvestOrchestrator:
         batch_size: int = 50,
         max_workers: int = 1,
         bypass_retry_isbns: Optional[set[str]] = None,
+        bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
     ):
         self.db = db
         self.retry_days = retry_days
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
+        self.bypass_cache_isbns = set(bypass_cache_isbns or [])
         self.progress_cb = progress_cb
         self.batch_size = max(1, int(batch_size))
         self.max_workers = max(1, int(max_workers))
@@ -111,7 +113,7 @@ class HarvestOrchestrator:
         self._emit("isbn_start", {"isbn": isbn})
 
         # 1) cache check
-        if self.db.get_main(isbn) is not None:
+        if isbn not in self.bypass_cache_isbns and self.db.get_main(isbn) is not None:
             self._emit("cached", {"isbn": isbn})
             return "cached"
 
@@ -125,6 +127,8 @@ class HarvestOrchestrator:
         # 3) try targets in order
         last_error: Optional[str] = None
         last_target: Optional[str] = None
+        not_found_targets: list[str] = []
+        other_errors: list[str] = []
 
         for target in self.targets:
             last_target = getattr(target, "name", target.__class__.__name__)
@@ -149,8 +153,25 @@ class HarvestOrchestrator:
 
             # failure from this target; continue
             last_error = result.error or "Unknown error"
+            err = (result.error or "").strip()
+            if err.lower().startswith("no records found in"):
+                not_found_targets.append(last_target)
+            elif err:
+                other_errors.append(f"{last_target}: {err}")
 
         # 4) all targets failed
+        if not_found_targets and not other_errors:
+            last_error = "Not found in: " + ", ".join(not_found_targets)
+        elif not_found_targets and other_errors:
+            last_error = (
+                "Not found in: "
+                + ", ".join(not_found_targets)
+                + " | Other errors: "
+                + " ; ".join(other_errors)
+            )
+        elif other_errors:
+            last_error = " ; ".join(other_errors)
+
         self._emit(
             "failed",
             {"isbn": isbn, "last_target": last_target, "last_error": last_error},
@@ -173,6 +194,8 @@ class HarvestOrchestrator:
 
         def flush() -> None:
             """Flush buffered DB writes in a single transaction."""
+            wrote_main = len(pending_main)
+            wrote_attempted = len(pending_attempted)
             if dry_run:
                 pending_main.clear()
                 pending_attempted.clear()
@@ -187,6 +210,7 @@ class HarvestOrchestrator:
 
             pending_main.clear()
             pending_attempted.clear()
+            self._emit("db_flush", {"main": wrote_main, "attempted": wrote_attempted})
         # --- end Sprint 5 batching ---
 
         def _one(isbn: str) -> str:
@@ -235,7 +259,7 @@ class HarvestOrchestrator:
                 # Also: emitting progress from threads is okay only if your GUI callback is thread-safe.
                 self._emit("isbn_start", {"isbn": isbn})
 
-                if self.db.get_main(isbn) is not None:
+                if isbn not in self.bypass_cache_isbns and self.db.get_main(isbn) is not None:
                     self._emit("cached", {"isbn": isbn})
                     return ("cached", None, None)
 
@@ -245,6 +269,8 @@ class HarvestOrchestrator:
 
                 last_error = None
                 last_target = None
+                not_found_targets: list[str] = []
+                other_errors: list[str] = []
 
                 for target in self.targets:
                     last_target = getattr(target, "name", target.__class__.__name__)
@@ -265,6 +291,23 @@ class HarvestOrchestrator:
                         return ("success", rec, None)
 
                     last_error = result.error or "Unknown error"
+                    err = (result.error or "").strip()
+                    if err.lower().startswith("no records found in"):
+                        not_found_targets.append(last_target)
+                    elif err:
+                        other_errors.append(f"{last_target}: {err}")
+
+                if not_found_targets and not other_errors:
+                    last_error = "Not found in: " + ", ".join(not_found_targets)
+                elif not_found_targets and other_errors:
+                    last_error = (
+                        "Not found in: "
+                        + ", ".join(not_found_targets)
+                        + " | Other errors: "
+                        + " ; ".join(other_errors)
+                    )
+                elif other_errors:
+                    last_error = " ; ".join(other_errors)
 
                 self._emit("failed", {"isbn": isbn, "last_target": last_target, "last_error": last_error})
 
@@ -304,6 +347,8 @@ class HarvestOrchestrator:
                         "failures": failures,
                     })
 
+        # Flush any trailing buffered writes so short runs are persisted.
+        flush()
 
         return HarvestSummary(
             total_isbns=len(isbns),
@@ -314,4 +359,3 @@ class HarvestOrchestrator:
             failures=failures,
             dry_run=dry_run,
         )
-

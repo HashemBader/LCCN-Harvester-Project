@@ -148,47 +148,6 @@ class DatabaseManager:
             date_added=row["date_added"],
         )
 
-    def get_global_stats(self) -> dict:
-        """Return counts for dashboard: total, processed(found+failed), found, failed."""
-        with self.connect() as conn:
-            total_res = conn.execute("SELECT COUNT(*) FROM main").fetchone()
-            failed_res = conn.execute("SELECT COUNT(*) FROM attempted").fetchone()
-            
-            # This is simplified; ideally track 'source_input' count separately.
-            # Assuming 'processed' = found + failed
-            found_count = total_res[0]
-            failed_count = failed_res[0]
-            
-            return {
-                "total": found_count + failed_count, # Approx if we don't store input size
-                "processed": found_count + failed_count,
-                "found": found_count,
-                "failed": failed_count, # Includes errors + not founds
-                "not_found": failed_count # loose mapping
-            }
-
-    def get_recent_results(self, limit: int = 10) -> list[tuple]:
-        """Return list of (isbn, status, detail, time)."""
-        # Union main (Success) and attempted (Fail)
-        # SQLite union might be slow, so let's just query both and merge in python for simplicity
-        # or separate queries.
-        
-        with self.connect() as conn:
-            # Get recent successes
-            success = conn.execute(f"SELECT isbn, 'Found' as status, lccn as detail, date_added as time FROM main ORDER BY date_added DESC LIMIT {limit}").fetchall()
-            
-            # Get recent failures
-            fails = conn.execute(f"SELECT isbn, 'Failed' as status, last_error as detail, last_attempted as time FROM attempted ORDER BY last_attempted DESC LIMIT {limit}").fetchall()
-            
-            combined = []
-            for r in success: combined.append(dict(r))
-            for r in fails: combined.append(dict(r))
-            
-            # Sort by time desc
-            combined.sort(key=lambda x: x['time'] or "", reverse=True)
-            return combined[:limit]
-
-
     def upsert_main(self, record: MainRecord, *, clear_attempted_on_success: bool = True) -> None:
         with self.transaction() as conn:
             self._upsert_main_conn(conn, record, clear_attempted_on_success=clear_attempted_on_success)

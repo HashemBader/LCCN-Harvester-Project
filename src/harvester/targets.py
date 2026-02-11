@@ -284,26 +284,6 @@ def create_target_from_config(target_config: dict):
         )
     # Fallback to generic API target
     elif target_type == "api":
-        # Import real API implementations
-        # (Lazy imports could be better if circular deps exist, but here should be fine if base_api is clean)
-        from src.harvester.api_targets import ApiClientTarget
-        
-        name_lower = name.lower()
-        
-        if "loc" in name_lower or "library of congress" in name_lower:
-            from src.api.loc_api import LocApiClient
-            return ApiClientTarget(LocApiClient(), name="loc")
-            
-        elif "harvard" in name_lower:
-            from src.api.harvard_api import HarvardApiClient
-            return ApiClientTarget(HarvardApiClient(), name="harvard")
-            
-        elif "openlibrary" in name_lower:
-            from src.api.openlibrary_api import OpenLibraryApiClient
-            return ApiClientTarget(OpenLibraryApiClient(), name="openlibrary")
-            
-        else:
-            # Fallback for unknown APIs
-            return APITarget(name=name)
+        return APITarget(name=name)
     else:
         raise ValueError(f"Unknown target type: {target_type}")

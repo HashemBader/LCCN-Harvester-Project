@@ -15,7 +15,7 @@ sys.path.insert(0, str(SRC_DIR))
 
 from PyQt6.QtWidgets import QApplication
 from gui.main_window import MainWindow
-#from gui.styles import MODERN_STYLE
+from gui.styles import MODERN_STYLE
 
 
 def _configure_runtime_environment():
@@ -47,7 +47,7 @@ def main():
     app.setApplicationVersion("1.0.0")
 
     # Apply global stylesheet
-    #app.setStyleSheet(MODERN_STYLE)
+    app.setStyleSheet(MODERN_STYLE)
 
     # Create and show main window
     window = MainWindow()

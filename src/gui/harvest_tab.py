@@ -251,7 +251,6 @@ class HarvestTab(QWidget):
     harvest_finished = pyqtSignal(bool, dict)  # success, statistics
     status_message = pyqtSignal(str)
     milestone_reached = pyqtSignal(str, int)  # milestone_type, value
-    progress_updated = pyqtSignal(str, str, str, str) # isbn, status, source, message
 
     def __init__(self):
         super().__init__()
@@ -543,10 +542,6 @@ class HarvestTab(QWidget):
             self.start_button.setEnabled(True)
             self.start_button.setToolTip("")
             self._log(f"Input file set: {Path(file_path).name}")
-        else:
-            self.start_button.setEnabled(False)
-            self.start_button.setToolTip("Select an input file first")
-
 
     def _start_harvest(self):
         """Start the harvest operation."""

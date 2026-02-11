@@ -4,7 +4,7 @@ Part of the LCCN Harvester Project.
 """
 
 
-def normalize_call_number(subfield_a: list[str], subfield_b: list[str] | None = None) -> str:
+def normalize_marc_call_number(subfield_a: list[str], subfield_b: list[str] | None = None) -> str:
     """
     Normalize MARC 050/060 call number from subfields.
     """
@@ -22,3 +22,16 @@ def normalize_call_number(subfield_a: list[str], subfield_b: list[str] | None = 
             parts.append(b)
 
     return " ".join(parts)
+
+def normalize_non_marc_call_number(raw: str) -> str:
+    """
+    Normalize a call number string returned from an API
+    that does not use MARC 050/060 call numbers.
+    """
+    if not raw:
+        return ""
+
+    # Normalize spacing
+    parts = raw.strip().split()
+    return " ".join(parts)
+

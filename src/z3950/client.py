@@ -1,6 +1,6 @@
 
 import logging
-from typing import List, Optional, Generator, TYPE_CHECKING
+from typing import List, Optional, Generator, TYPE_CHECKING, Any
 
 # Lazy imports to allow graceful degradation when dependencies are missing or incompatible
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class Z3950Client:
             self.logger.error(f"Failed to connect to {self.host}:{self.port} - {e}")
             raise ConnectionError(f"Could not connect to Z39.50 server: {e}")
 
-    def search_by_isbn(self, isbn: str) -> List[Record]:
+    def search_by_isbn(self, isbn: str) -> List[Any]:
         """
         Search for records by ISBN.
 

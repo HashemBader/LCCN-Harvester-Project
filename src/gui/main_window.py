@@ -4,10 +4,10 @@ Main application window for the LCCN Harvester GUI.
 """
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QStatusBar, QLabel, QToolBar, QPushButton,
-    QVBoxLayout, QHBoxLayout, QScrollArea
+    QVBoxLayout, QHBoxLayout, QTabBar, QStylePainter, QStyleOptionTab, QStyle
 )
-from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QGuiApplication
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QRect
 from pathlib import Path
 import json
 
@@ -17,7 +17,6 @@ from .config_tab import ConfigTab
 from .harvest_tab import HarvestTab
 from .results_tab import ResultsTab
 from .dashboard_tab import DashboardTab
-from .ai_assistant_tab import AIAssistantTab
 from .advanced_settings_dialog import AdvancedSettingsDialog
 from .notifications import NotificationManager
 from .shortcuts_dialog import ShortcutsDialog
@@ -30,15 +29,19 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LCCN Harvester Pro")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setMinimumSize(980, 700)
 
         # Load advanced mode preference
         self.settings_file = Path("data/gui_settings.json")
         self.advanced_mode = self._load_advanced_mode()
+        self._load_window_geometry()
 
         # Setup notification manager and system tray
         self.notification_manager = NotificationManager(self)
         self.notification_manager.setup_system_tray()
+        self.live_refresh_timer = QTimer(self)
+        self.live_refresh_timer.setInterval(900)
+        self.live_refresh_timer.timeout.connect(self._live_refresh_during_harvest)
 
         self._setup_menu_bar()
         self._setup_central_widget()
@@ -48,24 +51,69 @@ class MainWindow(QMainWindow):
 
     def _load_advanced_mode(self):
         """Load advanced mode setting from file."""
-        try:
-            if self.settings_file.exists():
-                with open(self.settings_file, 'r') as f:
-                    settings = json.load(f)
-                    return settings.get("advanced_mode", False)
-        except Exception:
-            pass
-        return False
+        settings = self._read_settings()
+        return settings.get("advanced_mode", False)
 
     def _save_advanced_mode(self):
         """Save advanced mode setting to file."""
         try:
             self.settings_file.parent.mkdir(parents=True, exist_ok=True)
-            settings = {"advanced_mode": self.advanced_mode}
+            settings = self._read_settings()
+            settings["advanced_mode"] = self.advanced_mode
+            settings["window"] = {
+                "x": self.x(),
+                "y": self.y(),
+                "width": self.width(),
+                "height": self.height(),
+                "is_maximized": self.isMaximized(),
+            }
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
         except Exception as e:
             print(f"Failed to save settings: {e}")
+
+    def _read_settings(self):
+        """Read GUI settings file safely."""
+        if self.settings_file.exists():
+            try:
+                with open(self.settings_file, "r") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {}
+
+    def _load_window_geometry(self):
+        """Load saved window geometry or apply screen-aware defaults."""
+        settings = self._read_settings()
+        window_settings = settings.get("window", {})
+
+        try:
+            width = int(window_settings.get("width"))
+            height = int(window_settings.get("height"))
+            x = int(window_settings.get("x"))
+            y = int(window_settings.get("y"))
+            if width >= 980 and height >= 700:
+                self.setGeometry(x, y, width, height)
+                if window_settings.get("is_maximized", False):
+                    self.showMaximized()
+                return
+        except Exception:
+            pass
+
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            width = max(980, int(avail.width() * 0.78))
+            height = max(700, int(avail.height() * 0.82))
+            width = min(width, 1500)
+            height = min(height, 980)
+            x = avail.x() + (avail.width() - width) // 2
+            y = avail.y() + (avail.height() - height) // 2
+            self.setGeometry(x, y, width, height)
+        else:
+            self.setGeometry(100, 80, 1200, 800)
 
     def _setup_menu_bar(self):
         menubar = self.menuBar()
@@ -144,7 +192,12 @@ class MainWindow(QMainWindow):
 
         # Create tab widget
         self.tabs = QTabWidget()
-        self.tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self.tabs.setTabBar(SidebarTabBar())
+        self.tabs.setTabPosition(QTabWidget.TabPosition.West)
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setUsesScrollButtons(False)
+        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideRight)
 
         # Create tabs
         self.dashboard_tab = DashboardTab()
@@ -153,35 +206,27 @@ class MainWindow(QMainWindow):
         self.config_tab = ConfigTab()
         self.harvest_tab = HarvestTab()
         self.results_tab = ResultsTab()
-        self.ai_assistant_tab = AIAssistantTab()
 
         # Connect signals
         self.input_tab.file_selected.connect(self._on_file_selected)
+        self.targets_tab.targets_changed.connect(self._on_targets_changed)
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
         self.harvest_tab.status_message.connect(self._update_status)
         self.harvest_tab.milestone_reached.connect(self._on_milestone_reached)
 
         # Add tabs to widget
-        self.tabs.addTab(self.dashboard_tab, "📊 Dashboard")
-        self.tabs.addTab(self.input_tab, "1. Input")
-        self.tabs.addTab(self.targets_tab, "2. Targets")
-        self.tabs.addTab(self.config_tab, "3. Configuration")
-        self.tabs.addTab(self.harvest_tab, "4. Harvest")
-        self.tabs.addTab(self.results_tab, "5. Results")
+        self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.tabs.addTab(self.input_tab, "Input")
+        self.tabs.addTab(self.targets_tab, "Targets")
+        self.tabs.addTab(self.config_tab, "Configuration")
+        self.tabs.addTab(self.harvest_tab, "Harvest")
+        self.tabs.addTab(self.results_tab, "Results")
 
-        # AI tab index for show/hide
-        self.ai_tab_index = self.tabs.addTab(self.ai_assistant_tab, "🤖 AI Assistant")
-        self.tabs.setTabVisible(self.ai_tab_index, False)  # Hidden by default
-
-        # Scroll wrapper for smaller windows
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        scroll.setWidget(self.tabs)
-        main_layout.addWidget(scroll)
+        # Keep tabs directly in the main layout to avoid top-level resize jitter.
+        main_layout.addWidget(self.tabs)
         self.setCentralWidget(container)
+
 
     def _setup_status_bar(self):
         self.status_bar = QStatusBar()
@@ -306,7 +351,7 @@ class MainWindow(QMainWindow):
 
         # Update status message
         mode_text = "Advanced Mode" if checked else "Simple Mode"
-        features = "AI Assistant + Advanced Tools enabled" if checked else "Basic features only"
+        features = "Advanced Tools enabled" if checked else "Basic features only"
         self._update_status(f"{mode_text}: {features}")
 
     def _update_toggle_button_style(self):
@@ -358,12 +403,9 @@ class MainWindow(QMainWindow):
         self.advanced_settings_action.setVisible(self.advanced_mode)
         self.tools_menu.menuAction().setVisible(self.advanced_mode)
 
-        # Show/hide AI Assistant tab
-        self.tabs.setTabVisible(self.ai_tab_index, self.advanced_mode)
-
         # Notify tabs of mode change
         for tab in [self.dashboard_tab, self.input_tab, self.targets_tab, self.config_tab,
-                    self.harvest_tab, self.results_tab, self.ai_assistant_tab]:
+                    self.harvest_tab, self.results_tab]:
             if hasattr(tab, 'set_advanced_mode'):
                 tab.set_advanced_mode(self.advanced_mode)
 
@@ -381,6 +423,7 @@ class MainWindow(QMainWindow):
     def _on_harvest_started(self):
         """Handle harvest start."""
         self._update_status("Harvest started...")
+        self.live_refresh_timer.start()
         # Send notification (will be updated with actual count from harvest tab)
         self.notification_manager.show_notification(
             "Harvest Started",
@@ -390,10 +433,15 @@ class MainWindow(QMainWindow):
 
     def _on_harvest_finished(self, success, stats):
         """Handle harvest completion."""
+        self.live_refresh_timer.stop()
         if success:
             self._update_status(f"Harvest completed: {stats.get('found', 0)} found, {stats.get('failed', 0)} failed")
             self.results_tab.refresh()
             self.dashboard_tab.refresh_data()  # Refresh dashboard
+            self.tabs.setCurrentWidget(self.results_tab)
+            self._update_status(
+                f"Harvest complete. Opened Database tab: {stats.get('found', 0)} found, {stats.get('failed', 0)} failed"
+            )
 
             # Send success notification
             self.notification_manager.notify_harvest_completed(stats)
@@ -404,6 +452,14 @@ class MainWindow(QMainWindow):
             error_msg = stats.get('error', 'Unknown error') if isinstance(stats, dict) else 'Harvest was cancelled'
             self.notification_manager.notify_harvest_error(error_msg)
 
+    def _live_refresh_during_harvest(self):
+        """Keep Results and Dashboard up-to-date while harvest is running."""
+        if not self.harvest_tab.is_running:
+            self.live_refresh_timer.stop()
+            return
+        self.results_tab.refresh()
+        self.dashboard_tab.refresh_data()
+
     def _update_status(self, message):
         """Update status bar message."""
         self.status_label.setText(message)
@@ -411,6 +467,11 @@ class MainWindow(QMainWindow):
     def _on_milestone_reached(self, milestone_type, value):
         """Handle harvest milestone notifications."""
         self.notification_manager.notify_milestone(milestone_type, value)
+
+    def _on_targets_changed(self, targets):
+        """Handle targets config updates across tabs."""
+        self.harvest_tab.set_targets(targets)
+        self._update_status("Target configuration updated")
 
     def _refresh_results(self):
         """Refresh results tab."""
@@ -508,4 +569,30 @@ class MainWindow(QMainWindow):
 
             self.harvest_tab.stop_harvest()
 
+        # Persist latest UI preferences and window geometry.
+        self._save_advanced_mode()
         event.accept()
+
+
+class SidebarTabBar(QTabBar):
+    """Left-side tab bar that keeps labels horizontal for readability."""
+
+    def tabSizeHint(self, index):
+        base = super().tabSizeHint(index)
+        return QSize(max(182, base.width() + 26), max(48, base.height() + 8))
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        option = QStyleOptionTab()
+
+        for i in range(self.count()):
+            self.initStyleOption(option, i)
+            painter.drawControl(QStyle.ControlElement.CE_TabBarTabShape, option)
+
+            # Draw label in an unrotated, padded rect so west-position tabs read normally.
+            label_opt = QStyleOptionTab(option)
+            rect = QRect(option.rect)
+            rect.adjust(14, 0, -10, 0)
+            label_opt.rect = rect
+            label_opt.shape = QTabBar.Shape.RoundedNorth
+            painter.drawControl(QStyle.ControlElement.CE_TabBarTabLabel, label_opt)

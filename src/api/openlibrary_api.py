@@ -13,9 +13,11 @@ Sprint 3 Task 4: Implement OpenLibrary API.
 from __future__ import annotations
 
 import json
+import urllib.error
 from typing import Any, Optional
 
 from api.base_api import ApiResult, BaseApiClient
+from api.http_utils import urlopen_with_ca
 
 
 class OpenLibraryApiClient(BaseApiClient):
@@ -40,7 +42,7 @@ class OpenLibraryApiClient(BaseApiClient):
         req.add_header("User-Agent", "LCCNHarvester/0.1 (edu)")
         
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+            with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
                 if resp.status != 200:
                     raise Exception(f"HTTP {resp.status}")
                 return json.load(resp)
@@ -57,25 +59,40 @@ class OpenLibraryApiClient(BaseApiClient):
                 status="not_found"
             )
 
-        # OpenLibrary fields:
-        # 'lc_classifications' (list)
-        # 'dewey_decimal_class' (list) - ignores
-        # call_number is often missing or under 'identifiers'
-        
         lccn: Optional[str] = None
-        
+        nlmcn: Optional[str] = None
+
+        # Most common field: lc_classifications (actual call numbers like "QA76.73.J38")
         lccs = payload.get("lc_classifications", [])
-        if lccs:
-            lccn = lccs[0]
-            
-        # NLM? OL isn't great for NLM usually.
+        if isinstance(lccs, list) and lccs:
+            lccn = str(lccs[0]).strip() or None
+
+        # Alternate shape used in some OL payloads.
+        if not lccn and isinstance(payload.get("classifications"), dict):
+            alt = payload["classifications"].get("lc_classifications", [])
+            if isinstance(alt, list) and alt:
+                lccn = str(alt[0]).strip() or None
+
+        # Check top-level lccn field (LCCN identifier, e.g., "2001016794")
+        if not lccn:
+            top_level_lccn = payload.get("lccn", [])
+            if isinstance(top_level_lccn, list) and top_level_lccn:
+                lccn = str(top_level_lccn[0]).strip() or None
+
+        # Fallback: identifiers.lccn (not shelf call number, but better than empty).
+        identifiers = payload.get("identifiers", {})
+        if not lccn and isinstance(identifiers, dict):
+            lccn_values = identifiers.get("lccn", [])
+            if isinstance(lccn_values, list) and lccn_values:
+                lccn = str(lccn_values[0]).strip() or None
         
-        if lccn:
+        if lccn or nlmcn:
              return ApiResult(
                 isbn=isbn,
                 source=self.source,
                 status="success",
                 lccn=lccn,
+                nlmcn=nlmcn,
                 raw=payload
             )
             

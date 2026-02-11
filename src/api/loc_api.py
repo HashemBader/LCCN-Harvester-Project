@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from typing import Any, Dict, List, Optional
+import urllib.request
+from typing import Any, Optional
 
 from api.base_api import ApiResult, BaseApiClient
+from api.http_utils import urlopen_with_ca
 
 
 class LocApiClient(BaseApiClient):
@@ -27,6 +29,7 @@ class LocApiClient(BaseApiClient):
 
     source_name = "loc"
     base_url = "https://www.loc.gov/items"
+    fallback_url = "https://www.loc.gov/books/"
 
     @property
     def source(self) -> str:
@@ -45,38 +48,48 @@ class LocApiClient(BaseApiClient):
         return f"{self.base_url}?{urllib.parse.urlencode(params)}"
 
     def fetch(self, isbn: str) -> Any:
-        # Note: In a real implementation, we would use 'requests' or 'urllib'.
-        # Since strict instructions say "Network logic is implemented in subclasses",
-        # I'll implement a basic one using urllib for standard library usage,
-        # or rely on what's available. Assuming urllib is fine as per BaseApiClient docstring.
-        
-        # For now, I will raise NotImplementedError if actual network calls aren't desired yet,
-        # but the prompt implies we want a working client.
-        # However, checking `harvard_api.py`, it doesn't implement `fetch`!
-        # Wait, BaseApiClient *declares* fetch. HarvardApiClient *defines* `parse_response` but where is `fetch`?
-        # Let me re-read `base_api.py`.
-        
-        # Checking base_api.py again in my mind... 
-        # BaseApiClient has `fetch` as abstract.
-        # HarvardApiClient *must* have implemented it, but I only saw `build_url`, `parse_response` and `extract_`.
-        # Ah, I might have missed `fetch` in HarvardApiClient or the user is using a mixin I didn't see. 
-        # Or I need to implement `fetch` using `urllib`.
-        
-        url = self.build_url(isbn)
-        import urllib.request
-        
-        req = urllib.request.Request(url)
-        # LoC likes a User-Agent
-        req.add_header("User-Agent", "LCCNHarvester/0.1 (edu)")
-        
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                if resp.status != 200:
-                    raise Exception(f"HTTP {resp.status}")
-                return json.load(resp)
-        except Exception:
-            # Re-raise to let the base class retry logic handle it
-            raise
+        urls = [
+            self.build_url(isbn),
+            f"{self.fallback_url}?{urllib.parse.urlencode({'q': f'isbn:{isbn}', 'fo': 'json'})}",
+        ]
+        last_exc = None
+        for url in urls:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")
+            req.add_header("Accept", "application/json,text/plain,*/*")
+            try:
+                with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
+                    if resp.status != 200:
+                        raise Exception(f"HTTP {resp.status}")
+                    return json.load(resp)
+            except Exception as e:
+                last_exc = e
+                continue
+        raise last_exc if last_exc else Exception("LoC request failed")
+
+    def _walk_for_candidates(self, obj: Any, out: list[str]) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = str(k).lower()
+                if key in {
+                    "call_number",
+                    "callnumber",
+                    "classification",
+                    "shelflocator",
+                    "number_lccn",
+                    "lccn",
+                    "identifier-lccn",
+                }:
+                    if isinstance(v, list):
+                        for item in v:
+                            if isinstance(item, str) and item.strip():
+                                out.append(item.strip())
+                    elif isinstance(v, str) and v.strip():
+                        out.append(v.strip())
+                self._walk_for_candidates(v, out)
+        elif isinstance(obj, list):
+            for item in obj:
+                self._walk_for_candidates(item, out)
 
     def extract_call_numbers(self, isbn: str, payload: Any) -> ApiResult:
         """
@@ -95,22 +108,14 @@ class LocApiClient(BaseApiClient):
             )
 
         item = results[0]
-        
-        # Try to find call numbers in the item
-        # LoC fields: 'call_number' (list), 'item.call_number'
-        
-        cns = item.get("call_number", [])
-        if isinstance(cns, list):
-            for cn in cns:
-                # Basic heuristic
-                if not cn: continue
-                if cn.startswith("W"): # simplistic NLM check
-                    if not nlmcn: nlmcn = cn
-                else:
-                    if not lccn: lccn = cn
-        
-        # sometimes specifically 'lccn' field exists but it's the control number, not call number.
-        # We want the shelf location.
+        candidates: list[str] = []
+        self._walk_for_candidates(item, candidates)
+        for cn in candidates:
+            if cn.startswith("W"):
+                if not nlmcn:
+                    nlmcn = cn
+            elif not lccn:
+                lccn = cn
         
         if lccn or nlmcn:
             return ApiResult(
@@ -125,10 +130,7 @@ class LocApiClient(BaseApiClient):
         return ApiResult(
             isbn=isbn,
             source=self.source,
-            status="success", # Found record but no call number?
-            # Or maybe "not_found" if goal is strictly call numbers?
-            # Let's say success, but empty values.
-            lccn=None,
-            nlmcn=None,
+            status="not_found",
+            error_message="Record found but no usable call number",
             raw=item
         )

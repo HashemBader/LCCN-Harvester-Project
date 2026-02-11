@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as et
 from typing import Any, Dict, List, Optional, Tuple
 
 from api.base_api import ApiResult, BaseApiClient
+from api.http_utils import urlopen_with_ca
 
 
 class HarvardApiClient(BaseApiClient):
@@ -35,7 +37,7 @@ class HarvardApiClient(BaseApiClient):
     - MODS XML if present (e.g., <shelfLocator>, <classification>)
     """
 
-    source_name = "harvard"
+    source_name = "Harvard"
     base_url = "https://api.lib.harvard.edu/v2/items.json"
 
     @property
@@ -43,31 +45,85 @@ class HarvardApiClient(BaseApiClient):
         return self.source_name
 
     def fetch(self, isbn: str) -> Any:
-        url = self.build_url(isbn)
-        import urllib.request
-        
-        req = urllib.request.Request(url)
-        # Harvard might require UA too
-        req.add_header("User-Agent", "LCCNHarvester/0.1 (edu)")
-        
+        primary = None
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                if resp.status != 200:
-                    raise Exception(f"HTTP {resp.status}")
-                return self.parse_response(resp.read())
+            primary = self._request_json(self.build_url(isbn))
+            if self._has_records(primary):
+                return primary
         except Exception:
-            raise
+            # Primary query path failed; try fallback shape before bubbling up.
+            pass
+
+        fallback = self._request_json(self.build_fallback_url(isbn))
+        if self._has_records(fallback):
+            return fallback
+
+        # Keep prior payload for debugging if we had one.
+        return fallback if fallback is not None else primary
 
     def build_url(self, isbn: str) -> str:
         """
         Build the Harvard LibraryCloud query URL for an ISBN.
+
+        Uses the identifier field which searches by ISBN (no hyphens/spaces).
+        Per Harvard docs: "an item by its ISBN"
         """
         params = {
             "identifier": isbn,
-            # Keep results small; Harvard API supports pagination fields in general.
             "limit": "1",
         }
         return f"{self.base_url}?{urllib.parse.urlencode(params)}"
+
+    def build_fallback_url(self, isbn: str) -> str:
+        """
+        Fallback: keyword search across all fields.
+
+        If identifier= returns nothing for a specific ISBN,
+        this searches the ISBN as text across all fields.
+        """
+        params = {
+            "q": isbn,  # Just the ISBN as keyword, not "identifier:isbn"
+            "limit": "1",
+        }
+        return f"{self.base_url}?{urllib.parse.urlencode(params)}"
+
+    def _request_json(self, url: str) -> Any:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")
+        req.add_header("Accept", "application/json,text/plain,*/*")
+
+        with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status}")
+            return self.parse_response(resp.read())
+
+    def _has_records(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        # Check pagination numFound field (Harvard's way)
+        pagination = payload.get("pagination", {})
+        if isinstance(pagination, dict):
+            try:
+                num_found = int(pagination.get("numFound", 0))
+            except (TypeError, ValueError):
+                num_found = 0
+            if num_found > 0:
+                return True
+
+        # Fallback: check items structure
+        items = payload.get("items")
+        records = payload.get("records")
+
+        # Harvard returns items as dict with 'mods' key
+        if isinstance(items, dict) and "mods" in items:
+            mods = items.get("mods")
+            return (isinstance(mods, list) and len(mods) > 0) or isinstance(mods, dict)
+
+        # Other formats may return items/records as lists
+        return (isinstance(items, list) and len(items) > 0) or (
+            isinstance(records, list) and len(records) > 0
+        )
 
     def parse_response(self, body: bytes) -> Any:
         """
@@ -76,7 +132,7 @@ class HarvardApiClient(BaseApiClient):
         # Harvard returns JSON at /items.json endpoints.
         return json.loads(body.decode("utf-8", errors="replace"))
 
-    def extract_call_numbers(self, parsed: Any) -> Dict[str, List[str]]:
+    def _extract_candidates(self, parsed: Any) -> Dict[str, List[str]]:
         """
         Best-effort extraction of call-number-like values.
 
@@ -92,26 +148,26 @@ class HarvardApiClient(BaseApiClient):
         nlm: List[str] = []
         other: List[str] = []
 
-        # LibraryCloud typically returns a wrapper with "items" or "records".
-        items = []
-        if isinstance(parsed, dict):
-            if isinstance(parsed.get("items"), list):
-                items = parsed["items"]
-            elif isinstance(parsed.get("records"), list):
-                items = parsed["records"]
+        items = self._extract_item_objects(parsed)
 
         if not items:
             return {"lc": [], "nlm": [], "other": []}
 
         item0 = items[0] if isinstance(items[0], dict) else {}
 
-        # 1) Try extracting from obvious JSON keys
+        # 1) Try extracting from structured MODS-style JSON fields first.
+        structured = self._extract_from_mods_like_json(item0)
+        lc.extend(structured[0])
+        nlm.extend(structured[1])
+        other.extend(structured[2])
+
+        # 2) Try extracting from obvious JSON keys
         json_candidates = self._find_json_call_number_candidates(item0)
         lc.extend(json_candidates[0])
         nlm.extend(json_candidates[1])
         other.extend(json_candidates[2])
 
-        # 2) Try extracting from embedded MODS XML if present
+        # 3) Try extracting from embedded MODS XML if present
         mods_xml = self._get_mods_xml_if_present(item0)
         if mods_xml:
             mods_candidates = self._extract_from_mods_xml(mods_xml)
@@ -125,6 +181,54 @@ class HarvardApiClient(BaseApiClient):
             "nlm": self._dedupe_keep_order(nlm),
             "other": self._dedupe_keep_order(other),
         }
+
+    def _extract_item_objects(self, parsed: Any) -> List[Dict[str, Any]]:
+        if not isinstance(parsed, dict):
+            return []
+
+        # Common LibraryCloud JSON shape: {"items": {"mods": [ ... ]}}
+        items = parsed.get("items")
+        if isinstance(items, dict):
+            mods = items.get("mods")
+            if isinstance(mods, list):
+                return [m for m in mods if isinstance(m, dict)]
+            if isinstance(mods, dict):
+                return [mods]
+
+        # Alternate shapes
+        if isinstance(items, list):
+            return [m for m in items if isinstance(m, dict)]
+
+        records = parsed.get("records")
+        if isinstance(records, list):
+            return [m for m in records if isinstance(m, dict)]
+
+        return []
+
+    def extract_call_numbers(self, isbn: str, payload: Any) -> ApiResult:
+        """
+        Convert Harvard response payload into the unified ApiResult contract.
+        """
+        candidates = self._extract_candidates(payload)
+        lccn = candidates["lc"][0] if candidates["lc"] else None
+        nlmcn = candidates["nlm"][0] if candidates["nlm"] else None
+
+        if lccn or nlmcn:
+            return ApiResult(
+                isbn=isbn,
+                source=self.source,
+                status="success",
+                lccn=lccn,
+                nlmcn=nlmcn,
+                raw=payload,
+            )
+
+        return ApiResult(
+            isbn=isbn,
+            source=self.source,
+            status="not_found",
+            raw=payload,
+        )
 
     # -------------------------
     # Helpers
@@ -146,19 +250,90 @@ class HarvardApiClient(BaseApiClient):
             "call_number",
             "callNumber",
             "classification",
+            "lccn",
+            "number_lccn",
+            "identifier-lccn",
         }
 
         def walk(x: Any) -> None:
             if isinstance(x, dict):
                 for k, v in x.items():
-                    if isinstance(k, str) and k in keys_of_interest:
-                        self._bucket_candidate(str(v), lc, nlm, other)
+                    if isinstance(k, str) and (k in keys_of_interest or "lccn" in k.lower()):
+                        force_lc = "lccn" in k.lower()
+                        if isinstance(v, list):
+                            for item in v:
+                                self._bucket_candidate(str(item), lc, nlm, other, force="lc" if force_lc else None)
+                        else:
+                            self._bucket_candidate(str(v), lc, nlm, other, force="lc" if force_lc else None)
                     walk(v)
             elif isinstance(x, list):
                 for it in x:
                     walk(it)
 
         walk(obj)
+        return lc, nlm, other
+
+    def _extract_from_mods_like_json(
+        self, obj: Dict[str, Any]
+    ) -> Tuple[List[str], List[str], List[str]]:
+        """
+        Extract candidates from common LibraryCloud MODS-like JSON fields.
+        """
+        lc: List[str] = []
+        nlm: List[str] = []
+        other: List[str] = []
+
+        def as_list(v: Any) -> List[Any]:
+            if isinstance(v, list):
+                return v
+            if v is None:
+                return []
+            return [v]
+
+        # identifier: {"@type":"lccn","#text":"..."}
+        for ident in as_list(obj.get("identifier")):
+            if not isinstance(ident, dict):
+                continue
+            ident_type = str(ident.get("@type", "")).strip().lower()
+            text = str(ident.get("#text", "")).strip()
+            if not text:
+                continue
+
+            if ident_type == "lccn":
+                self._bucket_candidate(text, lc, nlm, other, force="lc")
+            elif ident_type in {"isbn", "issn", "uri"}:
+                continue
+            else:
+                self._bucket_candidate(text, lc, nlm, other)
+
+        # classification: {"@authority":"lcc|nlm","#text":"..."}
+        for cls in as_list(obj.get("classification")):
+            if not isinstance(cls, dict):
+                continue
+            authority = str(cls.get("@authority", "")).strip().lower()
+            text = str(cls.get("#text", "")).strip()
+            if not text:
+                continue
+
+            if "nlm" in authority:
+                self._bucket_candidate(text, lc, nlm, other, force="nlm")
+            elif "lcc" in authority or authority == "lc":
+                self._bucket_candidate(text, lc, nlm, other, force="lc")
+            else:
+                self._bucket_candidate(text, lc, nlm, other)
+
+        # location.shelfLocator
+        for location in as_list(obj.get("location")):
+            if not isinstance(location, dict):
+                continue
+            for shelf in as_list(location.get("shelfLocator")):
+                if isinstance(shelf, dict):
+                    text = str(shelf.get("#text", "")).strip()
+                    if text:
+                        self._bucket_candidate(text, lc, nlm, other)
+                elif isinstance(shelf, str):
+                    self._bucket_candidate(shelf, lc, nlm, other)
+
         return lc, nlm, other
 
     def _get_mods_xml_if_present(self, item: Dict[str, Any]) -> Optional[str]:

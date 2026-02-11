@@ -5,11 +5,12 @@ Input file selection tab for ISBN list.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QFileDialog, QGroupBox,
-    QTextEdit, QFrame, QSizePolicy
+    QTextEdit, QFrame, QSizePolicy, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
 from pathlib import Path
+from utils.isbn_validator import normalize_isbn
 
 
 class ClickableDropZone(QFrame):
@@ -105,7 +106,17 @@ class InputTab(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
 
         # Title
         title_label = QLabel("Input File Selection")
@@ -117,7 +128,8 @@ class InputTab(QWidget):
             "Select a file containing ISBNs to process. The file should be:\n"
             "• Tab-separated values (TSV) format\n"
             "• First column contains ISBN numbers\n"
-            "• ISBNs can be 10 or 13 digits, with or without hyphens"
+            "• ISBNs can be 10 or 13 digits, with or without hyphens\n"
+            "• Lines starting with # are ignored (comments)"
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
@@ -190,13 +202,17 @@ class InputTab(QWidget):
         info_layout = QVBoxLayout()
 
         self.info_label = QLabel("No file selected")
+        self.info_label.setWordWrap(True)
+        self.info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info_layout.addWidget(self.info_label)
 
         info_group.setLayout(info_layout)
+        info_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(info_group)
 
         layout.addStretch()
-        self.setLayout(layout)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
         self.advanced_mode = False
 
     def set_advanced_mode(self, enabled):
@@ -284,17 +300,58 @@ class InputTab(QWidget):
             return
 
         try:
-            with open(self.input_file, 'r', encoding='utf-8-sig') as f:
-                lines = [line.strip() for line in f if line.strip()]
+            total_nonempty = 0
+            candidate_rows = 0
+            valid_rows = 0
+            invalid_rows = 0
+            seen: set[str] = set()
+            unique_valid = 0
 
-            # Filter out potential header
-            if lines and lines[0].lower() in ['isbn', 'isbns', 'isbn13', 'isbn10']:
-                lines = lines[1:]
+            with open(self.input_file, 'r', encoding='utf-8-sig') as f:
+                first_data_row_seen = False
+                for line in f:
+                    raw_line = line.strip()
+                    if not raw_line:
+                        continue
+                    total_nonempty += 1
+
+                    raw_isbn = raw_line.split("\t")[0].strip()
+                    if not raw_isbn:
+                        continue
+
+                    # Ignore comments
+                    if raw_isbn.startswith("#"):
+                        continue
+
+                    # Ignore common header tokens on first meaningful row
+                    if not first_data_row_seen and raw_isbn.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
+                        first_data_row_seen = True
+                        continue
+
+                    first_data_row_seen = True
+                    candidate_rows += 1
+
+                    normalized = normalize_isbn(raw_isbn)
+                    if not normalized:
+                        invalid_rows += 1
+                        continue
+
+                    valid_rows += 1
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        unique_valid += 1
+
+            duplicate_valid_rows = max(0, valid_rows - unique_valid)
 
             info_text = (
                 f"File: {self.input_file.name}\n"
                 f"Size: {self.input_file.stat().st_size / 1024:.2f} KB\n"
-                f"Approximate ISBN count: {len(lines)}"
+                f"Valid ISBNs (unique): {unique_valid}\n"
+                f"Valid ISBN rows: {valid_rows}\n"
+                f"Duplicate valid rows: {duplicate_valid_rows}\n"
+                f"Invalid ISBN rows: {invalid_rows}\n"
+                f"Candidate rows (non-comment): {candidate_rows}\n"
+                f"Non-empty lines: {total_nonempty}"
             )
             self.info_label.setText(info_text)
         except Exception as e:

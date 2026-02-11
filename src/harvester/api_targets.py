@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from api.base_api import BaseApiClient, ApiResult
 from harvester.orchestrator import HarvestTarget, TargetResult, PlaceholderTarget
 
 logger = logging.getLogger(__name__)
+
+
+def _as_bool(value: object, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 @dataclass
@@ -42,27 +52,64 @@ def build_default_api_targets() -> list[HarvestTarget]:
     Best-effort: build targets that exist in the repo.
     If none are available, fall back to PlaceholderTarget.
     """
-    targets: list[HarvestTarget] = []
-
-    # LoC
-    try:
+    def _make_loc() -> ApiClientTarget:
         from api.loc_api import LocApiClient
-        targets.append(ApiClientTarget(LocApiClient(), name="loc"))
-    except Exception as e:
-        logger.warning("LoC API target not available: %s", e)
+        return ApiClientTarget(LocApiClient(), name="Library of Congress")
 
-    # Harvard
-    try:
+    def _make_harvard() -> ApiClientTarget:
         from api.harvard_api import HarvardApiClient
-        targets.append(ApiClientTarget(HarvardApiClient(), name="harvard"))
-    except Exception as e:
-        logger.warning("Harvard API target not available: %s", e)
+        return ApiClientTarget(HarvardApiClient(), name="Harvard")
 
-    # OpenLibrary
-    try:
+    def _make_openlibrary() -> ApiClientTarget:
         from api.openlibrary_api import OpenLibraryApiClient
-        targets.append(ApiClientTarget(OpenLibraryApiClient(), name="openlibrary"))
-    except Exception as e:
-        logger.warning("OpenLibrary API target not available: %s", e)
+        return ApiClientTarget(OpenLibraryApiClient(), name="OpenLibrary")
+
+    factories = {
+        "library of congress": _make_loc,
+        "loc": _make_loc,
+        "harvard": _make_harvard,
+        "harvard librarycloud": _make_harvard,
+        "openlibrary": _make_openlibrary,
+        "open library": _make_openlibrary,
+    }
+
+    configured_names: list[str] = []
+    cfg_path = Path("data/targets.json")
+    if cfg_path.exists():
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                api_rows = [
+                    row for row in raw
+                    if isinstance(row, dict) and str(row.get("type", "")).strip().lower() == "api"
+                ]
+                api_rows.sort(
+                    key=lambda row: int(str(row.get("rank", 999)).strip())
+                    if str(row.get("rank", "")).strip().isdigit()
+                    else 999
+                )
+                for row in api_rows:
+                    if _as_bool(row.get("selected", True)):
+                        configured_names.append(str(row.get("name", "")).strip().lower())
+        except Exception as e:
+            logger.warning("Failed reading API target config %s: %s", cfg_path, e)
+
+    if not configured_names:
+        configured_names = ["library of congress", "harvard", "openlibrary"]
+
+    targets: list[HarvestTarget] = []
+    seen: set[str] = set()
+    for key in configured_names:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        maker = factories.get(key)
+        if not maker:
+            logger.warning("Unknown API target in config: %s", key)
+            continue
+        try:
+            targets.append(maker())
+        except Exception as e:
+            logger.warning("API target not available (%s): %s", key, e)
 
     return targets if targets else [PlaceholderTarget()]

@@ -5,12 +5,12 @@ Harvest execution and progress tracking tab with threading support.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QTextEdit, QProgressBar,
-    QCheckBox, QSpinBox, QFrame, QGridLayout, QMessageBox
+    QCheckBox, QSpinBox, QFrame, QGridLayout, QMessageBox, QDialog, QToolTip,
+    QScrollArea, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QEvent, QPoint
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import time
 import sys
 
 # Add src to path for database import
@@ -22,6 +22,7 @@ from utils.isbn_validator import normalize_isbn
 from utils import messages
 
 from .progress_dialog import ProgressDialog
+from .api_monitor_tab import APIMonitorTab, APICheckWorker
 
 
 class HarvestWorker(QThread):
@@ -34,13 +35,22 @@ class HarvestWorker(QThread):
     milestone_reached = pyqtSignal(str, int)  # milestone_type, value
     stats_update = pyqtSignal(dict)  # real-time statistics update
 
-    def __init__(self, input_file, config, targets, advanced_settings=None, bypass_retry_isbns=None):
+    def __init__(
+        self,
+        input_file,
+        config,
+        targets,
+        advanced_settings=None,
+        bypass_retry_isbns=None,
+        bypass_cache_isbns=None,
+    ):
         super().__init__()
         self.input_file = input_file
         self.config = config
         self.targets = targets
         self.advanced_settings = advanced_settings or {}
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
+        self.bypass_cache_isbns = set(bypass_cache_isbns or [])
         self._stop_requested = False
         self._pause_requested = False
 
@@ -123,7 +133,9 @@ class HarvestWorker(QThread):
                 retry_days=retry_days,
                 targets=targets,
                 bypass_retry_isbns=self.bypass_retry_isbns,
+                bypass_cache_isbns=self.bypass_cache_isbns,
                 progress_cb=progress_callback,
+                batch_size=1,
             )
 
             # Final stats
@@ -165,8 +177,8 @@ class HarvestWorker(QThread):
 
                 for line in f:
                     isbn = line.strip().split("\t")[0]  # First column
-                    if not isbn or isbn.lower().startswith("isbn"):
-                        continue  # Skip empty lines and header
+                    if not isbn or isbn.lower().startswith("isbn") or isbn.startswith("#"):
+                        continue  # Skip empty lines, header, and comments
 
                     normalized = normalize_isbn(isbn)
                     if normalized:
@@ -248,35 +260,63 @@ class HarvestTab(QWidget):
         self.worker = None
         self.progress_dialog = None
         self.advanced_mode = False
-        self.start_time = None
         self.processed_count = 0
         self.total_count = 0
         self._warned_no_input = False
-
-        # Speed tracking
-        self.speed_timer = QTimer()
-        self.speed_timer.timeout.connect(self._update_speed)
-        self.last_processed = 0
-        self.current_speed = 0
+        self._targets_override = None
+        self.api_monitor_dialog = None
+        self.api_monitor_widget = None
+        self.quick_api_status = {
+            "Library of Congress": None,
+            "Harvard": None,
+            "OpenLibrary": None,
+        }
+        self.hover_check_worker = None
 
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
-        layout.setSpacing(18)
+        # Stable container:
+        # - centered max-width content to avoid stretched/distorted fullscreen layout
+        # - vertical scrolling when window is too short instead of clipping text/widgets
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        viewport = QWidget()
+        viewport_layout = QHBoxLayout(viewport)
+        viewport_layout.setContentsMargins(12, 10, 12, 10)
+        viewport_layout.setSpacing(0)
+
+        content = QWidget()
+        content.setMaximumWidth(1480)
+        layout = QVBoxLayout(content)
+        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        viewport_layout.addStretch(1)
+        viewport_layout.addWidget(content)
+        viewport_layout.addStretch(1)
+        scroll.setWidget(viewport)
+        root_layout.addWidget(scroll)
 
         # Header with status
         header_layout = QHBoxLayout()
 
-        title_label = QLabel("🚀 Harvest Execution")
+        title_label = QLabel("Harvest")
         title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #c2d07f;")
         header_layout.addWidget(title_label)
 
         header_layout.addStretch()
 
-        self.status_badge = QLabel("● Ready")
+        self.status_badge = QLabel("Ready")
         self.status_badge.setStyleSheet(
-            "color: #a7a59b; font-size: 14px; font-weight: bold; padding: 6px 12px; "
+            "color: #a7a59b; font-size: 13px; font-weight: bold; padding: 6px 12px; "
             "background-color: #242521; border-radius: 12px;"
         )
         header_layout.addWidget(self.status_badge)
@@ -289,14 +329,17 @@ class HarvestTab(QWidget):
 
         self.current_isbn_label = QLabel("Current ISBN: —")
         self.current_isbn_label.setStyleSheet("color: #e8e6df; font-size: 13px;")
+        self.current_isbn_label.setMinimumHeight(22)
         live_layout.addWidget(self.current_isbn_label)
 
         self.current_status_label = QLabel("Status: Idle")
         self.current_status_label.setStyleSheet("color: #a7a59b; font-size: 12px;")
+        self.current_status_label.setMinimumHeight(20)
         live_layout.addWidget(self.current_status_label)
 
         self.current_target_label = QLabel("Target: —")
         self.current_target_label.setStyleSheet("color: #a7a59b; font-size: 12px;")
+        self.current_target_label.setMinimumHeight(20)
         live_layout.addWidget(self.current_target_label)
 
         self.progress_bar = QProgressBar()
@@ -316,6 +359,8 @@ class HarvestTab(QWidget):
 
         self.event_chip_wrap = QFrame()
         self.event_chip_wrap.setStyleSheet("background: transparent;")
+        self.event_chip_wrap.setMinimumHeight(24)
+        self.event_chip_wrap.setMaximumHeight(24)
         self.event_chip_layout = QHBoxLayout(self.event_chip_wrap)
         self.event_chip_layout.setContentsMargins(0, 0, 0, 0)
         self.event_chip_layout.setSpacing(6)
@@ -327,48 +372,42 @@ class HarvestTab(QWidget):
         # Stats section
         stats_group = QGroupBox("Harvest Statistics")
         stats_layout = QGridLayout()
-        stats_layout.setSpacing(15)
+        stats_layout.setHorizontalSpacing(10)
+        stats_layout.setVerticalSpacing(10)
 
-        def create_stat_display(label_text):
-            container = QVBoxLayout()
+        def create_stat_tile(label_text, initial="0"):
+            tile = QFrame()
+            tile.setObjectName("StatTile")
+            tile.setStyleSheet(
+                "QFrame#StatTile { background-color: #1b1c1a; border: 1px solid #2d2e2b; border-radius: 8px; }"
+            )
+            tile.setMinimumHeight(86)
+            tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(10, 8, 10, 8)
+            tile_layout.setSpacing(3)
+
             label = QLabel(label_text)
             label.setStyleSheet("color: #a7a59b; font-size: 11px;")
-            value = QLabel("0")
-            value.setStyleSheet("color: #e8e6df; font-size: 28px; font-weight: bold;")
-            value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            container.addWidget(label)
-            container.addWidget(value)
-            return container, value
+            label.setMinimumHeight(16)
+            value = QLabel(initial)
+            value.setStyleSheet("color: #e8e6df; font-size: 17px; font-weight: 700;")
+            value.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            value.setMinimumHeight(30)
+            value.setWordWrap(False)
 
-        total_layout, self.total_value = create_stat_display("Total ISBNs")
-        stats_layout.addLayout(total_layout, 0, 0)
+            tile_layout.addWidget(label)
+            tile_layout.addWidget(value)
+            return tile, value
 
-        processed_layout, self.processed_value = create_stat_display("Processed")
-        stats_layout.addLayout(processed_layout, 0, 1)
-
-        found_layout, self.found_value = create_stat_display("✓ Found")
-        stats_layout.addLayout(found_layout, 0, 2)
-
-        failed_layout, self.failed_value = create_stat_display("✗ Failed")
-        stats_layout.addLayout(failed_layout, 0, 3)
-
-        progress_layout, self.progress_value = create_stat_display("Progress %")
-        stats_layout.addLayout(progress_layout, 1, 0)
-
-        time_layout, self.time_label = create_stat_display("Elapsed Time")
-        self.time_label.setText("00:00:00")
-        self.time_label.setStyleSheet("color: #e8e6df; font-size: 16px; font-weight: bold;")
-        stats_layout.addLayout(time_layout, 1, 1)
-
-        speed_layout, self.speed_label = create_stat_display("Speed (ISBN/s)")
-        self.speed_label.setText("0")
-        self.speed_label.setStyleSheet("color: #e8e6df; font-size: 16px; font-weight: bold;")
-        stats_layout.addLayout(speed_layout, 1, 2)
-
-        eta_layout, self.eta_label = create_stat_display("ETA")
-        self.eta_label.setText("--:--:--")
-        self.eta_label.setStyleSheet("color: #e8e6df; font-size: 16px; font-weight: bold;")
-        stats_layout.addLayout(eta_layout, 1, 3)
+        total_tile, self.total_value = create_stat_tile("Total ISBNs")
+        processed_tile, self.processed_value = create_stat_tile("Processed")
+        found_tile, self.found_value = create_stat_tile("Found")
+        failed_tile, self.failed_value = create_stat_tile("Failed")
+        stats_layout.addWidget(total_tile, 0, 0)
+        stats_layout.addWidget(processed_tile, 0, 1)
+        stats_layout.addWidget(found_tile, 0, 2)
+        stats_layout.addWidget(failed_tile, 0, 3)
 
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
@@ -384,26 +423,40 @@ class HarvestTab(QWidget):
         self.start_button.setEnabled(False)
         self.start_button.setToolTip("Select an input file first")
         self.start_button.setObjectName("PrimaryButton")
+        self.start_button.setMinimumHeight(42)
+        self.start_button.setMinimumWidth(150)
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self._stop_harvest)
         self.stop_button.setEnabled(False)
+        self.stop_button.setMinimumHeight(42)
+        self.stop_button.setMinimumWidth(110)
 
-        self.detailed_progress_button = QPushButton("Show Detailed Progress...")
+        self.detailed_progress_button = QPushButton("Detailed Progress")
         self.detailed_progress_button.clicked.connect(self._show_progress_dialog)
         self.detailed_progress_button.setEnabled(False)
+        self.detailed_progress_button.setMinimumHeight(42)
+        self.detailed_progress_button.setMinimumWidth(170)
+
+        self.api_health_button = QPushButton("API Health")
+        self.api_health_button.clicked.connect(self._show_api_monitor_popup)
+        self.api_health_button.setObjectName("SecondaryButton")
+        self.api_health_button.installEventFilter(self)
+        self.api_health_button.setMinimumHeight(42)
+        self.api_health_button.setMinimumWidth(130)
 
         buttons_layout.addWidget(self.start_button)
         buttons_layout.addWidget(self.stop_button)
         buttons_layout.addWidget(self.detailed_progress_button)
+        buttons_layout.addWidget(self.api_health_button)
         buttons_layout.addStretch()
 
         control_layout.addLayout(buttons_layout)
 
         # Advanced options (collapsed by default)
         self.advanced_group = QGroupBox("Advanced Options")
-        self.advanced_group.setCheckable(True)
-        self.advanced_group.setChecked(False)
+        # Avoid checkable/collapsible groupbox title overlap on macOS.
+        self.advanced_group.setCheckable(False)
         self.advanced_group.setVisible(False)  # Hidden until advanced mode
 
         advanced_layout = QVBoxLayout()
@@ -444,6 +497,7 @@ class HarvestTab(QWidget):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText("Harvest log will appear here...")
+        self.log_text.setMinimumHeight(95)
         self.log_text.setStyleSheet(
             "QTextEdit { color: #cfe3c0; background-color: #171716; border: 1px solid #2d2e2b; }"
         )
@@ -466,10 +520,13 @@ class HarvestTab(QWidget):
         log_layout.addLayout(log_controls_layout)
 
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
-
-        self.setLayout(layout)
+        layout.addWidget(log_group, 1)
         self._pulse_timers = {}
+        self.setStyleSheet(
+            self.styleSheet() +
+            " QToolTip { background-color: #1f201d; color: #e8e6df; "
+            "border: 1px solid #3a3b35; border-radius: 8px; padding: 8px; }"
+        )
 
     def set_advanced_mode(self, enabled):
         """Enable/disable advanced mode features."""
@@ -477,7 +534,7 @@ class HarvestTab(QWidget):
         self.advanced_group.setVisible(enabled)
 
         if enabled:
-            self._log("Advanced mode enabled - additional options available")
+            self._log("Advanced mode enabled.")
 
     def set_input_file(self, file_path):
         """Set the input file for harvesting."""
@@ -506,6 +563,18 @@ class HarvestTab(QWidget):
         config = self._get_config()
         targets = self._get_targets()
         advanced_settings = self._get_advanced_settings() if self.advanced_mode else {}
+
+        if not self._confirm_input_duplicates_policy():
+            self._log("Harvest cancelled by user")
+            return
+
+        bypass_cache_isbns = self._check_cached_success_isbns()
+        if bypass_cache_isbns is None:
+            self._log("Harvest cancelled by user")
+            return
+        if bypass_cache_isbns:
+            self._log(f"Bypassing cache for {len(bypass_cache_isbns)} ISBN(s)")
+
         bypass_retry_isbns = self._check_recent_failed_isbns(config.get("retry_days", 7))
 
         if bypass_retry_isbns is None:
@@ -521,6 +590,7 @@ class HarvestTab(QWidget):
             targets,
             advanced_settings,
             bypass_retry_isbns=bypass_retry_isbns,
+            bypass_cache_isbns=bypass_cache_isbns,
         )
         self.worker.progress_update.connect(self._on_progress_update)
         self.worker.harvest_complete.connect(self._on_harvest_complete)
@@ -538,15 +608,11 @@ class HarvestTab(QWidget):
         self.detailed_progress_button.setEnabled(True)
 
         # Update status badge
-        self.status_badge.setText("● Running")
+        self.status_badge.setText("Running")
         self.status_badge.setStyleSheet(
             "color: #7bc96f; font-size: 14px; font-weight: bold; padding: 6px 12px; "
             "background-color: #1f2a22; border-radius: 12px;"
         )
-
-        # Start timers
-        self.start_time = time.time()
-        self.speed_timer.start(1000)  # Update every second
 
         # Create progress dialog if advanced mode
         if self.advanced_mode:
@@ -556,8 +622,104 @@ class HarvestTab(QWidget):
         self.harvest_started.emit()
         self.status_message.emit("Harvest started")
 
+    def _check_cached_success_isbns(self):
+        """Warn when ISBNs are already successful in cache and allow bypass."""
+        if not self.input_file:
+            return set()
+
+        try:
+            db = DatabaseManager()
+            db.init_db()
+            isbns = read_isbns_from_tsv(Path(self.input_file))
+        except Exception as e:
+            self._log(f"Warning: could not check cached ISBNs - {e}")
+            return set()
+
+        cached = []
+        for isbn in isbns:
+            rec = db.get_main(isbn)
+            if rec is not None:
+                cached.append((isbn, rec))
+
+        if not cached:
+            return set()
+
+        details = []
+        for isbn, rec in cached[:12]:
+            source = rec.source or "unknown source"
+            lccn = rec.lccn or "-"
+            nlmcn = rec.nlmcn or "-"
+            details.append(f"{isbn} | source: {source} | LCCN: {lccn} | NLMCN: {nlmcn}")
+
+        if len(cached) > 12:
+            details.append(f"... and {len(cached) - 12} more")
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Duplicate ISBNs Found")
+        msg.setText(f"{len(cached)} ISBN(s) already have successful results in cache.")
+        msg.setInformativeText(
+            "Use cache to avoid duplicate processing, or bypass cache to force a fresh lookup."
+        )
+        msg.setDetailedText("\n".join(details))
+
+        cancel_btn = msg.addButton("Cancel Harvest", QMessageBox.ButtonRole.RejectRole)
+        use_cache_btn = msg.addButton("Use Cached Results", QMessageBox.ButtonRole.AcceptRole)
+        bypass_btn = msg.addButton("Bypass Cache and Re-harvest", QMessageBox.ButtonRole.ActionRole)
+        msg.setDefaultButton(use_cache_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked == cancel_btn:
+            return None
+        if clicked == bypass_btn:
+            return {isbn for isbn, _ in cached}
+        return set()
+
+    def _confirm_input_duplicates_policy(self) -> bool:
+        """Warn when duplicate ISBN rows exist in the input file."""
+        if not self.input_file:
+            return True
+
+        try:
+            counts = {}
+            with open(self.input_file, "r", encoding="utf-8-sig") as f:
+                for line in f:
+                    raw = line.strip().split("\t")[0]
+                    if not raw or raw.lower().startswith("isbn") or raw.startswith("#"):
+                        continue
+                    normalized = normalize_isbn(raw)
+                    if not normalized:
+                        continue
+                    counts[normalized] = counts.get(normalized, 0) + 1
+        except Exception as e:
+            self._log(f"Warning: could not inspect duplicate ISBN rows - {e}")
+            return True
+
+        duplicates = [(isbn, count) for isbn, count in counts.items() if count > 1]
+        if not duplicates:
+            return True
+
+        details = [f"{isbn} | repeated {count} times" for isbn, count in duplicates[:12]]
+        if len(duplicates) > 12:
+            details.append(f"... and {len(duplicates) - 12} more")
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Duplicate ISBN Rows Detected")
+        msg.setText(f"{len(duplicates)} ISBN(s) are repeated in the input file.")
+        msg.setInformativeText(
+            "The harvester processes unique ISBNs only. Continue to de-duplicate automatically."
+        )
+        msg.setDetailedText("\n".join(details))
+        cancel_btn = msg.addButton("Cancel Harvest", QMessageBox.ButtonRole.RejectRole)
+        continue_btn = msg.addButton("Continue with De-duplication", QMessageBox.ButtonRole.AcceptRole)
+        msg.setDefaultButton(continue_btn)
+        msg.exec()
+        return msg.clickedButton() != cancel_btn
+
     def _check_recent_failed_isbns(self, retry_days):
-        """Warn if ISBNs were attempted recently and allow bypass."""
+        """Block retry-window ISBNs unless user explicitly overrides."""
         if not self.input_file or retry_days <= 0:
             return set()
 
@@ -607,28 +769,25 @@ class HarvestTab(QWidget):
 
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle("Recent Failed ISBNs")
+        msg.setWindowTitle("Retry Window Active")
         msg.setText(
-            f"{len(recent)} ISBN(s) were attempted within the last {retry_days} day(s)."
+            f"{len(recent)} ISBN(s) are still within the {retry_days}-day retry window."
         )
         msg.setInformativeText(
-            "These have not surpassed the expected retry date. "
-            "You can skip them for now or bypass the delay and retry immediately."
+            "Retrying now may produce repeated failures.\n"
+            "Cancel to keep the retry rule, or override to continue anyway."
         )
         msg.setDetailedText("\n".join(details))
 
-        skip_btn = msg.addButton("Skip for now", QMessageBox.ButtonRole.AcceptRole)
-        bypass_btn = msg.addButton("Bypass and retry", QMessageBox.ButtonRole.ActionRole)
-        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        msg.setDefaultButton(skip_btn)
+        cancel_btn = msg.addButton("Cancel Harvest", QMessageBox.ButtonRole.RejectRole)
+        bypass_btn = msg.addButton("Override and Retry", QMessageBox.ButtonRole.ActionRole)
+        msg.setDefaultButton(cancel_btn)
 
         msg.exec()
         clicked = msg.clickedButton()
-        if clicked == cancel_btn:
-            return None
         if clicked == bypass_btn:
             return {isbn for isbn, _ in recent}
-        return set()
+        return None
 
     def _stop_harvest(self):
         """Stop the harvest operation."""
@@ -666,6 +825,93 @@ class HarvestTab(QWidget):
             self.progress_dialog.show()
             self.progress_dialog.raise_()
 
+    def _show_api_monitor_popup(self):
+        """Show API health monitor in a medium-sized popup."""
+        if self.api_monitor_dialog is None:
+            self.api_monitor_dialog = QDialog(self)
+            self.api_monitor_dialog.setWindowTitle("API Health Monitor")
+            self.api_monitor_dialog.setModal(False)
+            self.api_monitor_dialog.resize(860, 500)
+
+            layout = QVBoxLayout(self.api_monitor_dialog)
+            self.api_monitor_widget = APIMonitorTab(compact=True)
+            layout.addWidget(self.api_monitor_widget)
+
+        if self.api_monitor_widget:
+            self.api_monitor_widget.refresh_status()
+            self.api_monitor_widget._check_all_apis()
+            self.quick_api_status = self.api_monitor_widget.status_snapshot()
+
+        self.api_monitor_dialog.show()
+        self.api_monitor_dialog.raise_()
+        self.api_monitor_dialog.activateWindow()
+
+    def eventFilter(self, obj, event):
+        """Show quick API lights when hovering API Health button."""
+        if obj is self.api_health_button:
+            if event.type() == QEvent.Type.Enter:
+                self._show_api_health_hover_tooltip()
+                self._refresh_quick_api_status_async()
+            elif event.type() == QEvent.Type.Leave:
+                QToolTip.hideText()
+        return super().eventFilter(obj, event)
+
+    def _show_api_health_hover_tooltip(self):
+        """Show compact green/red API lights on hover."""
+        statuses = self.quick_api_status
+
+        def dot(state) -> str:
+            if state is None:
+                color = "#666666"
+            else:
+                color = "#00cc66" if state else "#ff3333"
+            return f"<span style='color:{color}; font-size:14px;'>●</span>"
+
+        html = (
+            "<b>API Health</b><br>"
+            f"{dot(statuses.get('Library of Congress'))} LOC&nbsp;&nbsp;&nbsp;"
+            f"{dot(statuses.get('Harvard'))} Harvard&nbsp;&nbsp;&nbsp;"
+            f"{dot(statuses.get('OpenLibrary'))} OpenLibrary"
+        )
+        QToolTip.showText(
+            self.api_health_button.mapToGlobal(QPoint(0, self.api_health_button.height() + 2)),
+            html,
+            self.api_health_button,
+        )
+
+    def _get_quick_api_status(self):
+        """Return cached quick API status."""
+        return dict(self.quick_api_status)
+
+    def _refresh_quick_api_status_async(self):
+        """Refresh hover status lights asynchronously to avoid UI lag."""
+        if self.api_monitor_widget is not None:
+            self.quick_api_status = self.api_monitor_widget.status_snapshot()
+            self._show_api_health_hover_tooltip()
+            return
+
+        if self.hover_check_worker and self.hover_check_worker.isRunning():
+            return
+
+        selected_map = {t.get("name"): t.get("selected", True) for t in (self._get_targets() or [])}
+        enabled_names = []
+        for api_name in self.quick_api_status.keys():
+            if selected_map and not selected_map.get(api_name, True):
+                self.quick_api_status[api_name] = None
+            else:
+                enabled_names.append(api_name)
+
+        self.hover_check_worker = APICheckWorker(enabled_names, timeout=3)
+        self.hover_check_worker.completed.connect(self._on_hover_check_completed)
+        self.hover_check_worker.start()
+
+    def _on_hover_check_completed(self, results):
+        for name in self.quick_api_status.keys():
+            if name in results:
+                self.quick_api_status[name] = results[name].get("online", False)
+        if self.api_health_button.underMouse():
+            self._show_api_health_hover_tooltip()
+
     def _toggle_pause(self):
         """Toggle pause state of harvest."""
         if self.worker:
@@ -675,8 +921,6 @@ class HarvestTab(QWidget):
         """Handle harvest started."""
         self.processed_count = 0
         self.total_count = 0
-        self.last_processed = 0
-        self.current_speed = 0
         self.progress_bar.setValue(0)
         self.current_isbn_label.setText("Current ISBN: —")
         self.current_status_label.setText("Status: Running")
@@ -689,7 +933,8 @@ class HarvestTab(QWidget):
         if self.progress_dialog:
             self.progress_dialog.update_progress(isbn, status, source, message)
 
-        self.processed_count += 1
+        if status in {"cached", "skipped", "found", "failed"}:
+            self.processed_count += 1
 
         self.current_isbn_label.setText(f"Current ISBN: {isbn}")
         status_text = status.capitalize()
@@ -701,9 +946,10 @@ class HarvestTab(QWidget):
 
         self._add_event_chip(status, source, isbn)
 
-        self._log(f"{isbn}: {status}" + (f" - {source}" if source else ""))
-        
-        self.progress_updated.emit(isbn, status, source, message)
+        extra = f" - {source}" if source else ""
+        if status in {"failed", "skipped"} and message:
+            extra += f" | {message}"
+        self._log(f"{isbn}: {status}{extra}")
 
     def _on_harvest_complete(self, success, statistics):
         """Handle harvest completion."""
@@ -712,19 +958,17 @@ class HarvestTab(QWidget):
         self.stop_button.setEnabled(False)
         self.detailed_progress_button.setEnabled(False)
 
-        self.speed_timer.stop()
-
         self._update_stats(statistics)
 
         if success:
-            self.status_badge.setText("● Completed")
+            self.status_badge.setText("Completed")
             self.status_badge.setStyleSheet(
                 "color: #a9d48f; font-size: 14px; font-weight: bold; padding: 6px 12px; "
                 "background-color: #243329; border-radius: 12px;"
             )
             self._log(f"Harvest completed - Found: {statistics.get('found', 0)}, Failed: {statistics.get('failed', 0)}")
         else:
-            self.status_badge.setText("● Stopped")
+            self.status_badge.setText("Stopped")
             self.status_badge.setStyleSheet(
                 "color: #d9a59c; font-size: 14px; font-weight: bold; padding: 6px 12px; "
                 "background-color: #2b2322; border-radius: 12px;"
@@ -758,6 +1002,7 @@ class HarvestTab(QWidget):
         cached = statistics.get("cached", 0)
         skipped = statistics.get("skipped", 0)
         processed = found + failed + cached + skipped
+        attempted = found + failed
 
         self._set_stat_value(self.total_value, str(total))
         self._set_stat_value(self.processed_value, str(processed))
@@ -766,13 +1011,11 @@ class HarvestTab(QWidget):
 
         if total > 0:
             progress_percent = (processed / total) * 100
-            self.progress_value.setText(f"{progress_percent:.1f}%")
             self.progress_bar.setValue(int(progress_percent))
-            success_rate = (found / total) * 100 if total else 0
-            self.success_rate_label.setText(f"Success Rate: {success_rate:.1f}%")
+            hit_rate = (found / attempted) * 100 if attempted else 0
+            self.success_rate_label.setText(f"Success Rate: {hit_rate:.1f}%")
             self.processed_meta_label.setText(f"Processed: {processed}/{total}")
         else:
-            self.progress_value.setText("0%")
             self.progress_bar.setValue(0)
             self.success_rate_label.setText("Success Rate: 0%")
             self.processed_meta_label.setText("Processed: 0/0")
@@ -784,12 +1027,12 @@ class HarvestTab(QWidget):
         if label.text() == value:
             return
         label.setText(value)
-        label.setStyleSheet("color: #c2d07f; font-size: 28px; font-weight: bold;")
+        label.setStyleSheet("color: #c2d07f; font-size: 18px; font-weight: 700;")
         if label in self._pulse_timers:
             self._pulse_timers[label].stop()
         timer = QTimer(self)
         timer.setSingleShot(True)
-        timer.timeout.connect(lambda l=label: l.setStyleSheet("color: #e8e6df; font-size: 28px; font-weight: bold;"))
+        timer.timeout.connect(lambda l=label: l.setStyleSheet("color: #e8e6df; font-size: 18px; font-weight: 700;"))
         self._pulse_timers[label] = timer
         timer.start(220)
 
@@ -830,31 +1073,6 @@ class HarvestTab(QWidget):
             return base + " background-color: #242521; color: #c2d07f; border: 1px solid #2d2e2b;"
         return base + " background-color: #1f201d; color: #a7a59b; border: 1px solid #2d2e2b;"
 
-    def _update_speed(self):
-        """Update speed and time indicators."""
-        if not self.is_running or not self.start_time:
-            return
-
-        elapsed = time.time() - self.start_time
-        hours = int(elapsed // 3600)
-        minutes = int((elapsed % 3600) // 60)
-        seconds = int(elapsed % 60)
-        self.time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-
-        if elapsed > 0:
-            self.current_speed = self.processed_count / elapsed
-            self.speed_label.setText(f"{self.current_speed:.1f}")
-
-        if self.total_count > 0 and self.current_speed > 0:
-            remaining = self.total_count - self.processed_count
-            eta_seconds = remaining / self.current_speed
-            eta_hours = int(eta_seconds // 3600)
-            eta_minutes = int((eta_seconds % 3600) // 60)
-            eta_secs = int(eta_seconds % 60)
-            self.eta_label.setText(f"{eta_hours:02d}:{eta_minutes:02d}:{eta_secs:02d}")
-        else:
-            self.eta_label.setText("--:--:--")
-
     def _get_config(self):
         """Get configuration from config tab."""
         parent = self.parent()
@@ -872,6 +1090,9 @@ class HarvestTab(QWidget):
 
     def _get_targets(self):
         """Get targets from targets tab."""
+        if self._targets_override is not None:
+            return self._targets_override
+
         parent = self.parent()
         while parent and not hasattr(parent, "targets_tab"):
             parent = parent.parent()
@@ -880,6 +1101,12 @@ class HarvestTab(QWidget):
             return parent.targets_tab.get_targets()
 
         return []
+
+    def set_targets(self, targets):
+        """Set targets from main window updates."""
+        self._targets_override = targets or []
+        if self.api_monitor_widget:
+            self.api_monitor_widget.refresh_status()
 
     def _get_advanced_settings(self):
         """Get advanced settings."""

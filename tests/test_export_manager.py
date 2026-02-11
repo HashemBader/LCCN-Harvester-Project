@@ -86,3 +86,48 @@ def test_export_both(tmp_path, populated_db):
     
     assert success_path.exists()
     assert failed_path.exists()
+
+
+def test_export_main_csv(tmp_path, populated_db):
+    manager = ExportManager(populated_db)
+    output_path = tmp_path / "output.csv"
+
+    config = {
+        "source": "main",
+        "format": "csv",
+        "columns": ["ISBN", "LCCN"],
+        "output_path": str(output_path),
+        "include_header": True
+    }
+
+    result = manager.export(config)
+    assert result["success"]
+    assert output_path.exists()
+
+    with open(output_path, "r", encoding="utf-8") as f:
+        rows = f.read().strip().split("\n")
+        assert rows[0] == "ISBN,LCCN"
+        assert "111,A1" in rows[1]
+
+
+def test_export_main_json(tmp_path, populated_db):
+    manager = ExportManager(populated_db)
+    output_path = tmp_path / "output.json"
+
+    config = {
+        "source": "main",
+        "format": "json",
+        "columns": ["ISBN", "LCCN"],
+        "output_path": str(output_path),
+        "include_header": True
+    }
+
+    result = manager.export(config)
+    assert result["success"]
+    assert output_path.exists()
+
+    import json
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+    assert isinstance(data, list)
+    assert data[0]["ISBN"] == "111"
+    assert data[0]["LCCN"] == "A1"

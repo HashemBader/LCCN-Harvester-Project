@@ -106,6 +106,132 @@ class Z3950Target:
             )
 
 
+class LibraryOfCongressTarget:
+    """Library of Congress JSON API target wrapper."""
+
+    name = "Library of Congress"
+
+    def __init__(self, timeout: int = 30):
+        from api.loc_api import LocApiClient
+        self.client = LocApiClient(timeout_seconds=timeout)
+
+    def lookup(self, isbn: str) -> TargetResult:
+        """Lookup ISBN using Library of Congress API."""
+        try:
+            result = self.client.search(isbn)
+
+            if result.status == "success" and (result.lccn or result.nlmcn):
+                return TargetResult(
+                    success=True,
+                    lccn=result.lccn,
+                    nlmcn=result.nlmcn,
+                    source=self.name
+                )
+            elif result.status == "not_found":
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=f"No records found in {self.name}."
+                )
+            else:
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=result.error_message or f"API status: {result.status}"
+                )
+        except Exception as e:
+            logger.error(f"Library of Congress lookup failed for {isbn}: {e}")
+            return TargetResult(
+                success=False,
+                source=self.name,
+                error=str(e)
+            )
+
+
+class HarvardLibraryCloudTarget:
+    """Harvard LibraryCloud API target wrapper."""
+
+    name = "Harvard LibraryCloud"
+
+    def __init__(self, timeout: int = 30):
+        from api.harvard_api import HarvardApiClient
+        self.client = HarvardApiClient(timeout_seconds=timeout)
+
+    def lookup(self, isbn: str) -> TargetResult:
+        """Lookup ISBN using Harvard LibraryCloud API."""
+        try:
+            result = self.client.search(isbn)
+
+            if result.status == "success" and (result.lccn or result.nlmcn):
+                return TargetResult(
+                    success=True,
+                    lccn=result.lccn,
+                    nlmcn=result.nlmcn,
+                    source=self.name
+                )
+            elif result.status == "not_found":
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=f"No records found in {self.name}."
+                )
+            else:
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=result.error_message or f"API status: {result.status}"
+                )
+        except Exception as e:
+            logger.error(f"Harvard LibraryCloud lookup failed for {isbn}: {e}")
+            return TargetResult(
+                success=False,
+                source=self.name,
+                error=str(e)
+            )
+
+
+class OpenLibraryTarget:
+    """OpenLibrary API target wrapper."""
+
+    name = "OpenLibrary"
+
+    def __init__(self, timeout: int = 30):
+        from api.openlibrary_api import OpenLibraryApiClient
+        self.client = OpenLibraryApiClient(timeout_seconds=timeout)
+
+    def lookup(self, isbn: str) -> TargetResult:
+        """Lookup ISBN using OpenLibrary API."""
+        try:
+            result = self.client.search(isbn)
+
+            if result.status == "success" and (result.lccn or result.nlmcn):
+                return TargetResult(
+                    success=True,
+                    lccn=result.lccn,
+                    nlmcn=result.nlmcn,
+                    source=self.name
+                )
+            elif result.status == "not_found":
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=f"No records found in {self.name}."
+                )
+            else:
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=result.error_message or f"API status: {result.status}"
+                )
+        except Exception as e:
+            logger.error(f"OpenLibrary lookup failed for {isbn}: {e}")
+            return TargetResult(
+                success=False,
+                source=self.name,
+                error=str(e)
+            )
+
+
 class APITarget:
     """
     Placeholder API target.
@@ -131,21 +257,32 @@ def create_target_from_config(target_config: dict):
 
     Args:
         target_config: Dictionary with target configuration
-            Example: {"name": "Yale", "type": "z3950", "host": "...", "port": 210, "database": "..."}
+            Example: {"name": "Library of Congress", "type": "api", "selected": true, "rank": 1}
+            Or: {"name": "Yale", "type": "z3950", "host": "...", "port": 210, "database": "..."}
 
     Returns:
         Target instance that implements HarvestTarget protocol
     """
-    target_type = target_config.get("type", "api")
     name = target_config.get("name", "Unknown")
+    target_type = target_config.get("type", "api")
+    timeout = target_config.get("timeout", 30)
 
-    if target_type == "z3950":
+    # Handle specific known API targets
+    if name == "Library of Congress":
+        return LibraryOfCongressTarget(timeout=timeout)
+    elif name in ["Harvard LibraryCloud", "Harvard"]:
+        return HarvardLibraryCloudTarget(timeout=timeout)
+    elif name == "OpenLibrary":
+        return OpenLibraryTarget(timeout=timeout)
+    # Handle Z39.50 targets
+    elif target_type == "z3950":
         return Z3950Target(
             name=name,
             host=target_config.get("host", ""),
             port=target_config.get("port", 210),
             database=target_config.get("database", "")
         )
+    # Fallback to generic API target
     elif target_type == "api":
         # Import real API implementations
         # (Lazy imports could be better if circular deps exist, but here should be fine if base_api is clean)

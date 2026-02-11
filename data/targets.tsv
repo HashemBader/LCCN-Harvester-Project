@@ -1,3 +1,5 @@
 target_id	name	target_type	host	port	database	record_syntax	rank	selected	username	password
 1	Library of Congress	Z3950	lx2.loc.gov	210	LCDB	USMARC	1	True		
 2	Harvard University	Z3950	hollis.harvard.edu	210	hollis	USMARC	2	True		
+5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	3	True		
+7	gfdgdf	Z3950	gfdgd	210	gfdgdf	USMARC	4	True		

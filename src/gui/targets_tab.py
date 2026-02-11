@@ -1,673 +1,477 @@
 """
 Module: targets_tab.py
-Purpose: A modern, dark-themed Target Management tab.
-         Integrates with TargetsManager for persistence.
+Target management tab for APIs and Z39.50 servers.
 """
-
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QDialog, QFormLayout, QLineEdit, QSpinBox, 
-    QDialogButtonBox, QMessageBox, QCheckBox, QComboBox, QWidget,
-    QListWidget, QListWidgetItem
+    QPushButton, QGroupBox, QListWidget, QListWidgetItem,
+    QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox,
+    QMessageBox, QCheckBox
 )
-from PyQt6.QtCore import Qt, QDateTime
-from copy import deepcopy
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, pyqtSignal
+from pathlib import Path
+import json
 
-from utils.targets_manager import TargetsManager, Target
-from z3950.session_manager import validate_connection
 
 class TargetDialog(QDialog):
-    """Dialog for adding/editing Z39.50 targets with dark theme support."""
+    """Dialog for adding/editing Z39.50 targets."""
 
-    def __init__(self, parent=None, target: Target = None):
+    def __init__(self, parent=None, target_data=None):
         super().__init__(parent)
-        self.setWindowTitle("Add Target" if target is None else "Edit Target")
-        self.target = target
+        self.setWindowTitle("Add Z39.50 Target" if target_data is None else "Edit Z39.50 Target")
+        self.target_data = target_data or {}
         self._setup_ui()
-        self._apply_styles()
 
     def _setup_ui(self):
         layout = QVBoxLayout()
         form_layout = QFormLayout()
 
         # Target fields
-        self.name_edit = QLineEdit(self.target.name if self.target else "")
-        self.host_edit = QLineEdit(self.target.host if self.target else "")
+        self.name_edit = QLineEdit(self.target_data.get("name", ""))
+        self.host_edit = QLineEdit(self.target_data.get("host", ""))
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(self.target.port if self.target and self.target.port else 210)
-        self.database_edit = QLineEdit(self.target.database if self.target else "")
-        self.username_edit = QLineEdit(self.target.username if self.target else "")
-        self.password_edit = QLineEdit(self.target.password if self.target else "")
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        
-        form_layout.addRow("Target Name:", self.name_edit)
-        form_layout.addRow("Host Address:", self.host_edit)
+        self.port_spin.setValue(self.target_data.get("port", 210))
+        self.database_edit = QLineEdit(self.target_data.get("database", ""))
+
+        form_layout.addRow("Name:", self.name_edit)
+        form_layout.addRow("Host:", self.host_edit)
         form_layout.addRow("Port:", self.port_spin)
-        form_layout.addRow("Database Name:", self.database_edit)
-        form_layout.addRow("Username (if needed):", self.username_edit)
-        form_layout.addRow("Password (if needed):", self.password_edit)
+        form_layout.addRow("Database:", self.database_edit)
 
         layout.addLayout(form_layout)
-
-        # Test Connection Button
-        self.btn_test = QPushButton("Test Connection")
-        self.btn_test.clicked.connect(self.test_connection)
-        layout.addWidget(self.btn_test)
 
         # Dialog buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.try_accept) # Intercept OK to validate
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self.setLayout(layout)
-
-    def _apply_styles(self):
-        # Basic dark theme for the dialog
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #1e1e2e;
-                color: #cdd6f4;
-            }
-            QLabel {
-                color: #cdd6f4;
-                font-weight: bold;
-            }
-            QLineEdit, QSpinBox {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-                padding: 6px;
-                color: #ffffff;
-            }
-            /* Explicitly style spinbox buttons to fix hit-testing */
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 20px;
-                background-color: #313244;
-                border: none;
-                border-left: 1px solid #45475a;
-            }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                background-color: #45475a;
-            }
-            /* Use SVG icons for arrows */
-            QSpinBox::up-arrow {
-                width: 12px; 
-                height: 12px;
-                image: url(src/gui/icons/plus.svg);
-                border: none;
-            }
-            QSpinBox::down-arrow {
-                width: 12px; 
-                height: 12px;
-                image: url(src/gui/icons/minus.svg);
-                border: none;
-            }
-            QLineEdit:focus, QSpinBox:focus {
-                border: 1px solid #89b4fa;
-            }
-            QPushButton {
-                background-color: #313244;
-                color: white;
-                border: 1px solid #45475a;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45475a;
-            }
-        """)
-
-    def test_connection(self):
-        """Manually test connection and show result."""
-        host = self.host_edit.text().strip()
-        port = self.port_spin.value()
-
-        if not host:
-            QMessageBox.warning(self, "Input Error", "Please enter a host to test.")
-            return
-
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        success = validate_connection(host, port)
-        self.unsetCursor()
-
-        if success:
-            QMessageBox.information(self, "Success", f"Successfully connected to {host}:{port}")
-        else:
-            QMessageBox.critical(self, "Connection Failed", f"Could not connect to {host}:{port}.\nPlease check the details and try again.")
-
-    def try_accept(self):
-        """Validate connection before accepting, with user override."""
-        host = self.host_edit.text().strip()
-        port = self.port_spin.value()
-        
-        # Basic Input Validation
-        if not self.name_edit.text().strip() or not host:
-             QMessageBox.warning(self, "Validation Error", "Name and Host are required.")
-             return
-
-        # Connectivity Validation
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        success = validate_connection(host, port)
-        self.unsetCursor()
-
-        if success:
-            self.accept()
-        else:
-            reply = QMessageBox.question(
-                self, 
-                "Connection Failed", 
-                f"Could not connect to {host}:{port}.\n\nDo you want to save this target anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.accept()
-
-
-    def get_data(self):
-        """Return a dictionary of the input data."""
-        return {
-            "name": self.name_edit.text().strip(),
-            "host": self.host_edit.text().strip(),
-            "port": self.port_spin.value(),
-            "database": self.database_edit.text().strip(),
-            "username": self.username_edit.text().strip(),
-            "password": self.password_edit.text().strip()
-        }
-
-
-class RestoreDialog(QDialog):
-    """Dialog to show edit/delete history and restore items."""
-    def __init__(self, history, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Restore History")
-        self.resize(500, 400)
-        self.history = history
-        self.selected_action = None
-        self._setup_ui()
-        self._apply_styles()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout()
-        
-        lbl = QLabel("Select an action to undo:")
-        layout.addWidget(lbl)
-
-        self.list_widget = QListWidget()
-        for idx, item in enumerate(self.history):
-            action = item['type']
-            target_name = item['snapshot'].name if item['snapshot'] else "Unknown"
-            time_str = item['timestamp'].toString("HH:mm:ss")
-            text = f"[{time_str}] {action}: {target_name}"
-            
-            list_item = QListWidgetItem(text)
-            list_item.setData(Qt.ItemDataRole.UserRole, idx)
-            self.list_widget.addItem(list_item)
-            
-        layout.addWidget(self.list_widget)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Restore")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         self.setLayout(layout)
 
-    def _apply_styles(self):
-        self.setStyleSheet("""
-            QDialog { background-color: #1e1e2e; color: #cdd6f4; }
-            QListWidget { background-color: #313244; color: #ffffff; border: 1px solid #45475a; border-radius: 4px; }
-            QLabel { color: #cdd6f4; font-weight: bold; }
-            QPushButton { background-color: #313244; color: white; border: 1px solid #45475a; padding: 6px 12px; border-radius: 4px; }
-            QPushButton:hover { background-color: #45475a; }
-        """)
-
-    def get_selected_index(self):
-        if len(self.list_widget.selectedItems()) > 0:
-            return self.list_widget.selectedItems()[0].data(Qt.ItemDataRole.UserRole)
-        return None
+    def get_target_data(self):
+        """Return the target data from the dialog."""
+        return {
+            "name": self.name_edit.text().strip(),
+            "host": self.host_edit.text().strip(),
+            "port": self.port_spin.value(),
+            "database": self.database_edit.text().strip(),
+            "type": "z3950",
+            "selected": True,
+            "rank": 0
+        }
 
 
 class TargetsTab(QWidget):
-    """
-    The main widget to specific configuration of targets.
-    Replaces the static table in the settings tab.
-    """
+    targets_changed = pyqtSignal(list)  # Emits list of targets when changed
+
     def __init__(self):
         super().__init__()
-        self.manager = TargetsManager()
-        self.history = [] # List of {type, snapshot, timestamp}
+        self.targets_file = Path("data/targets.json")
+        self.targets = []
         self._setup_ui()
-        self.refresh_targets()
-
-    def set_advanced_mode(self, enabled):
-        """No-op for compatibility with main window calls."""
-        pass
+        self._load_targets()
 
     def _setup_ui(self):
         layout = QVBoxLayout()
-        # layout.setContentsMargins(0, 0, 0, 0) # Seamless integration
 
-        # Title / Header
-        group_box = QGroupBox("Z39.50 Targets")
-        group_layout = QVBoxLayout()
+        # Title
+        title_label = QLabel("Target Management")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title_label)
 
-        # Toolbar
-        btn_layout = QHBoxLayout()
-        
-        self.btn_add = QPushButton("Add New Target")
-        self.btn_add.setObjectName("PrimaryButton")
-        self.btn_add.clicked.connect(self.add_target)
-        
-        self.btn_edit = QPushButton("Edit Selected")
-        self.btn_edit.clicked.connect(self.edit_target)
+        # Instructions
+        instructions = QLabel(
+            "Manage source order and selection. Targets are checked from top to bottom until a match is found."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
 
-        self.btn_remove = QPushButton("Remove Selected")
-        self.btn_remove.setObjectName("DangerButton")
-        self.btn_remove.clicked.connect(self.remove_target)
-        
-        self.btn_toggle = QPushButton("Toggle Active")
-        self.btn_toggle.clicked.connect(self.toggle_target)
+        # API Targets (read-only)
+        api_group = QGroupBox("Built-in API Targets (Non-Z39.50)")
+        api_layout = QVBoxLayout()
 
-        # Restore Button
-        self.btn_restore = QPushButton("Restore History")
-        self.btn_restore.clicked.connect(self.show_restore_dialog)
+        api_note = QLabel("Enable/disable APIs here, then use priority controls below to set lookup order.")
+        api_note.setWordWrap(False)
+        api_note.setMinimumHeight(22)
+        api_note.setStyleSheet("color: #a7a59b; font-size: 12px;")
+        api_layout.addWidget(api_note)
 
-        # Search Container (Simulates a single input with clear button)
-        self.search_container = QWidget()
-        self.search_container.setStyleSheet("""
-            QWidget {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-            }
-            QLineEdit {
-                background-color: transparent;
-                border: none;
-                color: #cdd6f4;
-                padding: 4px 8px;
-                min-width: 180px;
-            }
-            /* Hover effect for the clear button */
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 2px;
-                color: #cdd6f4; /* Text color for 'X' */
-                font-weight: bold;
-                font-size: 16px;
-            }
-            QToolButton:hover {
-                background-color: #45475a; 
-                color: #ffffff;
-            }
-        """)
-        search_layout = QHBoxLayout(self.search_container)
-        search_layout.setContentsMargins(0, 0, 2, 0)
-        search_layout.setSpacing(0)
-        
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search targets...")
-        self.search_edit.textChanged.connect(self.filter_targets)
-        
-        # Change QPushButton to QToolButton style in stylesheet for consistency
-        # Actually, let's just make it a QToolButton
-        from PyQt6.QtWidgets import QToolButton
-        self.search_clear_btn = QToolButton()
-        self.search_clear_btn.setText("×")
-        self.search_clear_btn.setFixedSize(28, 28)
-        self.search_clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.search_clear_btn.setToolTip("Clear search")
-        self.search_clear_btn.hide()
-        self.search_clear_btn.clicked.connect(lambda: self.search_edit.clear())
-        self.search_edit.textChanged.connect(lambda t: self.search_clear_btn.setVisible(bool(t)))
+        self.api_checkboxes: dict[str, QCheckBox] = {}
+        self._api_name_map = {
+            "Library of Congress": {"Library of Congress"},
+            "Harvard": {"Harvard", "Harvard LibraryCloud"},
+            "OpenLibrary": {"OpenLibrary"},
+        }
 
-        search_layout.addWidget(self.search_edit)
-        search_layout.addWidget(self.search_clear_btn)
+        for api_name in self._api_name_map:
+            checkbox = QCheckBox(api_name)
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(
+                lambda state, name=api_name: self._toggle_api_checkbox(name, state)
+            )
+            self.api_checkboxes[api_name] = checkbox
+            api_layout.addWidget(checkbox)
 
-        btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_edit)
-        btn_layout.addWidget(self.btn_toggle)
-        btn_layout.addWidget(self.btn_restore) # Add restore button
-        btn_layout.addStretch() # Pushes everything after this to the right
-        btn_layout.addWidget(self.search_container) # Add search container at end
+        self.api_status_label = QLabel("Enabled APIs: 3/3")
+        self.api_status_label.setStyleSheet(
+            "font-size: 11px; color: #a7a59b; "
+            "padding: 6px 10px; border: 1px solid #2d2e2b; border-radius: 6px; background: #1f201d;"
+        )
+        api_layout.addWidget(self.api_status_label)
 
-        group_layout.addLayout(btn_layout)
+        api_group.setLayout(api_layout)
+        layout.addWidget(api_group)
 
-        # Table
-        self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["Enabled", "Rank", "Target Name", "Host / IP", "Port", "Database", "Actions"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed) # Enabled
-        self.table.setColumnWidth(0, 70)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed) # Rank
-        self.table.setColumnWidth(1, 80)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents) # Port column small
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed) # Actions
-        self.table.setColumnWidth(6, 100)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        
-        # Style the header to be bold
-        self.table.horizontalHeader().setStyleSheet("font-weight: bold;")
+        # Z39.50 Targets
+        z3950_group = QGroupBox("Z39.50 Targets")
+        z3950_layout = QVBoxLayout()
 
-        # Double click to edit
-        self.table.itemDoubleClicked.connect(self.edit_target)
+        # Target list
+        self.target_list = QListWidget()
+        self.target_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.target_list.itemDoubleClicked.connect(self._edit_target)
+        z3950_layout.addWidget(self.target_list)
 
-        group_layout.addWidget(self.table)
-        
-        group_box.setLayout(group_layout)
-        layout.addWidget(group_box)
+        # Target management buttons
+        button_layout = QHBoxLayout()
+
+        self.add_button = QPushButton("Add Target")
+        self.add_button.clicked.connect(self._add_target)
+
+        self.edit_button = QPushButton("Edit")
+        self.edit_button.clicked.connect(self._edit_target)
+
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.clicked.connect(self._remove_target)
+
+        self.toggle_button = QPushButton("Toggle Selected")
+        self.toggle_button.clicked.connect(self._toggle_target)
+
+        button_layout.addWidget(self.add_button)
+        button_layout.addWidget(self.edit_button)
+        button_layout.addWidget(self.remove_button)
+        button_layout.addWidget(self.toggle_button)
+        button_layout.addStretch()
+
+        z3950_layout.addLayout(button_layout)
+        z3950_group.setLayout(z3950_layout)
+        layout.addWidget(z3950_group)
+
+        # Ranking controls
+        rank_group = QGroupBox("Target Priority")
+        rank_layout = QHBoxLayout()
+
+        self.move_up_button = QPushButton("Move Up")
+        self.move_up_button.clicked.connect(self._move_target_up)
+
+        self.move_down_button = QPushButton("Move Down")
+        self.move_down_button.clicked.connect(self._move_target_down)
+
+        rank_note = QLabel("Higher targets are checked first")
+        rank_note.setStyleSheet("font-style: italic; color: gray;")
+
+        rank_layout.addWidget(self.move_up_button)
+        rank_layout.addWidget(self.move_down_button)
+        rank_layout.addWidget(rank_note)
+        rank_layout.addStretch()
+
+        rank_group.setLayout(rank_layout)
+        layout.addWidget(rank_group)
+
+        # Info label
+        info_layout = QHBoxLayout()
+        info_label = QLabel("💡 Changes are automatically saved")
+        info_label.setStyleSheet("font-style: italic; color: #666666; font-size: 11px;")
+        info_layout.addWidget(info_label)
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
+
+        layout.addStretch()
         self.setLayout(layout)
+        self.advanced_mode = False
 
-    def refresh_targets(self):
-        """Reload targets from the manager and display them."""
-        self.table.clearContents()
-        targets = self.manager.get_all_targets()
-        self.table.setRowCount(len(targets))
-        
-        # Block signals during refresh to avoid recursive loops
-        self.table.blockSignals(True)
+    def set_advanced_mode(self, enabled):
+        """Enable/disable advanced mode features."""
+        self.advanced_mode = enabled
+        # Targets tab features are always visible for now
 
-        for row, target in enumerate(targets):
-            # Store target object in a hidden item (e.g. name column) for retrieval
-            # We can't store it in column 0 easily if it's a widget, so we use column 2 (Name)
-            
-            # 1. Enabled (Checkbox)
-            # Create a container widget to center the checkbox
-            container = QWidget()
-            chk_layout = QHBoxLayout(container)
-            chk_layout.setContentsMargins(0, 0, 0, 0)
-            chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            
-            chk = QCheckBox()
-            chk.setChecked(target.selected)
-            # Style it to be green when checked if desired, but default is standard check
-            chk.setStyleSheet("""
-                QCheckBox::indicator { width: 18px; height: 18px; }
-                QCheckBox::indicator:checked {
-                    background-color: #a6e3a1; /* Green */
-                    border: 1px solid #a6e3a1;
-                    image: url(none);
-                }
-                QCheckBox::indicator:unchecked {
-                    background-color: #f38ba8; /* Red */
-                    border: 1px solid #f38ba8;
-                    image: url(none);
-                }
-            """)
-            # Connect
-            chk.toggled.connect(lambda checked, t=target: self._on_enabled_toggled(checked, t))
-            
-            chk_layout.addWidget(chk)
-            self.table.setCellWidget(row, 0, container)
+    def _load_default_targets(self):
+        """Load default API targets."""
+        return [
+            {"name": "Library of Congress", "type": "api", "selected": True, "rank": 1},
+            {"name": "Harvard", "type": "api", "selected": True, "rank": 2},
+            {"name": "OpenLibrary", "type": "api", "selected": True, "rank": 3}
+        ]
 
-            # 2. Rank (ComboBox)
-            rank_combo = QComboBox()
-            # Populate with 1..N
-            for i in range(1, len(targets) + 1):
-                rank_combo.addItem(str(i), i)
-            
-            rank_combo.setCurrentText(str(target.rank if target.rank > 0 else 999))
-            rank_combo.currentTextChanged.connect(lambda text, t=target: self._on_rank_changed(text, t))
-            
-            # Container to center the combobox
-            rank_container = QWidget()
-            rank_layout = QHBoxLayout(rank_container)
-            rank_layout.setContentsMargins(0, 0, 0, 0)
-            rank_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            rank_layout.addWidget(rank_combo)
-            
-            self.table.setCellWidget(row, 1, rank_container)
-
-            # 3. Name
-            name_item = QTableWidgetItem(target.name)
-            name_item.setData(Qt.ItemDataRole.UserRole, target) # Store data here
-            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 2, name_item)
-
-            # 4. Host
-            host_item = QTableWidgetItem(target.host)
-            host_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 3, host_item)
-            
-            # 5. Port
-            port_str = str(target.port) if target.port else ""
-            port_item = QTableWidgetItem(port_str)
-            port_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 4, port_item)
-
-            # 6. Database
-            db_item = QTableWidgetItem(target.database)
-            db_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 5, db_item)
-
-            # 7. Remove Button
-            if target.target_type != "API":
-                btn_remove = QPushButton("Remove")
-                btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn_remove.setStyleSheet("""
-                    QPushButton {
-                        background-color: #f38ba8;
-                        color: #1e1e2e;
-                        border: none;
-                        border-radius: 4px;
-                        padding: 4px;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #e78284;
-                    }
-                """)
-                btn_remove.clicked.connect(lambda _, t=target: self._remove_specific_target(t))
-                
-                # Container to center the button
-                btn_container = QWidget()
-                btn_layout = QHBoxLayout(btn_container)
-                btn_layout.setContentsMargins(4, 2, 4, 2)
-                btn_layout.addWidget(btn_remove)
-                self.table.setCellWidget(row, 6, btn_container)
-            
-        self.table.blockSignals(False)
-    
-    def _on_enabled_toggled(self, checked, target):
-        target.selected = checked
-        self.manager.modify_target(target)
-        
-    def _on_rank_changed(self, text, target):
-        if not text: return
+    def _load_targets(self):
+        """Load targets from file or create defaults."""
         try:
-            new_rank = int(text)
-            if new_rank == target.rank: return
-            
-            # Find the target currently holding this new rank
-            all_targets = self.manager.get_all_targets()
-            other_target = next((t for t in all_targets if t.rank == new_rank), None)
-            
-            # Perform the swap
-            if other_target and other_target.target_id != target.target_id:
-                other_target.rank = target.rank # Move other target to current target's old rank
-                self.manager.modify_target(other_target) # Save other first
-            
-            target.rank = new_rank
-            self.manager.modify_target(target)
-            
-            self.refresh_targets() # Refresh to re-order rows and update dropdowns
-            
-        except ValueError:
-            pass
+            if self.targets_file.exists():
+                with open(self.targets_file, 'r') as f:
+                    self.targets = json.load(f)
+            else:
+                self.targets = self._load_default_targets()
+                self._save_targets()
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Failed to load targets: {str(e)}\nUsing defaults."
+            )
+            self.targets = self._load_default_targets()
 
-    def add_target(self):
+        self._sync_api_checkboxes()
+        self._refresh_target_list()
+
+    def _refresh_target_list(self):
+        """Refresh the target list display."""
+        self._sync_api_checkboxes()
+        self.target_list.clear()
+
+        # Sort by rank
+        sorted_targets = sorted(self.targets, key=lambda x: x.get("rank", 999))
+
+        for target in sorted_targets:
+            name = target.get("name", "Unknown")
+            target_type = target.get("type", "unknown")
+            selected = target.get("selected", True)
+
+            # Format display text
+            status = "✓" if selected else "✗"
+            if target_type == "z3950":
+                host = target.get("host", "")
+                display_text = f"{status} {name} ({host}) [Z39.50]"
+            else:
+                display_text = f"{status} {name} [API]"
+
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.ItemDataRole.UserRole, target)
+
+            # Gray out if not selected
+            if not selected:
+                item.setForeground(Qt.GlobalColor.gray)
+
+            self.target_list.addItem(item)
+
+        self._update_api_status_label()
+
+    def _add_target(self):
+        """Add a new Z39.50 target."""
         dialog = TargetDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            data = dialog.get_data()
-            
-            # Calculate next rank
-            all_targets = self.manager.get_all_targets()
-            next_rank = 1
-            if all_targets:
-                next_rank = max(t.rank for t in all_targets) + 1
+            target_data = dialog.get_target_data()
 
-            new_target = Target(
-                target_id="", # Auto-assign
-                name=data["name"],
-                target_type="Z3950",
-                host=data["host"],
-                port=data["port"],
-                database=data["database"],
-                username=data.get("username", ""),
-                password=data.get("password", ""),
-                record_syntax="USMARC", # Default
-                rank=next_rank, # Append to end with next available rank
-                selected=True
+            if not target_data["name"] or not target_data["host"]:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Input",
+                    "Name and Host are required fields."
+                )
+                return
+
+            # Set rank to be after existing targets
+            target_data["rank"] = len(self.targets) + 1
+            self.targets.append(target_data)
+            self._refresh_target_list()
+
+            # Auto-save the changes
+            self._auto_save_targets()
+
+    def _edit_target(self):
+        """Edit selected target."""
+        current_item = self.target_list.currentItem()
+        if not current_item:
+            return
+
+        target = current_item.data(Qt.ItemDataRole.UserRole)
+
+        if target.get("type") == "api":
+            QMessageBox.information(
+                self,
+                "Cannot Edit",
+                "Built-in API targets cannot be edited. You can only change their rank and selection status."
             )
-            self.manager.add_target(new_target)
-            self.refresh_targets()
-
-    def edit_target(self):
-        target = self._get_selected_target()
-        if not target: return
-
-        if target.target_type == "API":
-             QMessageBox.information(self, "Info", "Built-in API targets cannot be edited.")
-             return
+            return
 
         dialog = TargetDialog(self, target)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Track history before modification
-            self._track_history("EDIT", target)
-            
-            data = dialog.get_data()
+            updated_data = dialog.get_target_data()
+            updated_data["rank"] = target["rank"]  # Preserve rank
+            updated_data["selected"] = target["selected"]  # Preserve selection
 
-            # Update target object
-            target.name = data["name"]
-            target.host = data["host"]
-            target.port = data["port"]
-            target.port = data["port"]
-            target.database = data["database"]
-            target.username = data.get("username", "")
-            target.password = data.get("password", "")
-            
-            self.manager.modify_target(target)
-            self.refresh_targets()
+            # Update in list
+            idx = self.targets.index(target)
+            self.targets[idx] = updated_data
+            self._refresh_target_list()
 
-    def remove_target(self):
-        # Legacy toolbar method - keep or redirect?
-        # Redirect to currently selected row if any
-        target = self._get_selected_target()
-        if target:
-            self._remove_specific_target(target)
+            # Auto-save the changes
+            self._auto_save_targets()
 
-    def _remove_specific_target(self, target):
-        """Remove a specific target object."""
-        if target.target_type == "API":
-             QMessageBox.warning(self, "Restricted", "Cannot remove built-in API targets.")
-             return
+    def _remove_target(self):
+        """Remove selected target."""
+        current_item = self.target_list.currentItem()
+        if not current_item:
+            return
 
-        confirm = QMessageBox.question(
-            self, "Confirm Delete", 
-            f"Are you sure you want to remove '{target.name}'?",
+        target = current_item.data(Qt.ItemDataRole.UserRole)
+
+        if target.get("type") == "api":
+            QMessageBox.warning(
+                self,
+                "Cannot Remove",
+                "Built-in API targets cannot be removed."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Removal",
+            f"Remove target '{target.get('name')}'?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        
-        if confirm == QMessageBox.StandardButton.Yes:
-            # Track history before delete
-            self._track_history("DELETE", target)
-            self.manager.delete_target(target.target_id)
-            self.refresh_targets()
 
-    def toggle_target(self):
-        target = self._get_selected_target()
-        if not target: return
+        if reply == QMessageBox.StandardButton.Yes:
+            self.targets.remove(target)
+            self._refresh_target_list()
 
-        target.selected = not target.selected
-        self.manager.modify_target(target)
-        self.refresh_targets()
+            # Auto-save the changes
+            self._auto_save_targets()
 
-    def _get_selected_target(self):
-        row = self.table.currentRow()
-        if row < 0:
-            return None
-        # Data is stored in the "Name" column (Index 2) now
-        item = self.table.item(row, 2)
-        if item:
-             return item.data(Qt.ItemDataRole.UserRole)
-        return None
+    def _toggle_target(self):
+        """Toggle selection status of target."""
+        current_item = self.target_list.currentItem()
+        if not current_item:
+            return
 
-    def filter_targets(self, text):
-        """Filter rows based on search text (Target Name only)."""
-        text = text.lower()
-        for row in range(self.table.rowCount()):
-            # Check Name (2) only
-            name_item = self.table.item(row, 2)
-            name = name_item.text().lower() if name_item else ""
-            
-            visible = (text in name)
-            self.table.setRowHidden(row, not visible)
+        target = current_item.data(Qt.ItemDataRole.UserRole)
+        target["selected"] = not target.get("selected", True)
+        self._refresh_target_list()
 
-    def _track_history(self, action_type, target):
-        """Save a snapshot of the target state."""
-        snapshot = deepcopy(target)
-        self.history.append({
-            'type': action_type,
-            'snapshot': snapshot,
-            'timestamp': QDateTime.currentDateTime()
-        })
-        # Optional: Limit history size
-        if len(self.history) > 50:
-            self.history.pop(0)
+        # Auto-save the changes
+        self._auto_save_targets()
 
-    def show_restore_dialog(self):
-        """Show the restore history dialog."""
-        if not self.history:
-             QMessageBox.information(self, "History", "No actions to restore in this session.")
-             return
+    def _toggle_api_checkbox(self, api_name: str, state: int):
+        """Toggle selected state for a built-in API from checkbox."""
+        enabled = state == Qt.CheckState.Checked.value
+        valid_names = self._api_name_map.get(api_name, {api_name})
 
-        dialog = RestoreDialog(self.history, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            idx = dialog.get_selected_index()
-            if idx is not None:
-                item = self.history.pop(idx) # Remove from history once restored
-                self._restore_item(item)
+        for target in self.targets:
+            if target.get("name") in valid_names and target.get("type", "api") == "api":
+                target["selected"] = enabled
+                break
 
-    def _restore_item(self, item):
-        """Restore the target based on action type."""
-        action = item['type']
-        snapshot = item['snapshot']
-        
-        if action == "DELETE":
-            # Re-add the target to the end of the list with a new rank.
-            all_targets = self.manager.get_all_targets()
-            next_rank = 1
-            if all_targets:
-                next_rank = max(t.rank for t in all_targets) + 1
-            
-            snapshot.rank = next_rank
-            
-            # Note: We might want to clear the ID to let add_target generate a new one 
-            # if we truly want it to be 'new', but keeping ID preserves identity if needed.
-            # However, if we deleted it, the ID is free. 
-            # Let's keep ID to respect 'restore', but rank moves to end as requested.
-            
-            self.manager.add_target(snapshot)
-            self.refresh_targets()
-            QMessageBox.information(self, "Restored", f"Restored '{snapshot.name}' to end of list.")
-            
-        elif action == "EDIT":
-            # Revert modifications
-            self.manager.modify_target(snapshot)
-            self.refresh_targets()
-            QMessageBox.information(self, "Restored", f"Reverted changes to '{snapshot.name}'.")
+        self._refresh_target_list()
+        self._auto_save_targets()
+
+    def _move_target_up(self):
+        """Move target up in priority."""
+        current_row = self.target_list.currentRow()
+        if current_row <= 0:
+            return
+
+        # Get sorted targets (same as displayed)
+        sorted_targets = sorted(self.targets, key=lambda x: x.get("rank", 999))
+
+        # Swap the two targets in the sorted list
+        sorted_targets[current_row], sorted_targets[current_row - 1] = \
+            sorted_targets[current_row - 1], sorted_targets[current_row]
+
+        # Reassign ranks based on new order
+        for idx, target in enumerate(sorted_targets):
+            target["rank"] = idx + 1
+
+        self._refresh_target_list()
+        self.target_list.setCurrentRow(current_row - 1)
+
+        # Auto-save the changes
+        self._auto_save_targets()
+
+    def _move_target_down(self):
+        """Move target down in priority."""
+        current_row = self.target_list.currentRow()
+        if current_row < 0 or current_row >= self.target_list.count() - 1:
+            return
+
+        # Get sorted targets (same as displayed)
+        sorted_targets = sorted(self.targets, key=lambda x: x.get("rank", 999))
+
+        # Swap the two targets in the sorted list
+        sorted_targets[current_row], sorted_targets[current_row + 1] = \
+            sorted_targets[current_row + 1], sorted_targets[current_row]
+
+        # Reassign ranks based on new order
+        for idx, target in enumerate(sorted_targets):
+            target["rank"] = idx + 1
+
+        self._refresh_target_list()
+        self.target_list.setCurrentRow(current_row + 1)
+
+        # Auto-save the changes
+        self._auto_save_targets()
+
+    def _auto_save_targets(self):
+        """Auto-save targets to file (without showing success message)."""
+        try:
+            self.targets_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.targets_file, 'w') as f:
+                json.dump(self.targets, f, indent=2)
+
+            self.targets_changed.emit(self.targets)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to auto-save targets: {str(e)}"
+            )
+
+    def _save_targets(self):
+        """Save targets to file with confirmation message."""
+        try:
+            self.targets_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.targets_file, 'w') as f:
+                json.dump(self.targets, f, indent=2)
+
+            self.targets_changed.emit(self.targets)
+            QMessageBox.information(
+                self,
+                "Success",
+                "Target configuration saved successfully."
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to save targets: {str(e)}"
+            )
+
+    def get_targets(self):
+        """Return list of targets."""
+        return self.targets
+
+    def _sync_api_checkboxes(self):
+        """Sync checkbox states from current target config."""
+        enabled_count = 0
+        for label, valid_names in self._api_name_map.items():
+            selected = True
+            for target in self.targets:
+                if target.get("name") in valid_names and target.get("type", "api") == "api":
+                    selected = target.get("selected", True)
+                    break
+            checkbox = self.api_checkboxes.get(label)
+            if checkbox is not None:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(selected)
+                checkbox.blockSignals(False)
+            if selected:
+                enabled_count += 1
+        self.api_status_label.setText(f"Enabled APIs: {enabled_count}/{len(self.api_checkboxes)}")
+
+    def _update_api_status_label(self):
+        enabled_count = 0
+        for checkbox in self.api_checkboxes.values():
+            if checkbox.isChecked():
+                enabled_count += 1
+        self.api_status_label.setText(f"Enabled APIs: {enabled_count}/{len(self.api_checkboxes)}")

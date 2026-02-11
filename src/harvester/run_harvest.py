@@ -14,11 +14,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.utils import isbn_validator
-from src.database import DatabaseManager
-from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
-from src.harvester.api_targets import build_default_api_targets
-from src.harvester.z3950_targets import build_default_z3950_targets
+from database import DatabaseManager
+from harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
+from harvester.api_targets import build_default_api_targets
+from utils import isbn_validator
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +46,8 @@ def read_isbns_from_tsv(input_path: Path) -> list[str]:
         has_header = len(first_row) > 0 and first_row[0].strip().lower() == "isbn"
 
         def add_raw(raw_val: str) -> None:
+            if raw_val.startswith("#"):
+                return
             norm = isbn_validator.normalize_isbn(raw_val)
             if norm:
                 isbns.append(norm)
@@ -79,8 +80,12 @@ def run_harvest(
     db_path: Path | str = "data/lccn_harvester.sqlite3",
     retry_days: int = 7,
     targets: list[HarvestTarget] | None = None,
+    bypass_retry_isbns: set[str] | None = None,
+    bypass_cache_isbns: set[str] | None = None,
     progress_cb: ProgressCallback | None = None,
     max_workers: int = 1,
+    batch_size: int = 50,
+    include_z3950: bool = False,
 ) -> HarvestSummary:
 
     input_path = input_path.expanduser().resolve()
@@ -93,14 +98,19 @@ def run_harvest(
     if targets is None:
         targets = []
         targets.extend(build_default_api_targets())
-        targets.extend(build_default_z3950_targets())
+        if include_z3950:
+            from harvester.z3950_targets import build_default_z3950_targets
+            targets.extend(build_default_z3950_targets())
 
     orch = HarvestOrchestrator(
         db=db,
         targets=targets,
         retry_days=retry_days,
+        bypass_retry_isbns=bypass_retry_isbns,
+        bypass_cache_isbns=bypass_cache_isbns,
         progress_cb=progress_cb,
         max_workers=max_workers,
+        batch_size=batch_size,
     )
 
     orch_summary = orch.run(isbns, dry_run=dry_run)

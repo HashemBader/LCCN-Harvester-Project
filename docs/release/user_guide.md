@@ -10,6 +10,17 @@ The LCCN Harvester takes a TSV file of ISBNs, queries multiple library sources (
 
 **Current status:** CLI-only. See [cli_user_guide.md](cli_user_guide.md) for detailed CLI usage.
 
+## Requirements
+
+- Python 3.10+
+- Internet access to:
+  - `https://www.loc.gov`
+  - `https://api.lib.harvard.edu`
+  - `https://openlibrary.org`
+- Valid TLS/SSL certificate trust on the client machine
+
+Note: Some systems may fail HTTPS verification by default. If this happens, follow the SSL troubleshooting steps below.
+
 ---
 
 ## Preparing Input
@@ -111,6 +122,33 @@ Ensure your virtual environment is activated and dependencies are installed:
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+### SSL certificate verify failed
+If you see an error like:
+```
+CERTIFICATE_VERIFY_FAILED
+```
+install/update certificate bundles:
+```bash
+python3 -m pip install --upgrade pip certifi
+```
+
+Then verify HTTPS connectivity:
+```bash
+python3 - << 'PY'
+import urllib.request
+for u in ["https://www.loc.gov", "https://api.lib.harvard.edu", "https://openlibrary.org"]:
+    try:
+        with urllib.request.urlopen(u, timeout=10) as r:
+            print("OK", u, r.status)
+    except Exception as e:
+        print("FAIL", u, e)
+PY
+```
+
+If one API returns `403 Forbidden`, this is usually network policy / IP blocking, not SSL:
+- try a different network (or disable VPN/proxy)
+- temporarily disable that API target in the app
 
 ---
 

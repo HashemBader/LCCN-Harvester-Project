@@ -348,6 +348,26 @@ class ConfigTab(QWidget):
             "output_invalid_isbn_file": self.invalid_isbn_checkbox.isChecked()
         }
 
+    def _normalize_settings(self, settings):
+        """Create a stable comparable representation for settings."""
+        import json
+        return json.dumps(settings, sort_keys=True, separators=(",", ":"))
+
+    def _find_duplicate_profiles(self, settings, *, exclude_name=None):
+        """Return profile names that have identical settings."""
+        target = self._normalize_settings(settings)
+        duplicates = []
+        for profile_name in self.profile_manager.list_profiles():
+            if exclude_name and profile_name == exclude_name:
+                continue
+            profile = self.profile_manager.load_profile(profile_name)
+            if not profile:
+                continue
+            existing_settings = profile.get("settings", {})
+            if self._normalize_settings(existing_settings) == target:
+                duplicates.append(profile_name)
+        return duplicates
+
     def _save_to_current_profile(self):
         """Save changes to current profile."""
         if self.current_profile_name == "Default Settings":
@@ -392,6 +412,22 @@ class ConfigTab(QWidget):
                     return
 
             settings = self._get_current_settings()
+
+            # Warn if settings duplicate an existing profile.
+            duplicates = self._find_duplicate_profiles(settings, exclude_name=name)
+            if duplicates:
+                dup_list = "\n".join([f"• {n}" for n in duplicates])
+                reply = QMessageBox.question(
+                    self,
+                    "Duplicate Profile Settings",
+                    "These settings already exist in another profile:\n\n"
+                    f"{dup_list}\n\n"
+                    "Create this profile anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+
             self.profile_manager.save_profile(name, settings)
 
             self._refresh_profile_list()

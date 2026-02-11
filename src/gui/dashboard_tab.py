@@ -30,13 +30,14 @@ class StatCard(QFrame):
         self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
         self.setStyleSheet(f"""
             QFrame {{
-                background-color: white;
+                background-color: #1f201d;
+                border: 1px solid #2d2e2b;
                 border-left: 4px solid {self.color};
-                border-radius: 8px;
-                padding: 15px;
+                border-radius: 10px;
+                padding: 14px;
             }}
             QFrame:hover {{
-                background-color: #f8f8f8;
+                background-color: #242521;
             }}
         """)
 
@@ -46,10 +47,10 @@ class StatCard(QFrame):
         header_layout = QHBoxLayout()
 
         icon_label = QLabel(self.icon)
-        icon_label.setStyleSheet("font-size: 32px; border: none; font-family: Arial, Helvetica;")
+        icon_label.setStyleSheet("font-size: 24px; border: none; font-family: Arial, Helvetica;")
 
         title_label = QLabel(self.title)
-        title_label.setStyleSheet("font-size: 12px; color: #666666; font-weight: bold; border: none; font-family: Arial, Helvetica;")
+        title_label.setStyleSheet("font-size: 12px; color: #a7a59b; font-weight: bold; border: none; font-family: Arial, Helvetica;")
 
         header_layout.addWidget(icon_label)
         header_layout.addStretch()
@@ -60,7 +61,7 @@ class StatCard(QFrame):
         # Value
         self.value_label = QLabel(self.value)
         self.value_label.setStyleSheet(f"""
-            font-size: 36px;
+            font-size: 34px;
             font-weight: bold;
             color: {self.color};
             border: none;
@@ -96,23 +97,26 @@ class DashboardTab(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(14)
 
         # Title
         title_label = QLabel("📊 Live Dashboard")
-        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #0066cc;")
+        title_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #c2d07f;")
         layout.addWidget(title_label)
 
         subtitle_label = QLabel("Real-time statistics and performance metrics")
-        subtitle_label.setStyleSheet("font-size: 12px; color: #666666; margin-bottom: 10px;")
+        subtitle_label.setStyleSheet("font-size: 12px; color: #a7a59b; margin-bottom: 6px;")
         layout.addWidget(subtitle_label)
 
         # Stat Cards
         cards_layout = QGridLayout()
+        cards_layout.setHorizontalSpacing(12)
+        cards_layout.setVerticalSpacing(12)
 
-        self.total_card = StatCard("Total Records", "0", "📚", "#0066cc")
-        self.found_card = StatCard("LCCNs Found", "0", "✅", "#00cc66")
+        self.total_card = StatCard("Total Processed", "0", "📚", "#0066cc")
+        self.found_card = StatCard("Successful", "0", "✅", "#00cc66")
         self.failed_card = StatCard("Failed", "0", "❌", "#ff3333")
-        self.cached_card = StatCard("Cache Hits", "0", "⚡", "#ff9900")
+        self.cached_card = StatCard("In Database", "0", "💾", "#ff9900")
 
         cards_layout.addWidget(self.total_card, 0, 0)
         cards_layout.addWidget(self.found_card, 0, 1)
@@ -130,9 +134,9 @@ class DashboardTab(QWidget):
         self.success_rate_label.setStyleSheet("font-size: 48px; font-weight: bold; color: #00cc66; font-family: Arial, Helvetica;")
         success_layout.addWidget(self.success_rate_label)
 
-        self.success_subtitle = QLabel("Overall harvest success rate")
+        self.success_subtitle = QLabel("Successful / (Successful + Failed)")
         self.success_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.success_subtitle.setStyleSheet("font-size: 11px; color: #666666;")
+        self.success_subtitle.setStyleSheet("font-size: 11px; color: #a7a59b;")
         success_layout.addWidget(self.success_subtitle)
 
         success_group.setLayout(success_layout)
@@ -169,27 +173,22 @@ class DashboardTab(QWidget):
 
         try:
             with self.db.connect() as conn:
-                # Get total records
-                total = conn.execute("SELECT COUNT(*) FROM main").fetchone()[0]
-                self.total_card.update_value(total)
-
-                # Get records with LCCN
-                found = conn.execute("SELECT COUNT(*) FROM main WHERE lccn IS NOT NULL").fetchone()[0]
-                self.found_card.update_value(found)
+                # Successful harvests
+                successful = conn.execute("SELECT COUNT(*) FROM main WHERE lccn IS NOT NULL").fetchone()[0]
+                self.found_card.update_value(successful)
 
                 # Get failed attempts
                 failed = conn.execute("SELECT COUNT(*) FROM attempted").fetchone()[0]
                 self.failed_card.update_value(failed)
 
-                # Calculate cached (approximate - records older than 1 day)
-                cached = conn.execute(
-                    "SELECT COUNT(*) FROM main WHERE date_added < date('now', '-1 day')"
-                ).fetchone()[0]
-                self.cached_card.update_value(cached)
+                total_processed = successful + failed
+                self.total_card.update_value(total_processed)
 
-                # Calculate success rate
-                if total > 0:
-                    success_rate = (found / total) * 100
+                in_database = conn.execute("SELECT COUNT(*) FROM main").fetchone()[0]
+                self.cached_card.update_value(in_database)
+
+                if total_processed > 0:
+                    success_rate = (successful / total_processed) * 100
                     self.success_rate_label.setText(f"{success_rate:.1f}%")
 
                     # Color based on rate
@@ -201,6 +200,11 @@ class DashboardTab(QWidget):
                         color = "#ff3333"
                     self.success_rate_label.setStyleSheet(
                         f"font-size: 48px; font-weight: bold; color: {color}; font-family: Arial, Helvetica;"
+                    )
+                else:
+                    self.success_rate_label.setText("0%")
+                    self.success_rate_label.setStyleSheet(
+                        "font-size: 48px; font-weight: bold; color: #999999; font-family: Arial, Helvetica;"
                     )
 
                 # Update timestamp

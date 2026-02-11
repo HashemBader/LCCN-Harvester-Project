@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QMessageBox, QSizePolicy, QFrame
 )
 from PyQt6.QtCore import Qt
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -27,13 +27,14 @@ class ResultsTab(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(12)
 
         # Title
-        title_label = QLabel("Results Viewer")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        title_label = QLabel("Database")
+        title_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #c2d07f;")
         layout.addWidget(title_label)
 
-        subtitle_label = QLabel("Search, review, and export your harvested records")
+        subtitle_label = QLabel("Review, search, and export harvested records")
         subtitle_label.setStyleSheet("color: #a7a59b; font-size: 12px;")
         layout.addWidget(subtitle_label)
 
@@ -48,29 +49,26 @@ class ResultsTab(QWidget):
         search_layout.setSpacing(8)
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search ISBN... (press Enter)")
+        self.search_input.setPlaceholderText("Search by ISBN (press Enter)")
         self.search_input.returnPressed.connect(self._search_results)
         self.search_input.textChanged.connect(self._on_search_text_changed)
 
         self.table_selector = QComboBox()
-        self.table_selector.addItems(["Main Results (Successful)", "Failed Attempts"])
+        self.table_selector.addItems(["Successful Records", "Failed Attempts"])
         self.table_selector.currentIndexChanged.connect(self._on_table_changed)
 
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self._search_results)
         self.search_button.setObjectName("PrimaryButton")
 
-        self.refresh_button = QPushButton("🔄 Refresh")
+        self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self._load_all_results)
         self.refresh_button.setToolTip("Reload data from database")
 
-        self.clear_button = QPushButton("🗑️ Clear Results")
+        self.clear_button = QPushButton("Clear Database")
         self.clear_button.clicked.connect(self._clear_results)
         self.clear_button.setToolTip("Delete all results from database")
-        self.clear_button.setStyleSheet(
-            "QPushButton { background-color: #e74c3c; color: white; font-weight: bold; padding: 5px 10px; border-radius: 3px; }"
-            "QPushButton:hover { background-color: #c0392b; }"
-        )
+        self.clear_button.setObjectName("DangerButton")
 
         search_layout.addWidget(QLabel("Table:"))
         search_layout.addWidget(self.table_selector)
@@ -84,7 +82,7 @@ class ResultsTab(QWidget):
         layout.addWidget(search_group)
 
         # Results table
-        results_group = QGroupBox("Database Results")
+        results_group = QGroupBox("Records")
         results_layout = QVBoxLayout()
 
         self.results_table = QTableWidget()
@@ -96,6 +94,7 @@ class ResultsTab(QWidget):
 
         # Stats
         self.stats_label = QLabel("No data loaded")
+        self.stats_label.setStyleSheet("color: #a7a59b; font-size: 11px;")
         results_layout.addWidget(self.stats_label)
 
         results_group.setLayout(results_layout)
@@ -121,6 +120,9 @@ class ResultsTab(QWidget):
 
         self.setLayout(layout)
         self.advanced_mode = False
+
+    def _selected_table_name(self) -> str:
+        return "main" if self.table_selector.currentIndex() == 0 else "attempted"
 
     def _init_database(self):
         """Initialize database connection."""
@@ -153,7 +155,7 @@ class ResultsTab(QWidget):
             self,
             "Clear All Results",
             "This will permanently delete ALL harvest results from the database:\n\n"
-            "• All successful harvests (Main Results)\n"
+            "• All successful harvests (Successful Records)\n"
             "• All failed attempts (Failed Attempts)\n\n"
             "This action CANNOT be undone!\n\n"
             "Are you sure you want to continue?",
@@ -195,13 +197,13 @@ class ResultsTab(QWidget):
         try:
             self.stats_label.setText("Loading...")
 
-            table_name = "main" if "Main Results" in self.table_selector.currentText() else "attempted"
+            table_name = self._selected_table_name()
 
             with self.db.connect() as conn:
                 if table_name == "main":
                     cursor = conn.execute(
                         "SELECT isbn, lccn, nlmcn, classification, source, date_added "
-                        "FROM main WHERE lccn IS NOT NULL ORDER BY date_added DESC LIMIT 1000"
+                        "FROM main ORDER BY date_added DESC LIMIT 1000"
                     )
                     headers = ["ISBN", "LCCN", "NLMCN", "Classification", "Source", "Date Added", "Age (days)"]
                 else:
@@ -209,15 +211,34 @@ class ResultsTab(QWidget):
                         "SELECT isbn, last_target, last_attempted, fail_count, last_error "
                         "FROM attempted ORDER BY last_attempted DESC LIMIT 1000"
                     )
-                    headers = ["ISBN", "Last Target", "Last Attempted", "Fail Count", "Last Error", "Retry ETA"]
+                    headers = ["ISBN", "Last Target", "Last Attempted", "Fail Count", "Last Error", "Age (days)"]
 
                 rows = cursor.fetchall()
+
+                # If there are no successful rows but failed attempts exist, switch automatically
+                # so users immediately see what happened.
+                if table_name == "main" and len(rows) == 0:
+                    attempted_count = conn.execute("SELECT COUNT(*) FROM attempted").fetchone()[0]
+                    if attempted_count > 0:
+                        self.table_selector.blockSignals(True)
+                        self.table_selector.setCurrentIndex(1)
+                        self.table_selector.blockSignals(False)
+                        self.stats_label.setText(
+                            "No successful records yet. Showing Failed Attempts instead."
+                        )
+                        table_name = "attempted"
+                        cursor = conn.execute(
+                            "SELECT isbn, last_target, last_attempted, fail_count, last_error "
+                            "FROM attempted ORDER BY last_attempted DESC LIMIT 1000"
+                        )
+                        headers = ["ISBN", "Last Target", "Last Attempted", "Fail Count", "Last Error", "Age (days)"]
+                        rows = cursor.fetchall()
 
             rows = self._augment_rows(rows, table_name)
 
             self._populate_table(rows, headers)
 
-            table_display = "Main Results" if table_name == "main" else "Failed Attempts"
+            table_display = "Successful Records" if table_name == "main" else "Failed Attempts"
             if len(rows) == 0:
                 self.stats_label.setText(f"No records found in {table_display}")
             elif len(rows) == 1000:
@@ -246,13 +267,13 @@ class ResultsTab(QWidget):
         try:
             self.stats_label.setText(f"Searching for '{isbn}'...")
 
-            table_name = "main" if "Main Results" in self.table_selector.currentText() else "attempted"
+            table_name = self._selected_table_name()
 
             with self.db.connect() as conn:
                 if table_name == "main":
                     cursor = conn.execute(
                         "SELECT isbn, lccn, nlmcn, classification, source, date_added "
-                        "FROM main WHERE lccn IS NOT NULL AND isbn LIKE ?",
+                        "FROM main WHERE isbn LIKE ?",
                         (f"%{isbn}%",)
                     )
                     headers = ["ISBN", "LCCN", "NLMCN", "Classification", "Source", "Date Added", "Age (days)"]
@@ -262,7 +283,7 @@ class ResultsTab(QWidget):
                         "FROM attempted WHERE isbn LIKE ?",
                         (f"%{isbn}%",)
                     )
-                    headers = ["ISBN", "Last Target", "Last Attempted", "Fail Count", "Last Error", "Retry ETA"]
+                    headers = ["ISBN", "Last Target", "Last Attempted", "Fail Count", "Last Error", "Age (days)"]
 
                 rows = cursor.fetchall()
 
@@ -270,7 +291,7 @@ class ResultsTab(QWidget):
 
             self._populate_table(rows, headers)
 
-            table_display = "Main Results" if table_name == "main" else "Failed Attempts"
+            table_display = "Successful Records" if table_name == "main" else "Failed Attempts"
             if len(rows) == 0:
                 self.stats_label.setText(f"No matches found for '{isbn}' in {table_display}")
             else:
@@ -325,20 +346,18 @@ class ResultsTab(QWidget):
                         age_days = ""
                 augmented.append(list(row) + [age_days])
         else:
-            retry_days = 7
             for row in rows:
                 last_attempted = row[2] if len(row) > 2 else None
-                eta = ""
+                age_days = ""
                 if last_attempted:
                     try:
                         dt = datetime.fromisoformat(last_attempted)
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=timezone.utc)
-                        next_dt = dt + timedelta(days=retry_days)
-                        eta = next_dt.astimezone().strftime("%Y-%m-%d")
+                        age_days = str((now - dt).days)
                     except Exception:
-                        eta = ""
-                augmented.append(list(row) + [eta])
+                        age_days = ""
+                augmented.append(list(row) + [age_days])
 
         return augmented
 
@@ -353,32 +372,9 @@ class ResultsTab(QWidget):
 
         dialog = ExportDialog(self)
         if dialog.exec() == ExportDialog.DialogCode.Accepted:
-            export_config = dialog.get_export_config()
-
-            try:
-                export_manager = ExportManager()
-                result = export_manager.export(export_config)
-
-                if result.get("success"):
-                    files = result.get("files", [])
-                    files_str = "\n".join([f"• {f}" for f in files])
-                    QMessageBox.information(
-                        self,
-                        "Export Successful",
-                        f"Data exported successfully!\n\nFiles created:\n{files_str}",
-                    )
-                else:
-                    QMessageBox.critical(
-                        self,
-                        "Export Failed",
-                        f"Export failed: {result.get('message', 'Unknown error')}",
-                    )
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Export Error",
-                    f"An error occurred during export:\n{str(e)}",
-                )
+            # ExportDialog already performs the export and shows result messaging.
+            # Just refresh the table in case user exported freshly harvested data.
+            self._load_all_results()
 
     def _quick_export(self):
         """Quick export to TSV with default settings."""

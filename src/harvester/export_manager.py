@@ -1,24 +1,17 @@
 """
 Module: export_manager.py
-Handles data export in TSV format.
+Handles data export in TSV/CSV/JSON formats.
 """
 import csv
+import json
 from pathlib import Path
-from typing import List, Dict, Any, Union, Optional
-from dataclasses import asdict
+from typing import List, Dict, Any, Optional
 
-if __name__ == "__main__":
-    from src.database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
-else:
-    try:
-        from ..database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
-    except ImportError:
-         from src.database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
+from database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
+
 
 class ExportManager:
-    """
-    Manages the export of harvested data.
-    """
+    """Manages the export of harvested data."""
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path:
@@ -33,7 +26,7 @@ class ExportManager:
         Args:
             config: Dictionary containing export configuration:
                 - source: "main", "attempted", or "both"
-                - format: "tsv" (input ignored, always TSV)
+                - format: "tsv", "csv", or "json"
                 - columns: List of column names to include (for main)
                 - output_path: str, destination path
                 - include_header: bool
@@ -42,7 +35,11 @@ class ExportManager:
             Dict with 'success' (bool) and 'message' (str) or 'files' (list of paths).
         """
         source = config.get("source", "main")
+        format_type = str(config.get("format", "tsv")).strip().lower()
         output_path = Path(config["output_path"])
+
+        if format_type not in {"tsv", "csv", "json"}:
+            raise ValueError(f"Unsupported export format: {format_type}")
         
         exported_files = []
         
@@ -84,9 +81,17 @@ class ExportManager:
         # Ensure parent directory exists
         path.parent.mkdir(parents=True, exist_ok=True)
         
+        format_type = str(config.get("format", "tsv")).strip().lower()
         include_header = config.get("include_header", True)
-        
-        self._export_tsv(data, headers, path, include_header=include_header)
+
+        if format_type == "tsv":
+            self._export_tsv(data, headers, path, include_header=include_header)
+        elif format_type == "csv":
+            self._export_csv(data, headers, path, include_header=include_header)
+        elif format_type == "json":
+            self._export_json(data, headers, path)
+        else:
+            raise ValueError(f"Unsupported export format: {format_type}")
 
     def _fetch_data(self, source: str, selected_columns: List[str]) -> tuple[List[List[Any]], List[str]]:
         """
@@ -155,3 +160,19 @@ class ExportManager:
             if include_header:
                 writer.writerow(headers)
             writer.writerows(data)
+
+    def _export_csv(self, data: List[List[Any]], headers: List[str], path: Path, include_header: bool):
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if include_header:
+                writer.writerow(headers)
+            writer.writerows(data)
+
+    def _export_json(self, data: List[List[Any]], headers: List[str], path: Path):
+        objects: List[Dict[str, Any]] = []
+        for row in data:
+            obj = {headers[i]: row[i] if i < len(row) else None for i in range(len(headers))}
+            objects.append(obj)
+
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(objects, f, ensure_ascii=False, indent=2)

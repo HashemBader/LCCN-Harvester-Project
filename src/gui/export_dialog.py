@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QCheckBox, QComboBox,
     QLineEdit, QFileDialog, QListWidget, QListWidgetItem,
-    QDialogButtonBox, QMessageBox, QRadioButton, QButtonGroup
+    QDialogButtonBox, QMessageBox, QRadioButton, QButtonGroup, QScrollArea, QFrame
 )
 from PyQt6.QtCore import Qt
 import os
@@ -23,12 +23,25 @@ class ExportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Export Results")
-        self.setMinimumSize(600, 550)
+        self.setMinimumSize(640, 560)
+        self.resize(760, 680)
+        self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.export_path = None
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        content = QFrame()
+        layout = QVBoxLayout(content)
 
         # Export source selection
         source_group = QGroupBox("Export Source")
@@ -39,14 +52,17 @@ class ExportDialog(QDialog):
         self.main_radio = QRadioButton("Main Results (successful harvests)")
         self.main_radio.setChecked(True)
         self.source_button_group.addButton(self.main_radio)
+        self.main_radio.toggled.connect(lambda checked: checked and self._auto_generate_path())
         source_layout.addWidget(self.main_radio)
 
         self.attempted_radio = QRadioButton("Failed Attempts")
         self.source_button_group.addButton(self.attempted_radio)
+        self.attempted_radio.toggled.connect(lambda checked: checked and self._auto_generate_path())
         source_layout.addWidget(self.attempted_radio)
 
         self.both_radio = QRadioButton("Both (separate files)")
         self.source_button_group.addButton(self.both_radio)
+        self.both_radio.toggled.connect(lambda checked: checked and self._auto_generate_path())
         source_layout.addWidget(self.both_radio)
 
         source_group.setLayout(source_layout)
@@ -59,7 +75,9 @@ class ExportDialog(QDialog):
         format_layout.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
         self.format_combo.addItems([
-            "Tab-Separated Values (TSV)"
+            "Tab-Separated Values (TSV)",
+            "Comma-Separated Values (CSV)",
+            "JSON"
         ])
         self.format_combo.currentTextChanged.connect(self._on_format_changed)
         format_layout.addWidget(self.format_combo)
@@ -90,6 +108,7 @@ class ExportDialog(QDialog):
         # Column list
         self.columns_list = QListWidget()
         self.columns_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.columns_list.setMinimumHeight(180)
 
         # Main table columns
         main_columns = [
@@ -118,11 +137,6 @@ class ExportDialog(QDialog):
         self.include_header_check = QCheckBox("Include column headers")
         self.include_header_check.setChecked(True)
         options_layout.addWidget(self.include_header_check)
-
-        self.pretty_print_check = QCheckBox("Pretty print JSON (if JSON format)")
-        self.pretty_print_check.setChecked(True)
-        self.pretty_print_check.setEnabled(False)
-        options_layout.addWidget(self.pretty_print_check)
 
         self.open_after_check = QCheckBox("Open file after export")
         self.open_after_check.setChecked(False)
@@ -166,22 +180,27 @@ class ExportDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout.addWidget(buttons)
-        self.setLayout(layout)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
         # Auto-generate initial path
         self._auto_generate_path()
 
+    def _selected_format(self):
+        text = self.format_combo.currentText()
+        if "CSV" in text:
+            return "csv", ".csv", "CSV Files (*.csv);;All Files (*.*)"
+        if "JSON" in text:
+            return "json", ".json", "JSON Files (*.json);;All Files (*.*)"
+        return "tsv", ".tsv", "TSV Files (*.tsv);;All Files (*.*)"
+
     def _on_format_changed(self, format_text):
         """Handle format selection change."""
-        self.pretty_print_check.setEnabled(False)
-
         # Update file extension
         if self.export_path:
             path = Path(self.export_path)
             stem = path.stem
-            
-            # Since only TSV is supported
-            ext = ".tsv"
+            _, ext, _ = self._selected_format()
 
             self.export_path = str(path.parent / (stem + ext))
             self.file_path_edit.setText(self.export_path)
@@ -200,9 +219,7 @@ class ExportDialog(QDialog):
 
     def _browse_output_file(self):
         """Browse for output file location."""
-        
-        filter_str = "TSV Files (*.tsv);;All Files (*.*)"
-        default_ext = ".tsv"
+        _, default_ext, filter_str = self._selected_format()
 
         default_filename = f"lccn_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}{default_ext}"
 
@@ -217,10 +234,40 @@ class ExportDialog(QDialog):
             self.export_path = file_path
             self.file_path_edit.setText(file_path)
 
+    def _prompt_save_location(self) -> bool:
+        """
+        Prompt user for save location when pressing OK.
+        Returns True if a path was selected, False if cancelled.
+        """
+        _, default_ext, filter_str = self._selected_format()
+
+        # Use currently shown path filename as the default suggestion.
+        suggested = self.file_path_edit.text().strip()
+        if not suggested:
+            suggested = f"lccn_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}{default_ext}"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Choose Export Location",
+            suggested,
+            filter_str
+        )
+
+        if not file_path:
+            return False
+
+        # Ensure extension matches selected format.
+        path = Path(file_path)
+        if path.suffix.lower() != default_ext:
+            file_path = str(path.with_suffix(default_ext))
+
+        self.export_path = file_path
+        self.file_path_edit.setText(file_path)
+        return True
+
     def _auto_generate_path(self):
         """Auto-generate export file path."""
-        # Always TSV
-        ext = ".tsv"
+        _, ext, _ = self._selected_format()
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -267,6 +314,9 @@ class ExportDialog(QDialog):
 
     def _on_export(self):
         """Handle export button click."""
+        if not self._prompt_save_location():
+            return
+
         if not self._validate_export():
             return
 
@@ -323,7 +373,7 @@ class ExportDialog(QDialog):
             source = "both"
 
         # Determine format
-        format_type = "tsv"
+        format_type, _, _ = self._selected_format()
 
         return {
             "source": source,
@@ -331,6 +381,5 @@ class ExportDialog(QDialog):
             "columns": selected_columns,
             "output_path": self.export_path,
             "include_header": self.include_header_check.isChecked(),
-            "pretty_print": self.pretty_print_check.isChecked(),
             "open_after": self.open_after_check.isChecked()
         }

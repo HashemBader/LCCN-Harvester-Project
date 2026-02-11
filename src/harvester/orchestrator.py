@@ -350,6 +350,9 @@ class HarvestOrchestrator:
         # Flush any trailing buffered writes so short runs are persisted.
         flush()
 
+        # Final flush for remaining records
+        flush()
+
         return HarvestSummary(
             total_isbns=len(isbns),
             cached_hits=cached_hits,

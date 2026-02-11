@@ -239,11 +239,47 @@ class InputTab(QWidget):
 
     def _load_file(self, file_path):
         """Load a file (from browse or drop)."""
-        self.input_file = Path(file_path)
+        path_obj = Path(file_path)
+        
+        # 1. Validate Extension
+        valid_exts = {'.tsv', '.txt', '.csv'}
+        if path_obj.suffix.lower() not in valid_exts:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, 
+                "Invalid File Type", 
+                f"Selected file '{path_obj.name}' is not a supported type.\n\nPlease select a .tsv, .txt, or .csv file."
+            )
+            self.file_path_edit.clear()
+            self.info_label.setText("Invalid file selection")
+            self.info_label.setStyleSheet("color: #e78284;") # Catppuccin Red
+            self.preview_text.clear()
+            self.input_file = None
+            self.file_selected.emit("") # Emit empty string to disable start
+            return
+
+        # 2. Validate Content (Basic check)
+        try:
+            with open(path_obj, 'r', encoding='utf-8-sig') as f:
+                header = f.readline()
+                if not header:
+                    raise ValueError("File is empty")
+        except Exception as e:
+             from PyQt6.QtWidgets import QMessageBox
+             QMessageBox.warning(self, "Invalid File", f"Cannot read file: {e}")
+             self.file_path_edit.clear()
+             self.input_file = None
+             self.file_selected.emit("")
+             return
+
+        # 3. Success
+        self.input_file = path_obj
         self.file_path_edit.setText(str(self.input_file))
         self._load_file_preview()
         self._update_file_info()
+        self.info_label.setStyleSheet("color: #a9d48f;") # Catppuccin Green
         self.file_selected.emit(str(self.input_file))
+
 
     def _load_file_preview(self):
         if not self.input_file or not self.input_file.exists():

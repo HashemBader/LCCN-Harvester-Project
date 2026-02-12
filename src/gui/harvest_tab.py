@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QEvent, QPoint
+import csv
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -171,12 +172,16 @@ class HarvestWorker(QThread):
     def _read_and_validate_isbns(self):
         """Read and validate ISBNs from input file."""
         try:
-            with open(self.input_file, "r", encoding="utf-8-sig") as f:
+            input_path = Path(self.input_file)
+            delimiter = "," if input_path.suffix.lower() == ".csv" else "\t"
+
+            with open(input_path, "r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.reader(f, delimiter=delimiter)
                 valid_isbns = []
                 invalid_count = 0
 
-                for line in f:
-                    isbn = line.strip().split("\t")[0]  # First column
+                for row in reader:
+                    isbn = (row[0] or "").strip() if row else ""
                     if not isbn or isbn.lower().startswith("isbn") or isbn.startswith("#"):
                         continue  # Skip empty lines, header, and comments
 
@@ -262,7 +267,10 @@ class HarvestTab(QWidget):
         self.processed_count = 0
         self.total_count = 0
         self._warned_no_input = False
+        self._input_valid_count = 0
         self._targets_override = None
+        self._config_getter = None
+        self._targets_getter = None
         self.api_monitor_dialog = None
         self.api_monitor_widget = None
         self.quick_api_status = {
@@ -535,13 +543,109 @@ class HarvestTab(QWidget):
         if enabled:
             self._log("Advanced mode enabled.")
 
+    def set_data_sources(self, config_getter, targets_getter):
+        """Set optional callbacks to retrieve config/targets from host UI."""
+        self._config_getter = config_getter
+        self._targets_getter = targets_getter
+        self._check_start_conditions()
+
+    def on_targets_changed(self, targets):
+        """Compatibility hook for external target update wiring."""
+        self.set_targets(targets)
+
+    def _validate_input_file(self, file_path: Path) -> tuple[int, int, str | None]:
+        """Return valid/invalid ISBN counts and optional error for an input file."""
+        valid_count = 0
+        invalid_count = 0
+        delimiter = "," if file_path.suffix.lower() == ".csv" else "\t"
+
+        try:
+            with open(file_path, "r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.reader(f, delimiter=delimiter)
+                for row in reader:
+                    raw_isbn = (row[0] or "").strip() if row else ""
+                    if not raw_isbn or raw_isbn.startswith("#") or raw_isbn.lower().startswith("isbn"):
+                        continue
+
+                    if normalize_isbn(raw_isbn):
+                        valid_count += 1
+                    else:
+                        invalid_count += 1
+        except Exception as e:
+            return 0, 0, str(e)
+
+        return valid_count, invalid_count, None
+
+    def _check_start_conditions(self):
+        """Enable start only when we have a valid file and selected targets."""
+        if self.is_running:
+            return
+
+        has_file = bool(self.input_file)
+        selected_targets = [t for t in (self._get_targets() or []) if t.get("selected", True)]
+
+        if not has_file:
+            self.start_button.setEnabled(False)
+            self.start_button.setText("Start Harvest")
+            self.start_button.setToolTip("Select an input file first")
+            return
+
+        if not selected_targets:
+            self.start_button.setEnabled(False)
+            self.start_button.setText("Start Harvest")
+            self.start_button.setToolTip("Select at least one target first")
+            return
+
+        count = self._input_valid_count if self._input_valid_count > 0 else "?"
+        self.start_button.setEnabled(True)
+        self.start_button.setText(f"Start Harvest ({count} ISBNs)")
+        self.start_button.setToolTip("")
+
     def set_input_file(self, file_path):
         """Set the input file for harvesting."""
-        self.input_file = file_path
-        if file_path:
-            self.start_button.setEnabled(True)
-            self.start_button.setToolTip("")
-            self._log(f"Input file set: {Path(file_path).name}")
+        if not file_path:
+            self.input_file = None
+            self._input_valid_count = 0
+            self._check_start_conditions()
+            return
+
+        path = Path(file_path)
+        if not path.exists():
+            self.input_file = None
+            self._input_valid_count = 0
+            self._check_start_conditions()
+            self._log(f"Invalid input path: {file_path}")
+            return
+
+        if path.suffix.lower() not in {".tsv", ".txt", ".csv"}:
+            self.input_file = None
+            self._input_valid_count = 0
+            self._check_start_conditions()
+            self._log(f"Unsupported input format: {path.suffix}")
+            return
+
+        valid_count, invalid_count, error = self._validate_input_file(path)
+        if error:
+            self.input_file = None
+            self._input_valid_count = 0
+            self._check_start_conditions()
+            self._log(f"Error validating input file '{path.name}': {error}")
+            return
+
+        if valid_count <= 0:
+            self.input_file = None
+            self._input_valid_count = 0
+            self._check_start_conditions()
+            self._log(f"No valid ISBNs found in {path.name}")
+            return
+
+        self.input_file = str(path)
+        self._input_valid_count = valid_count
+        if invalid_count > 0:
+            self._log(f"Input file set: {path.name} ({valid_count} valid, {invalid_count} invalid rows)")
+        else:
+            self._log(f"Input file set: {path.name} ({valid_count} valid rows)")
+        self._check_start_conditions()
 
     def _start_harvest(self):
         """Start the harvest operation."""
@@ -558,6 +662,12 @@ class HarvestTab(QWidget):
         config = self._get_config()
         targets = self._get_targets()
         advanced_settings = self._get_advanced_settings() if self.advanced_mode else {}
+
+        selected_targets = [t for t in (targets or []) if t.get("selected", True)]
+        if not selected_targets:
+            QMessageBox.warning(self, "No Targets", "Please select at least one target in the Targets tab.")
+            self._log("Harvest cancelled: no selected targets")
+            return
 
         if not self._confirm_input_duplicates_policy():
             self._log("Harvest cancelled by user")
@@ -949,7 +1059,7 @@ class HarvestTab(QWidget):
     def _on_harvest_complete(self, success, statistics):
         """Handle harvest completion."""
         self.is_running = False
-        self.start_button.setEnabled(True)
+        self._check_start_conditions()
         self.stop_button.setEnabled(False)
         self.detailed_progress_button.setEnabled(False)
 
@@ -1070,6 +1180,14 @@ class HarvestTab(QWidget):
 
     def _get_config(self):
         """Get configuration from config tab."""
+        if callable(self._config_getter):
+            try:
+                config = self._config_getter()
+                if isinstance(config, dict) and config:
+                    return config
+            except Exception as e:
+                self._log(f"Warning: external config getter failed - {e}")
+
         parent = self.parent()
         while parent and not hasattr(parent, "config_tab"):
             parent = parent.parent()
@@ -1085,6 +1203,14 @@ class HarvestTab(QWidget):
 
     def _get_targets(self):
         """Get targets from targets tab."""
+        if callable(self._targets_getter):
+            try:
+                targets = self._targets_getter()
+                if targets is not None:
+                    return targets
+            except Exception as e:
+                self._log(f"Warning: external targets getter failed - {e}")
+
         if self._targets_override is not None:
             return self._targets_override
 
@@ -1100,6 +1226,7 @@ class HarvestTab(QWidget):
     def set_targets(self, targets):
         """Set targets from main window updates."""
         self._targets_override = targets or []
+        self._check_start_conditions()
         if self.api_monitor_widget:
             self.api_monitor_widget.refresh_status()
 

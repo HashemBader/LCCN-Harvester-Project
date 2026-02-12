@@ -1,10 +1,1 @@
-{
-  "advanced_mode": true,
-  "window": {
-    "x": 0,
-    "y": 33,
-    "width": 1470,
-    "height": 923,
-    "is_maximized": false
-  }
-}
+{"advanced_mode": false}

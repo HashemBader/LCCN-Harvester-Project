@@ -180,12 +180,12 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         header = QWidget()
-        header.setStyleSheet("background-color: #1f201d; border-bottom: 1px solid #2d2e2b;")
+        header.setObjectName("TopHeader")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(20, 16, 20, 16)
 
         title = QLabel("LCCN Harvester Pro")
-        title.setStyleSheet("font-size: 24px; font-weight: 700; color: #c2d07f; background: transparent;")
+        title.setObjectName("MainTitle")
         header_layout.addWidget(title)
         header_layout.addStretch()
         main_layout.addWidget(header)

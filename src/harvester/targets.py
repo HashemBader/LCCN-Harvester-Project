@@ -263,16 +263,19 @@ def create_target_from_config(target_config: dict):
     Returns:
         Target instance that implements HarvestTarget protocol
     """
-    name = target_config.get("name", "Unknown")
-    target_type = target_config.get("type", "api")
+    name = str(target_config.get("name", "Unknown")).strip()
+    target_type = str(target_config.get("type", "api")).strip().lower()
     timeout = target_config.get("timeout", 30)
+    normalized_name = name.lower()
 
-    # Handle specific known API targets
-    if name == "Library of Congress":
+    # Handle specific known API targets (name-first, tolerant aliases)
+    # This keeps API targets connected even when UI labels include suffixes
+    # such as "Library of Congress API" or "Harvard Library API".
+    if "library of congress" in normalized_name or normalized_name == "loc":
         return LibraryOfCongressTarget(timeout=timeout)
-    elif name in ["Harvard LibraryCloud", "Harvard"]:
+    elif "harvard" in normalized_name:
         return HarvardLibraryCloudTarget(timeout=timeout)
-    elif name == "OpenLibrary":
+    elif "openlibrary" in normalized_name or "open library" in normalized_name:
         return OpenLibraryTarget(timeout=timeout)
     # Handle Z39.50 targets
     elif target_type == "z3950":

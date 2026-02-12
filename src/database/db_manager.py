@@ -334,7 +334,103 @@ class DatabaseManager:
             chunk = isbns_list[i : i + CHUNK]
             placeholders = ",".join("?" for _ in chunk)
             conn.execute(f"DELETE FROM attempted WHERE isbn IN ({placeholders})", tuple(chunk))
-            
+
+    # -------------------------
+    # V2 GUI COMPATIBILITY HELPERS
+    # -------------------------
+    def get_all_results(self, limit: int = 1000):
+        """Return successful records for results/dashboard views."""
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT isbn, lccn, nlmcn, classification, source, date_added
+                FROM main
+                ORDER BY date_added DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+    def get_failed_attempts(self, limit: int = 1000):
+        """Return failed/attempted records for results/dashboard views."""
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    isbn,
+                    last_target,
+                    last_attempted,
+                    fail_count,
+                    last_error,
+                    CASE
+                        WHEN lower(coalesce(last_error, '')) LIKE '%invalid isbn%' THEN 'Invalid'
+                        ELSE 'Failed'
+                    END AS status
+                FROM attempted
+                ORDER BY last_attempted DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+    def clear_all_results(self) -> None:
+        """Clear both successful and failed result tables."""
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM main")
+            conn.execute("DELETE FROM attempted")
+
+    def get_global_stats(self) -> dict:
+        """Return aggregate stats used by dashboard cards."""
+        with self.connect() as conn:
+            found = conn.execute("SELECT COUNT(*) FROM main").fetchone()[0]
+            failed = conn.execute("SELECT COUNT(*) FROM attempted").fetchone()[0]
+            invalid = conn.execute(
+                "SELECT COUNT(*) FROM attempted WHERE lower(coalesce(last_error, '')) LIKE '%invalid isbn%'"
+            ).fetchone()[0]
+        return {
+            "processed": int(found) + int(failed),
+            "found": int(found),
+            "failed": int(failed),
+            "invalid": int(invalid),
+        }
+
+    def get_recent_results(self, limit: int = 10) -> list[dict]:
+        """Return merged recent successes/failures for dashboard activity list."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT isbn, status, detail, time
+                FROM (
+                    SELECT
+                        isbn,
+                        'Found' AS status,
+                        trim(
+                            coalesce(lccn, '') ||
+                            CASE
+                                WHEN lccn IS NOT NULL AND nlmcn IS NOT NULL THEN ' | '
+                                ELSE ''
+                            END ||
+                            coalesce(nlmcn, '')
+                        ) AS detail,
+                        date_added AS time
+                    FROM main
+                    UNION ALL
+                    SELECT
+                        isbn,
+                        CASE
+                            WHEN lower(coalesce(last_error, '')) LIKE '%invalid isbn%' THEN 'Invalid'
+                            ELSE 'Failed'
+                        END AS status,
+                        coalesce(last_error, '') AS detail,
+                        last_attempted AS time
+                    FROM attempted
+                )
+                ORDER BY time DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
 
 if __name__ == "__main__":

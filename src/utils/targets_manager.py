@@ -49,6 +49,7 @@ class TargetsManager:
     def __init__(self):
         """Initialize the TargetsManager and ensure the data file exists."""
         self._ensure_targets_file()
+        self._ensure_default_api_targets()
 
     def _ensure_targets_file(self):
         """
@@ -83,9 +84,64 @@ class TargetsManager:
                     record_syntax="",
                     rank=2,
                     selected=True
+                ),
+                Target(
+                    target_id="3",
+                    name="OpenLibrary API",
+                    target_type="API",
+                    host="",
+                    port=None,
+                    database="",
+                    record_syntax="",
+                    rank=3,
+                    selected=True
                 )
             ]
             self.save_targets(default_targets)
+
+    def _ensure_default_api_targets(self):
+        """Ensure core API targets are present in existing target files."""
+        targets = self.get_all_targets()
+        if not targets:
+            return
+
+        existing_names = {t.name.strip().lower() for t in targets}
+        next_rank = max((t.rank for t in targets), default=0) + 1
+
+        defaults = [
+            "Library of Congress API",
+            "Harvard Library API",
+            "OpenLibrary API",
+        ]
+        missing = [name for name in defaults if name.lower() not in existing_names]
+        if not missing:
+            return
+
+        next_id = (
+            max(
+                (int(t.target_id) for t in targets if str(t.target_id).isdigit()),
+                default=0,
+            )
+            + 1
+        )
+        for name in missing:
+            targets.append(
+                Target(
+                    target_id=str(next_id),
+                    name=name,
+                    target_type="API",
+                    host="",
+                    port=None,
+                    database="",
+                    record_syntax="",
+                    rank=next_rank,
+                    selected=True,
+                )
+            )
+            next_id += 1
+            next_rank += 1
+
+        self.save_targets(targets)
 
 
     def get_all_targets(self) -> List[Target]:
@@ -245,6 +301,5 @@ class TargetsManager:
             bool: True if connection successful
         """
         return validate_connection(host, port)
-
 
 

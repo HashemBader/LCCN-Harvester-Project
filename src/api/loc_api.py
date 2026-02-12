@@ -1,20 +1,18 @@
 """
 loc_api.py
 
-Library of Congress (LoC) JSON API client.
+Library of Congress (LoC) SRU API client.
 
-Implements ISBN search using the LoC JSON endpoint and extracts identifiers
-(e.g., LCCN) and call number fields when available.
-
-This module is part of Sprint 3 Task 2: Implement Library of Congress API.
+Implements ISBN search against LoC's bibliographic SRU service and extracts
+call numbers from MARCXML fields 050 (LCC) and 060 (NLM).
 """
 
 from __future__ import annotations
 
-import json
 import urllib.parse
 import urllib.request
 from typing import Any, Optional
+import xml.etree.ElementTree as ET
 
 from api.base_api import ApiResult, BaseApiClient
 from api.http_utils import urlopen_with_ca
@@ -24,12 +22,15 @@ class LocApiClient(BaseApiClient):
     """
     Library of Congress API client.
 
-    Uses the https://www.loc.gov/items endpoint with `fo=json`.
+    Uses LoC SRU endpoint with MARCXML records.
     """
 
     source_name = "loc"
-    base_url = "https://www.loc.gov/items"
-    fallback_url = "https://www.loc.gov/books/"
+    base_url = "http://lx2.loc.gov:210/LCDB"
+    namespaces = {
+        "zs": "http://www.loc.gov/zing/srw/",
+        "marc": "http://www.loc.gov/MARC21/slim",
+    }
 
     @property
     def source(self) -> str:
@@ -37,86 +38,96 @@ class LocApiClient(BaseApiClient):
 
     def build_url(self, isbn: str) -> str:
         """
-        Build the LoC query URL for an ISBN.
-        Query syntax: q=isbn:{isbn}
+        Build the LoC SRU query URL for an ISBN.
+        Query syntax: bath.isbn={isbn}
         """
         params = {
-            "q": f"isbn:{isbn}",
-            "fo": "json",
-            "at": "results",
+            "operation": "searchRetrieve",
+            "version": "1.1",
+            "query": f"bath.isbn={isbn}",
+            "recordSchema": "marcxml",
+            "maximumRecords": "1",
         }
         return f"{self.base_url}?{urllib.parse.urlencode(params)}"
 
     def fetch(self, isbn: str) -> Any:
-        urls = [
-            self.build_url(isbn),
-            f"{self.fallback_url}?{urllib.parse.urlencode({'q': f'isbn:{isbn}', 'fo': 'json'})}",
-        ]
-        last_exc = None
-        for url in urls:
-            req = urllib.request.Request(url)
-            req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")
-            req.add_header("Accept", "application/json,text/plain,*/*")
-            try:
-                with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
-                    if resp.status != 200:
-                        raise Exception(f"HTTP {resp.status}")
-                    return json.load(resp)
-            except Exception as e:
-                last_exc = e
-                continue
-        raise last_exc if last_exc else Exception("LoC request failed")
+        url = self.build_url(isbn)
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")
+        req.add_header("Accept", "application/xml,text/xml,*/*")
 
-    def _walk_for_candidates(self, obj: Any, out: list[str]) -> None:
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                key = str(k).lower()
-                if key in {
-                    "call_number",
-                    "callnumber",
-                    "classification",
-                    "shelflocator",
-                    "number_lccn",
-                    "lccn",
-                    "identifier-lccn",
-                }:
-                    if isinstance(v, list):
-                        for item in v:
-                            if isinstance(item, str) and item.strip():
-                                out.append(item.strip())
-                    elif isinstance(v, str) and v.strip():
-                        out.append(v.strip())
-                self._walk_for_candidates(v, out)
-        elif isinstance(obj, list):
-            for item in obj:
-                self._walk_for_candidates(item, out)
+        with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status}")
+            xml_bytes = resp.read()
+
+        try:
+            return ET.fromstring(xml_bytes)
+        except Exception as e:
+            raise Exception(f"Invalid LoC SRU XML response: {e}")
+
+    @staticmethod
+    def _normalize_call_number(parts: list[str]) -> Optional[str]:
+        clean = [p.strip() for p in parts if isinstance(p, str) and p.strip()]
+        if not clean:
+            return None
+        return " ".join(clean)
+
+    def _extract_field(self, marc_record: ET.Element, tag: str) -> Optional[str]:
+        field = marc_record.find(f".//marc:datafield[@tag='{tag}']", self.namespaces)
+        if field is None:
+            return None
+
+        part_a = [
+            sf.text or ""
+            for sf in field.findall("marc:subfield[@code='a']", self.namespaces)
+        ]
+        part_b = [
+            sf.text or ""
+            for sf in field.findall("marc:subfield[@code='b']", self.namespaces)
+        ]
+        return self._normalize_call_number(part_a + part_b)
 
     def extract_call_numbers(self, isbn: str, payload: Any) -> ApiResult:
         """
-        Extract call numbers from LoC JSON response.
+        Extract call numbers from LoC SRU MARCXML response.
         """
         lccn: Optional[str] = None
         nlmcn: Optional[str] = None
-        
-        # LoC results are usually in a 'results' list
-        results = payload.get("results", [])
-        if not results:
-             return ApiResult(
+
+        if not isinstance(payload, ET.Element):
+            return ApiResult(
                 isbn=isbn,
                 source=self.source,
-                status="not_found"
+                status="error",
+                error_message="Unexpected LoC payload format",
             )
 
-        item = results[0]
-        candidates: list[str] = []
-        self._walk_for_candidates(item, candidates)
-        for cn in candidates:
-            if cn.startswith("W"):
-                if not nlmcn:
-                    nlmcn = cn
-            elif not lccn:
-                lccn = cn
-        
+        records_count_text = payload.findtext("zs:numberOfRecords", default="0", namespaces=self.namespaces)
+        try:
+            records_count = int((records_count_text or "0").strip())
+        except ValueError:
+            records_count = 0
+
+        if records_count <= 0:
+            return ApiResult(
+                isbn=isbn,
+                source=self.source,
+                status="not_found",
+            )
+
+        marc_record = payload.find(".//marc:record", self.namespaces)
+        if marc_record is None:
+            return ApiResult(
+                isbn=isbn,
+                source=self.source,
+                status="not_found",
+                error_message="LoC record found but MARC payload missing",
+            )
+
+        lccn = self._extract_field(marc_record, "050")
+        nlmcn = self._extract_field(marc_record, "060")
+
         if lccn or nlmcn:
             return ApiResult(
                 isbn=isbn,
@@ -124,13 +135,13 @@ class LocApiClient(BaseApiClient):
                 status="success",
                 lccn=lccn,
                 nlmcn=nlmcn,
-                raw=item
+                raw={"numberOfRecords": records_count},
             )
-        
+
         return ApiResult(
             isbn=isbn,
             source=self.source,
             status="not_found",
             error_message="Record found but no usable call number",
-            raw=item
+            raw={"numberOfRecords": records_count},
         )

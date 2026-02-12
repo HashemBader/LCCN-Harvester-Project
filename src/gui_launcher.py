@@ -14,8 +14,13 @@ PROJECT_ROOT = SRC_DIR.parent
 sys.path.insert(0, str(SRC_DIR))
 
 from PyQt6.QtWidgets import QApplication
-from gui.main_window import MainWindow
 from gui.styles import MODERN_STYLE
+from gui.main_window import MainWindow
+
+try:
+    from gui.modern_window import ModernMainWindow
+except Exception:
+    ModernMainWindow = None
 
 
 def _configure_runtime_environment():
@@ -46,11 +51,12 @@ def main():
     app.setOrganizationName("UPEI Library")
     app.setApplicationVersion("1.0.0")
 
-    # Apply global stylesheet
-    app.setStyleSheet(MODERN_STYLE)
-
-    # Create and show main window
-    window = MainWindow()
+    # Create and show main window (prefer V2 modern shell when available)
+    if ModernMainWindow is not None:
+        window = ModernMainWindow()
+    else:
+        app.setStyleSheet(MODERN_STYLE)
+        window = MainWindow()
     window.show()
 
     # Start event loop

@@ -113,7 +113,7 @@ class LiveActivityPanel(QFrame):
     def _add_row(self, layout, row, label, widget):
         lbl = QLabel(label)
         lbl.setStyleSheet("color: #a5adcb; font-weight: 600;")
-        widget.setStyleSheet("color: #ffffff; font-family: Consolas;")
+        widget.setStyleSheet("color: #ffffff; font-family: Menlo, Monaco, 'Courier New', monospace;")
         layout.addWidget(lbl, row, 0)
         layout.addWidget(widget, row, 1)
 

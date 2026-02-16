@@ -19,11 +19,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import DatabaseManager
 from harvester.run_harvest import run_harvest, read_isbns_from_tsv
 from harvester.targets import create_target_from_config
+from harvester.orchestrator import HarvestCancelled
 from utils.isbn_validator import normalize_isbn
 from utils import messages
 
 from .progress_dialog import ProgressDialog
 from .api_monitor_tab import APIMonitorTab, APICheckWorker
+
+LARGE_INPUT_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024  # 20 MB
+VALIDATION_SAMPLE_ROWS = 200_000
 
 
 class HarvestWorker(QThread):
@@ -77,7 +81,7 @@ class HarvestWorker(QThread):
             # Create progress callback
             def progress_callback(event: str, payload: dict):
                 if self._stop_requested:
-                    return
+                    raise HarvestCancelled("Harvest cancelled by user")
 
                 isbn = payload.get("isbn", "")
 
@@ -126,6 +130,17 @@ class HarvestWorker(QThread):
 
             # Run the harvest pipeline
             retry_days = self.config.get("retry_days", 7)
+            try:
+                max_workers = max(1, int(self.advanced_settings.get("parallel_workers", 1)))
+            except Exception:
+                max_workers = 1
+            try:
+                batch_size = max(1, int(self.advanced_settings.get("batch_size", self.config.get("batch_size", 50))))
+            except Exception:
+                batch_size = 50
+            self.status_message.emit(
+                f"Using performance settings: workers={max_workers}, batch_size={batch_size}"
+            )
 
             summary = run_harvest(
                 input_path=Path(self.input_file),
@@ -136,7 +151,9 @@ class HarvestWorker(QThread):
                 bypass_retry_isbns=self.bypass_retry_isbns,
                 bypass_cache_isbns=self.bypass_cache_isbns,
                 progress_cb=progress_callback,
-                batch_size=1,
+                cancel_check=lambda: self._stop_requested,
+                max_workers=max_workers,
+                batch_size=batch_size,
             )
 
             # Final stats
@@ -152,6 +169,9 @@ class HarvestWorker(QThread):
                 successes=summary.successes, failures=summary.failures))
             self.harvest_complete.emit(True, final_stats)
 
+        except HarvestCancelled:
+            self.status_message.emit("Harvest cancelled by user.")
+            self.harvest_complete.emit(False, self.stats.copy() if hasattr(self, "stats") else {"total": 0, "found": 0, "failed": 0})
         except Exception as e:
             import traceback
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
@@ -181,6 +201,8 @@ class HarvestWorker(QThread):
                 invalid_count = 0
 
                 for row in reader:
+                    if self._stop_requested:
+                        raise HarvestCancelled("Harvest cancelled by user")
                     isbn = (row[0] or "").strip() if row else ""
                     if not isbn or isbn.lower().startswith("isbn") or isbn.startswith("#"):
                         continue  # Skip empty lines, header, and comments
@@ -208,11 +230,25 @@ class HarvestWorker(QThread):
         try:
             selected_targets = [t for t in self.targets if t.get("selected", True)]
             sorted_targets = sorted(selected_targets, key=lambda x: x.get("rank", 999))
+            try:
+                global_timeout = int(self.advanced_settings.get("connection_timeout", 0))
+            except Exception:
+                global_timeout = 0
+            try:
+                global_retries = int(self.advanced_settings.get("max_retries", 0))
+            except Exception:
+                global_retries = 0
 
             target_instances = []
             for target_config in sorted_targets:
                 try:
-                    target = create_target_from_config(target_config)
+                    cfg = dict(target_config)
+                    # Apply advanced network settings uniformly so retry/search behavior matches UI settings.
+                    if global_timeout > 0:
+                        cfg["timeout"] = global_timeout
+                    if global_retries >= 0:
+                        cfg["max_retries"] = global_retries
+                    target = create_target_from_config(cfg)
                     target_instances.append(target)
                 except Exception as e:
                     self.status_message.emit(messages.HarvestMessages.failed_create_target.format(
@@ -553,7 +589,9 @@ class HarvestTab(QWidget):
         """Compatibility hook for external target update wiring."""
         self.set_targets(targets)
 
-    def _validate_input_file(self, file_path: Path) -> tuple[int, int, str | None]:
+    def _validate_input_file(
+        self, file_path: Path, max_rows: int | None = None
+    ) -> tuple[int, int, str | None]:
         """Return valid/invalid ISBN counts and optional error for an input file."""
         valid_count = 0
         invalid_count = 0
@@ -562,7 +600,7 @@ class HarvestTab(QWidget):
         try:
             with open(file_path, "r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.reader(f, delimiter=delimiter)
-                for row in reader:
+                for i, row in enumerate(reader, start=1):
                     raw_isbn = (row[0] or "").strip() if row else ""
                     if not raw_isbn or raw_isbn.startswith("#") or raw_isbn.lower().startswith("isbn"):
                         continue
@@ -571,6 +609,9 @@ class HarvestTab(QWidget):
                         valid_count += 1
                     else:
                         invalid_count += 1
+
+                    if max_rows is not None and i >= max_rows:
+                        break
         except Exception as e:
             return 0, 0, str(e)
 
@@ -624,7 +665,10 @@ class HarvestTab(QWidget):
             self._log(f"Unsupported input format: {path.suffix}")
             return
 
-        valid_count, invalid_count, error = self._validate_input_file(path)
+        file_size = path.stat().st_size
+        is_large_file = file_size > LARGE_INPUT_FILE_THRESHOLD_BYTES
+        max_rows = VALIDATION_SAMPLE_ROWS if is_large_file else None
+        valid_count, invalid_count, error = self._validate_input_file(path, max_rows=max_rows)
         if error:
             self.input_file = None
             self._input_valid_count = 0
@@ -640,11 +684,18 @@ class HarvestTab(QWidget):
             return
 
         self.input_file = str(path)
-        self._input_valid_count = valid_count
-        if invalid_count > 0:
-            self._log(f"Input file set: {path.name} ({valid_count} valid, {invalid_count} invalid rows)")
+        if is_large_file:
+            self._input_valid_count = 0
+            self._log(
+                f"Large file accepted: {path.name} ({file_size / (1024 * 1024):.1f} MB). "
+                f"Validated first {VALIDATION_SAMPLE_ROWS:,} rows; full processing happens during harvest."
+            )
         else:
-            self._log(f"Input file set: {path.name} ({valid_count} valid rows)")
+            self._input_valid_count = valid_count
+            if invalid_count > 0:
+                self._log(f"Input file set: {path.name} ({valid_count} valid, {invalid_count} invalid rows)")
+            else:
+                self._log(f"Input file set: {path.name} ({valid_count} valid rows)")
         self._check_start_conditions()
 
     def _start_harvest(self):
@@ -661,7 +712,9 @@ class HarvestTab(QWidget):
         # Get configuration from parent tabs
         config = self._get_config()
         targets = self._get_targets()
-        advanced_settings = self._get_advanced_settings() if self.advanced_mode else {}
+        # Always apply saved advanced settings to runtime behavior.
+        # Advanced mode controls UI visibility, not whether settings are honored.
+        advanced_settings = self._get_advanced_settings()
 
         selected_targets = [t for t in (targets or []) if t.get("selected", True)]
         if not selected_targets:
@@ -731,11 +784,15 @@ class HarvestTab(QWidget):
         """Warn when ISBNs are already successful in cache and allow bypass."""
         if not self.input_file:
             return set()
+        input_path = Path(self.input_file)
+        if input_path.exists() and input_path.stat().st_size > LARGE_INPUT_FILE_THRESHOLD_BYTES:
+            self._log("Large input detected: skipping pre-harvest cache scan for responsiveness.")
+            return set()
 
         try:
             db = DatabaseManager()
             db.init_db()
-            isbns = read_isbns_from_tsv(Path(self.input_file))
+            isbns = read_isbns_from_tsv(input_path)
         except Exception as e:
             self._log(f"Warning: could not check cached ISBNs - {e}")
             return set()
@@ -785,6 +842,10 @@ class HarvestTab(QWidget):
         """Warn when duplicate ISBN rows exist in the input file."""
         if not self.input_file:
             return True
+        input_path = Path(self.input_file)
+        if input_path.exists() and input_path.stat().st_size > LARGE_INPUT_FILE_THRESHOLD_BYTES:
+            self._log("Large input detected: skipping duplicate pre-scan and de-duplicating during harvest.")
+            return True
 
         try:
             counts = {}
@@ -827,11 +888,15 @@ class HarvestTab(QWidget):
         """Block retry-window ISBNs unless user explicitly overrides."""
         if not self.input_file or retry_days <= 0:
             return set()
+        input_path = Path(self.input_file)
+        if input_path.exists() and input_path.stat().st_size > LARGE_INPUT_FILE_THRESHOLD_BYTES:
+            self._log("Large input detected: skipping pre-harvest retry-window scan for responsiveness.")
+            return set()
 
         try:
             db = DatabaseManager()
             db.init_db()
-            isbns = read_isbns_from_tsv(Path(self.input_file))
+            isbns = read_isbns_from_tsv(input_path)
         except Exception as e:
             self._log(f"Warning: could not check recent failures - {e}")
             return set()
@@ -899,6 +964,12 @@ class HarvestTab(QWidget):
         if self.worker:
             self._log("Stopping harvest...")
             self.worker.stop()
+            self.stop_button.setEnabled(False)
+            self.status_badge.setText("Stopping...")
+            self.status_badge.setStyleSheet(
+                "color: #f4b860; font-size: 14px; font-weight: bold; padding: 6px 12px; "
+                "background-color: #2f2a1f; border-radius: 12px;"
+            )
 
     def stop_harvest(self):
         """Public method to stop harvest (called from main window)."""

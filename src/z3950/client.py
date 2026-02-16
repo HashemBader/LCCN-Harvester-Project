@@ -2,6 +2,8 @@
 import logging
 from typing import List, Optional, Generator, TYPE_CHECKING, Any
 
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
+
 # Lazy imports to allow graceful degradation when dependencies are missing or incompatible
 if TYPE_CHECKING:
     from PyZ3950 import zoom  # type: ignore
@@ -36,6 +38,9 @@ class Z3950Client:
         Establish a connection to the Z39.50 server.
         """
         try:
+            ok, reason = ensure_pyz3950_importable()
+            if not ok:
+                raise RuntimeError(f"PyZ3950 import failed: {reason}")
             # Lazy import to avoid import errors when PyZ3950 is missing/broken
             from PyZ3950 import zoom  # type: ignore
             
@@ -65,6 +70,9 @@ class Z3950Client:
             raise ConnectionError("Not connected to server. Call connect() first.")
 
         # Lazy import
+        ok, reason = ensure_pyz3950_importable()
+        if not ok:
+            raise ConnectionError(f"PyZ3950 import failed: {reason}")
         from PyZ3950 import zoom  # type: ignore
         
         # Remove hyphens from ISBN just in case

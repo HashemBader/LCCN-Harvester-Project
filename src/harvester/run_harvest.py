@@ -14,10 +14,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from database import DatabaseManager
-from harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback
-from harvester.api_targets import build_default_api_targets
-from utils import isbn_validator
+from src.database import DatabaseManager
+from src.harvester.orchestrator import HarvestOrchestrator, HarvestTarget, ProgressCallback, CancelCheck
+from src.harvester.api_targets import build_default_api_targets
+from src.utils import isbn_validator
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def run_harvest(
     bypass_retry_isbns: set[str] | None = None,
     bypass_cache_isbns: set[str] | None = None,
     progress_cb: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
     max_workers: int = 1,
     batch_size: int = 50,
     include_z3950: bool = False,
@@ -99,7 +100,7 @@ def run_harvest(
         targets = []
         targets.extend(build_default_api_targets())
         if include_z3950:
-            from harvester.z3950_targets import build_default_z3950_targets
+            from src.harvester.z3950_targets import build_default_z3950_targets
             targets.extend(build_default_z3950_targets())
 
     orch = HarvestOrchestrator(
@@ -109,6 +110,7 @@ def run_harvest(
         bypass_retry_isbns=bypass_retry_isbns,
         bypass_cache_isbns=bypass_cache_isbns,
         progress_cb=progress_cb,
+        cancel_check=cancel_check,
         max_workers=max_workers,
         batch_size=batch_size,
     )

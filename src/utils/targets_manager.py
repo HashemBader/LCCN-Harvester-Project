@@ -11,14 +11,14 @@ import csv
 import os
 from dataclasses import dataclass, asdict
 from typing import List, Optional
-from utils.messages import ConfigMessages
+from src.utils.messages import ConfigMessages
 
 # Constants defining the storage location
 DATA_DIR = "data"
 TARGETS_FILE = os.path.join(DATA_DIR, "targets.tsv")
 
 try:
-    from z3950.session_manager import validate_connection
+    from src.z3950.session_manager import validate_connection
 except ImportError:
     # Fallback or mock if z3950 module is not available in some contexts
     def validate_connection(host, port, timeout=5):
@@ -301,5 +301,4 @@ class TargetsManager:
             bool: True if connection successful
         """
         return validate_connection(host, port)
-
 

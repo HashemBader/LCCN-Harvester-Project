@@ -191,6 +191,16 @@ class ConfigTabV2(QWidget):
     # =========================================================================
     # Logic Methods (Adapted from original ConfigTab)
     # =========================================================================
+    def _extract_profile_settings(self, profile_data):
+        """Normalize profile payloads from ProfileManager to a flat settings dict."""
+        if not isinstance(profile_data, dict):
+            return {}
+        settings = profile_data.get("settings")
+        if isinstance(settings, dict):
+            return settings
+        # Backward compatibility with any legacy flat payload
+        return profile_data
+
     def _refresh_profile_list(self):
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
@@ -206,7 +216,8 @@ class ConfigTabV2(QWidget):
 
     def _load_profile(self, profile_name):
         self.current_profile_name = profile_name
-        config = self.profile_manager.load_profile(profile_name)
+        profile = self.profile_manager.load_profile(profile_name)
+        config = self._extract_profile_settings(profile)
         
         # Populate UI
         self.spin_retry.blockSignals(True)
@@ -221,7 +232,7 @@ class ConfigTabV2(QWidget):
         self.has_unsaved_changes = False
         self.btn_save.setEnabled(False)
         self.profile_changed.emit(profile_name)
-        self.config_changed.emit(config)
+        self.config_changed.emit(self.get_config())
 
     def _on_profile_selected(self, name):
         if not name: return
@@ -247,6 +258,14 @@ class ConfigTabV2(QWidget):
         self.btn_save.setEnabled(True)
 
     def _save_current_profile(self):
+        if self.current_profile_name == "Default Settings":
+            QMessageBox.information(
+                self,
+                "Cannot Modify Default",
+                "The Default Settings profile cannot be modified.\n\nCreate a new profile and save there."
+            )
+            return
+
         config = {
             "retry_days": self.spin_retry.value(),
             "batch_size": self.spin_batch.value()
@@ -260,18 +279,20 @@ class ConfigTabV2(QWidget):
     def _create_new_profile(self):
         name, ok = QInputDialog.getText(self, "New Profile", "Profile Name:")
         if ok and name:
+            name = name.strip()
+            if not name:
+                return
             if name in self.profile_manager.list_profiles():
                 QMessageBox.warning(self, "Error", "Profile already exists.")
                 return
             
-            # Create with defaults
-            default_config = {"retry_days": 7, "batch_size": 50}
-            self.profile_manager.save_profile(name, default_config)
+            # Create from current visible settings (matches old tab "Save As" behavior).
+            self.profile_manager.save_profile(name, self.get_config())
             self._refresh_profile_list()
             self.profile_combo.setCurrentText(name) # Will trigger load
 
     def _delete_current_profile(self):
-        if self.current_profile_name == "default":
+        if self.current_profile_name == "Default Settings":
             QMessageBox.warning(self, "Error", "Cannot delete default profile.")
             return
             
@@ -282,12 +303,19 @@ class ConfigTabV2(QWidget):
         )
         if confirm == QMessageBox.StandardButton.Yes:
             self.profile_manager.delete_profile(self.current_profile_name)
+            self.profile_manager.set_active_profile("Default Settings")
             self._refresh_profile_list()
+            self._load_profile("Default Settings")
             # It will auto-select default or first available
 
     def get_config(self):
         """Public accessor for other tabs."""
         return {
             "retry_days": self.spin_retry.value(),
-            "batch_size": self.spin_batch.value()
+            "batch_size": self.spin_batch.value(),
+            # Keep parity with legacy ConfigTab expected keys.
+            "collect_lccn": True,
+            "collect_nlmcn": False,
+            "output_tsv": True,
+            "output_invalid_isbn_file": True,
         }

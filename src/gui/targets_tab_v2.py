@@ -5,6 +5,7 @@ Purpose: A modern, dark-themed Target Management tab.
 """
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PyQt6.QtCore import Qt, QDateTime, pyqtSignal, QEvent
 from PyQt6.QtWidgets import (
@@ -43,6 +44,7 @@ class TargetDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add Target" if target is None else "Edit Target")
         self.target = target
+        self.connection_status = None  # Store connection test result
         self._setup_ui()
         self._apply_styles()
 
@@ -144,6 +146,8 @@ class TargetDialog(QDialog):
         self.setCursor(Qt.CursorShape.WaitCursor)
         success = validate_connection(host, port)
         self.unsetCursor()
+        
+        self.connection_status = success  # Store the result
 
         if success:
             QMessageBox.information(self, "Success", f"Successfully connected to {host}:{port}")
@@ -166,6 +170,8 @@ class TargetDialog(QDialog):
         self.setCursor(Qt.CursorShape.WaitCursor)
         success = validate_connection(host, port)
         self.unsetCursor()
+        
+        self.connection_status = success  # Store the result
 
         if success:
             self.accept()
@@ -187,6 +193,10 @@ class TargetDialog(QDialog):
             "port": self.port_spin.value(),
             "database": self.database_edit.text().strip(),
         }
+    
+    def get_connection_status(self):
+        """Return the connection test result (True/False/None)."""
+        return self.connection_status
 
 
 
@@ -455,14 +465,36 @@ class TargetsTabV2(QWidget):
         self.targets_changed.emit(self.get_targets())
 
     def check_all_servers(self):
-        """Manually check all server connections and update the display."""
+        """Manually check all server connections in parallel and update the display."""
         self.setCursor(Qt.CursorShape.WaitCursor)
         self.server_status.clear()
         targets = self.manager.get_all_targets()
-        for target in targets:
-            if target.target_type and "api" not in target.target_type.lower():
-                is_online = validate_connection(target.host, target.port, timeout=2, silent=True)
-                self.server_status[target.target_id] = is_online
+        
+        # Filter Z3950 targets only
+        z3950_targets = [
+            target for target in targets
+            if not (target.target_type and "api" in target.target_type.lower())
+        ]
+        
+        # Check all servers in parallel
+        if z3950_targets:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                # Submit all checks
+                future_to_target = {
+                    executor.submit(validate_connection, target.host, target.port, 2, True): target
+                    for target in z3950_targets
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_target):
+                    target = future_to_target[future]
+                    try:
+                        is_online = future.result()
+                        self.server_status[target.target_id] = is_online
+                    except Exception:
+                        # If check fails, mark as offline
+                        self.server_status[target.target_id] = False
+        
         self.refresh_targets(check_servers=False)
         self.unsetCursor()
 
@@ -477,12 +509,27 @@ class TargetsTabV2(QWidget):
         self.table.setRowCount(len(targets))
         self.table.blockSignals(True)
         
-        # Check servers if requested
+        # Check servers if requested (parallel)
         if check_servers:
-            for target in targets:
-                if target.target_type and "api" not in target.target_type.lower():
-                    is_online = validate_connection(target.host, target.port, timeout=2, silent=True)
-                    self.server_status[target.target_id] = is_online
+            z3950_targets = [
+                target for target in targets
+                if not (target.target_type and "api" in target.target_type.lower())
+            ]
+            
+            if z3950_targets:
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    future_to_target = {
+                        executor.submit(validate_connection, target.host, target.port, 2, True): target
+                        for target in z3950_targets
+                    }
+                    
+                    for future in as_completed(future_to_target):
+                        target = future_to_target[future]
+                        try:
+                            is_online = future.result()
+                            self.server_status[target.target_id] = is_online
+                        except Exception:
+                            self.server_status[target.target_id] = False
 
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
@@ -661,20 +708,20 @@ class TargetsTabV2(QWidget):
                 # Use cached server status
                 is_online = self.server_status.get(target.target_id, None)
                 if is_online is None:
-                    # No cached status, show unknown
+                    # No cached status, show offline
                     server_btn.setStyleSheet("""
                         QPushButton {
-                            background-color: #6c7086;
-                            border: 2px solid #585b70;
+                            background-color: #ed8796;
+                            border: 2px solid #d97082;
                             border-radius: 8px;
                             font-weight: bold;
                             font-size: 11px;
-                            color: #cdd6f4;
+                            color: #1e1e2e;
                             text-align: center;
                             padding: 0px;
                         }
                     """)
-                    server_btn.setText("UNKNOWN")
+                    server_btn.setText("OFFLINE")
                 elif is_online:
                     server_btn.setStyleSheet("""
                         QPushButton {
@@ -773,6 +820,15 @@ class TargetsTabV2(QWidget):
                 selected=True,
             )
             self.manager.add_target(new_target)
+            
+            # Get the newly added target and store its connection status
+            added_targets = self.manager.get_all_targets()
+            added_target = next((t for t in added_targets if t.name == data["name"] and t.host == data["host"]), None)
+            if added_target:
+                connection_status = dialog.get_connection_status()
+                if connection_status is not None:
+                    self.server_status[added_target.target_id] = connection_status
+            
             self.refresh_targets()
 
     def edit_target(self):
@@ -795,6 +851,12 @@ class TargetsTabV2(QWidget):
             target.database = data["database"]
 
             self.manager.modify_target(target)
+            
+            # Update server status with the connection test result from dialog
+            connection_status = dialog.get_connection_status()
+            if connection_status is not None:
+                self.server_status[target.target_id] = connection_status
+            
             self.refresh_targets()
 
     def remove_target(self):

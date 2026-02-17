@@ -180,7 +180,7 @@ class ModernMainWindow(QMainWindow):
         # HarvestTab needs access to Config and Targets to run
         self.harvest_tab.set_data_sources(
             config_getter=self.config_tab.get_config,
-            targets_getter=self.targets_tab.get_selected_targets,
+            targets_getter=self.targets_tab.get_targets,
         )
 
         self._connect_signals()

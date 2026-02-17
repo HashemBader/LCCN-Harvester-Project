@@ -39,8 +39,6 @@ class Target:
     record_syntax: str        # e.g. USMARC, UNIMARC (Z39.50 only)
     rank: int                 # Execution order (lower number = higher priority)
     selected: bool            # Whether this target is currently active
-    username: str = ""        # Authentication username (optional)
-    password: str = ""        # Authentication password (optional)
 
 class TargetsManager:
     """
@@ -177,9 +175,7 @@ class TargetsManager:
                             database=row["database"],
                             record_syntax=row["record_syntax"],
                             rank=int(row["rank"]) if row.get("rank") else 0,
-                            selected=is_selected,
-                            username=row.get("username", ""),
-                            password=row.get("password", "")
+                            selected=is_selected
                         )
                     )
         except Exception as e:
@@ -205,8 +201,7 @@ class TargetsManager:
                 # Write header row
                 writer.writerow([
                     "target_id", "name", "target_type", "host", "port", 
-                    "database", "record_syntax", "rank", "selected", 
-                    "username", "password"
+                    "database", "record_syntax", "rank", "selected"
                 ])
 
                 # Write data rows
@@ -220,9 +215,7 @@ class TargetsManager:
                         t.database,
                         t.record_syntax,
                         t.rank,
-                        str(t.selected), # Serialize boolean to "True" or "False"
-                        t.username,
-                        t.password
+                        str(t.selected) # Serialize boolean to "True" or "False"
                     ])
         except Exception as e:
             print(ConfigMessages.save_error.format(error=e))

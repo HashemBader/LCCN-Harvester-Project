@@ -5,8 +5,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from api.base_api import BaseApiClient, ApiResult
-from harvester.orchestrator import HarvestTarget, TargetResult, PlaceholderTarget
+from src.api.base_api import BaseApiClient, ApiResult
+from src.harvester.orchestrator import HarvestTarget, TargetResult, PlaceholderTarget
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +53,15 @@ def build_default_api_targets() -> list[HarvestTarget]:
     If none are available, fall back to PlaceholderTarget.
     """
     def _make_loc() -> ApiClientTarget:
-        from api.loc_api import LocApiClient
+        from src.api.loc_api import LocApiClient
         return ApiClientTarget(LocApiClient(), name="Library of Congress")
 
     def _make_harvard() -> ApiClientTarget:
-        from api.harvard_api import HarvardApiClient
+        from src.api.harvard_api import HarvardApiClient
         return ApiClientTarget(HarvardApiClient(), name="Harvard")
 
     def _make_openlibrary() -> ApiClientTarget:
-        from api.openlibrary_api import OpenLibraryApiClient
+        from src.api.openlibrary_api import OpenLibraryApiClient
         return ApiClientTarget(OpenLibraryApiClient(), name="OpenLibrary")
 
     factories = {

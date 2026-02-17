@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
+from src.database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
 
 
 class ExportManager:

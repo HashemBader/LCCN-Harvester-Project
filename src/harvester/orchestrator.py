@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
-from database import DatabaseManager, MainRecord, utc_now_iso
+from src.database import DatabaseManager, MainRecord, utc_now_iso
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Progress callback signature (Sprint 4 GUI signals can wrap this easily)
 # event examples: "isbn_start", "cached", "skip_retry", "target_start", "success", "failed"
 ProgressCallback = Callable[[str, dict], None]
+CancelCheck = Callable[[], bool]
 
 
 class HarvestTarget(Protocol):
@@ -58,6 +59,10 @@ class HarvestSummary:
     dry_run: bool
 
 
+class HarvestCancelled(Exception):
+    """Raised when a harvest run is cancelled by the caller."""
+
+
 class HarvestOrchestrator:
     """
     Full orchestrator for Sprint 3:
@@ -80,12 +85,14 @@ class HarvestOrchestrator:
         bypass_retry_isbns: Optional[set[str]] = None,
         bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None,
     ):
         self.db = db
         self.retry_days = retry_days
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
         self.bypass_cache_isbns = set(bypass_cache_isbns or [])
         self.progress_cb = progress_cb
+        self.cancel_check = cancel_check
         self.batch_size = max(1, int(batch_size))
         self.max_workers = max(1, int(max_workers))
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
@@ -96,6 +103,10 @@ class HarvestOrchestrator:
     def _emit(self, event: str, payload: dict) -> None:
         if self.progress_cb:
             self.progress_cb(event, payload)
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_check and self.cancel_check():
+            raise HarvestCancelled("Harvest cancelled by user")
 
     def process_isbn(
         self,
@@ -110,6 +121,7 @@ class HarvestOrchestrator:
         Process one ISBN.
         Returns status string: "cached" | "skip_retry" | "success" | "failed"
         """
+        self._check_cancelled()
         self._emit("isbn_start", {"isbn": isbn})
 
         # 1) cache check
@@ -131,6 +143,7 @@ class HarvestOrchestrator:
         other_errors: list[str] = []
 
         for target in self.targets:
+            self._check_cancelled()
             last_target = getattr(target, "name", target.__class__.__name__)
             self._emit("target_start", {"isbn": isbn, "target": last_target})
 
@@ -227,6 +240,7 @@ class HarvestOrchestrator:
         if self.max_workers <= 1:
             # --- sequential (your current behavior) ---
             for isbn in isbns:
+                self._check_cancelled()
                 status = _one(isbn)
 
                 if (len(pending_main) + len(pending_attempted)) >= self.batch_size:
@@ -255,6 +269,7 @@ class HarvestOrchestrator:
         else:
             # --- parallel mode (SAFE): threads do lookup only, main thread writes DB in batches ---
             def worker(isbn: str):
+                self._check_cancelled()
                 # Only compute outcome; do NOT touch shared pending_* lists here.
                 # Also: emitting progress from threads is okay only if your GUI callback is thread-safe.
                 self._emit("isbn_start", {"isbn": isbn})
@@ -273,6 +288,7 @@ class HarvestOrchestrator:
                 other_errors: list[str] = []
 
                 for target in self.targets:
+                    self._check_cancelled()
                     last_target = getattr(target, "name", target.__class__.__name__)
                     self._emit("target_start", {"isbn": isbn, "target": last_target})
 
@@ -318,6 +334,7 @@ class HarvestOrchestrator:
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
                 for status, rec, att in ex.map(worker, isbns):
+                    self._check_cancelled()
                     # main-thread batching writes
                     if rec is not None:
                         pending_main.append(rec)

@@ -6,15 +6,10 @@ Harvest target implementations that conform to the HarvestTarget protocol.
 from __future__ import annotations
 
 import logging
-import sys
-from pathlib import Path
 from typing import Optional
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from harvester.orchestrator import TargetResult
-from utils import messages
+from src.harvester.orchestrator import TargetResult
+from src.utils import messages
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +34,7 @@ class Z3950Target:
         global Z3950_AVAILABLE, Z3950Client
         if Z3950_AVAILABLE is None:
             try:
-                from z3950.client import Z3950Client as Z3950ClientClass
+                from src.z3950.client import Z3950Client as Z3950ClientClass
                 Z3950Client = Z3950ClientClass
                 Z3950_AVAILABLE = True
             except Exception as e:
@@ -111,9 +106,9 @@ class LibraryOfCongressTarget:
 
     name = "Library of Congress"
 
-    def __init__(self, timeout: int = 30):
+    def __init__(self, timeout: int = 8, retries: int = 0):
         from api.loc_api import LocApiClient
-        self.client = LocApiClient(timeout_seconds=timeout)
+        self.client = LocApiClient(timeout_seconds=timeout, max_retries=retries)
 
     def lookup(self, isbn: str) -> TargetResult:
         """Lookup ISBN using Library of Congress API."""
@@ -153,9 +148,9 @@ class HarvardLibraryCloudTarget:
 
     name = "Harvard LibraryCloud"
 
-    def __init__(self, timeout: int = 30):
+    def __init__(self, timeout: int = 8, retries: int = 0):
         from api.harvard_api import HarvardApiClient
-        self.client = HarvardApiClient(timeout_seconds=timeout)
+        self.client = HarvardApiClient(timeout_seconds=timeout, max_retries=retries)
 
     def lookup(self, isbn: str) -> TargetResult:
         """Lookup ISBN using Harvard LibraryCloud API."""
@@ -195,9 +190,9 @@ class OpenLibraryTarget:
 
     name = "OpenLibrary"
 
-    def __init__(self, timeout: int = 30):
+    def __init__(self, timeout: int = 8, retries: int = 0):
         from api.openlibrary_api import OpenLibraryApiClient
-        self.client = OpenLibraryApiClient(timeout_seconds=timeout)
+        self.client = OpenLibraryApiClient(timeout_seconds=timeout, max_retries=retries)
 
     def lookup(self, isbn: str) -> TargetResult:
         """Lookup ISBN using OpenLibrary API."""
@@ -265,18 +260,25 @@ def create_target_from_config(target_config: dict):
     """
     name = str(target_config.get("name", "Unknown")).strip()
     target_type = str(target_config.get("type", "api")).strip().lower()
-    timeout = target_config.get("timeout", 30)
+    try:
+        timeout = int(target_config.get("timeout", 8))
+    except Exception:
+        timeout = 8
+    try:
+        retries = int(target_config.get("max_retries", 0))
+    except Exception:
+        retries = 0
     normalized_name = name.lower()
 
     # Handle specific known API targets (name-first, tolerant aliases)
     # This keeps API targets connected even when UI labels include suffixes
     # such as "Library of Congress API" or "Harvard Library API".
     if "library of congress" in normalized_name or normalized_name == "loc":
-        return LibraryOfCongressTarget(timeout=timeout)
+        return LibraryOfCongressTarget(timeout=timeout, retries=retries)
     elif "harvard" in normalized_name:
-        return HarvardLibraryCloudTarget(timeout=timeout)
+        return HarvardLibraryCloudTarget(timeout=timeout, retries=retries)
     elif "openlibrary" in normalized_name or "open library" in normalized_name:
-        return OpenLibraryTarget(timeout=timeout)
+        return OpenLibraryTarget(timeout=timeout, retries=retries)
     # Handle Z39.50 targets
     elif target_type == "z3950":
         return Z3950Target(

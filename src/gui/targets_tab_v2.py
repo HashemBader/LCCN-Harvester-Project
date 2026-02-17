@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
-    QComboBox,
     QCheckBox,
     QMessageBox,
     QDialog,
@@ -26,8 +25,8 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
 )
 
-from utils.targets_manager import TargetsManager, Target
-from z3950.session_manager import validate_connection
+from src.utils.targets_manager import TargetsManager, Target
+from src.z3950.session_manager import validate_connection
 
 
 class AddTargetDialog(QDialog):
@@ -127,11 +126,13 @@ class TargetsTabV2(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().resizeSection(0, 150)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setDefaultSectionSize(40)
         table_layout.addWidget(self.table)
 
         layout.addWidget(table_frame)
@@ -144,21 +145,37 @@ class TargetsTabV2(QWidget):
         self.table.setRowCount(len(targets))
 
         for row, target in enumerate(targets):
-            rank_combo = QComboBox()
-            for i in range(1, len(targets) + 1):
-                rank_combo.addItem(str(i), i)
-            rank_combo.setCurrentText(str(target.rank if target.rank > 0 else 1))
-            rank_combo.currentTextChanged.connect(
-                lambda text, target_id=target.target_id: self._on_rank_changed(target_id, text)
+            rank_value = target.rank if target.rank > 0 else 1
+            rank_spin = QSpinBox()
+            rank_spin.setRange(1, max(1, len(targets)))
+            rank_spin.setValue(rank_value)
+            rank_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            rank_spin.setPrefix("#")
+            rank_spin.setStyleSheet(
+                "QSpinBox { "
+                "min-width: 84px; "
+                "max-width: 100px; "
+                "font-size: 14px; "
+                "font-weight: 800; "
+                "color: #eaf2ff; "
+                "background: #30354f; "
+                "border: 1px solid #5b6078; "
+                "border-radius: 7px; "
+                "padding: 4px 8px; "
+                "}"
             )
-            self.table.setCellWidget(row, 0, rank_combo)
+            rank_spin.valueChanged.connect(
+                lambda value, target_id=target.target_id: self._on_rank_changed(target_id, value)
+            )
+            self.table.setCellWidget(row, 0, rank_spin)
 
             selected_check = QCheckBox()
             selected_check.setChecked(target.selected)
+            self._apply_toggle_style(selected_check)
             selected_check.stateChanged.connect(
                 lambda _state, target_id=target.target_id: self._on_selected_changed(target_id)
             )
-            selected_check.setStyleSheet("margin-left: 12px; margin-right: 12px;")
+            selected_check.stateChanged.connect(lambda _state, cb=selected_check: self._apply_toggle_style(cb))
             self.table.setCellWidget(row, 1, selected_check)
 
             name_item = QTableWidgetItem(target.name)
@@ -197,13 +214,11 @@ class TargetsTabV2(QWidget):
                 return target
         return None
 
-    def _on_rank_changed(self, target_id: str, text: str):
-        if not text:
-            return
+    def _on_rank_changed(self, target_id: str, value: int):
         target = self._find_target(target_id)
         if not target:
             return
-        new_rank = int(text)
+        new_rank = int(value)
         if new_rank == target.rank:
             return
 
@@ -216,6 +231,29 @@ class TargetsTabV2(QWidget):
         target.rank = new_rank
         self.manager.modify_target(target)
         self.refresh_targets()
+
+    def _apply_toggle_style(self, checkbox: QCheckBox):
+        enabled = checkbox.isChecked()
+        checkbox.setText("ON" if enabled else "OFF")
+        checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                margin-left: 8px;
+                margin-right: 8px;
+                spacing: 8px;
+                font-weight: 700;
+                color: %s;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 1px solid #2a2d3e;
+                background: %s;
+            }
+            """
+            % ("#a6da95" if enabled else "#ed8796", "#2f6f46" if enabled else "#7d2f3d")
+        )
 
     def _on_selected_changed(self, target_id: str):
         target = self._find_target(target_id)
@@ -279,4 +317,3 @@ class TargetsTabV2(QWidget):
 
     def get_selected_targets(self):
         return [target for target in self.get_targets() if target.get("selected", True)]
-

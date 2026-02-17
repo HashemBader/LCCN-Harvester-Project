@@ -10,7 +10,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
 from pathlib import Path
+from itertools import islice
 from utils.isbn_validator import normalize_isbn
+
+PREVIEW_MAX_LINES = 20
+LARGE_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024  # 20 MB
+INFO_SAMPLE_MAX_LINES = 200_000
 
 
 class ClickableDropZone(QFrame):
@@ -251,9 +256,9 @@ class InputTab(QWidget):
 
         try:
             with open(self.input_file, 'r', encoding='utf-8-sig') as f:
-                lines = f.readlines()[:20]  # Preview first 20 lines
+                lines = list(islice(f, PREVIEW_MAX_LINES))
                 preview_text = ''.join(lines)
-                if len(lines) == 20:
+                if len(lines) == PREVIEW_MAX_LINES:
                     preview_text += "\n... (truncated)"
                 self.preview_text.setPlainText(preview_text)
         except Exception as e:
@@ -270,10 +275,12 @@ class InputTab(QWidget):
             invalid_rows = 0
             seen: set[str] = set()
             unique_valid = 0
+            file_size = self.input_file.stat().st_size
+            sampled = file_size > LARGE_FILE_THRESHOLD_BYTES
 
             with open(self.input_file, 'r', encoding='utf-8-sig') as f:
                 first_data_row_seen = False
-                for line in f:
+                for i, line in enumerate(f, start=1):
                     raw_line = line.strip()
                     if not raw_line:
                         continue
@@ -305,7 +312,16 @@ class InputTab(QWidget):
                         seen.add(normalized)
                         unique_valid += 1
 
+                    if sampled and i >= INFO_SAMPLE_MAX_LINES:
+                        break
+
             duplicate_valid_rows = max(0, valid_rows - unique_valid)
+            sample_note = ""
+            if sampled:
+                sample_note = (
+                    f"\nNote: Large file detected. Statistics are based on the first "
+                    f"{INFO_SAMPLE_MAX_LINES:,} lines."
+                )
 
             info_text = (
                 f"File: {self.input_file.name}\n"
@@ -316,6 +332,7 @@ class InputTab(QWidget):
                 f"Invalid ISBN rows: {invalid_rows}\n"
                 f"Candidate rows (non-comment): {candidate_rows}\n"
                 f"Non-empty lines: {total_nonempty}"
+                f"{sample_note}"
             )
             self.info_label.setText(info_text)
         except Exception as e:

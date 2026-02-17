@@ -3,21 +3,21 @@
     "name": "Library of Congress",
     "type": "api",
     "selected": true,
-    "rank": 2,
-    "note": "LoC JSON/YAML API (PDF-required endpoint)"
-  },
-  {
-    "name": "Harvard",
-    "type": "api",
-    "selected": true,
     "rank": 1,
-    "note": "LibraryCloud Items API via identifier=ISBN with keyword fallback"
+    "note": "LoC SRU API with MARCXML records"
   },
   {
     "name": "OpenLibrary",
     "type": "api",
     "selected": true,
-    "rank": 3,
+    "rank": 2,
     "note": "OpenLibrary ISBN endpoint for complementary coverage"
+  },
+  {
+    "name": "Harvard",
+    "type": "api",
+    "selected": true,
+    "rank": 3,
+    "note": "LibraryCloud Items API via identifier=ISBN with keyword fallback"
   }
 ]

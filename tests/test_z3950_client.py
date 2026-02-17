@@ -1,12 +1,13 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Skip if dependency missing
-pytest.importorskip("PyZ3950")
-
 from src.z3950.client import Z3950Client
-from PyZ3950 import zoom
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
 from pymarc import Record
+
+ok, reason = ensure_pyz3950_importable()
+if not ok:  # pragma: no cover - module-level skip path
+    pytest.skip(f"Skipping Z39.50 tests: PyZ3950 import failed ({reason})", allow_module_level=True)
 
 @pytest.fixture
 def mock_zoom_connection():
@@ -111,4 +112,3 @@ def test_close(mock_zoom_connection):
     
     mock_conn_instance.close.assert_called_once()
     assert client.conn is None
-

@@ -7,12 +7,13 @@ from PyQt6.QtWidgets import (
     QPushButton, QGroupBox, QTextEdit, QProgressBar,
     QCheckBox, QSpinBox, QFrame, QGridLayout, QMessageBox, QFileDialog
 )
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QUrl, QSize
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QCursor
 from pathlib import Path
 import csv
 import sys
+import json
 # Add src to path for utils import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.isbn_validator import normalize_isbn
@@ -24,6 +25,7 @@ from .icons import get_icon, SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
 from PyQt6.QtCore import QThread
 from harvester.run_harvest import run_harvest
 from harvester.targets import create_target_from_config
+from harvester.orchestrator import HarvestCancelled
 from database import DatabaseManager
 from datetime import datetime
 from utils import messages
@@ -78,7 +80,7 @@ class HarvestWorkerV2(QThread):
             # Create progress callback
             def progress_callback(event: str, payload: dict):
                 if self._stop_requested:
-                    return
+                    raise HarvestCancelled("Harvest cancelled by user")
 
                 isbn = payload.get("isbn", "")
                 
@@ -135,8 +137,19 @@ class HarvestWorkerV2(QThread):
 
             # Run the harvest pipeline
             retry_days = self.config.get("retry_days", 7)
+            try:
+                batch_size = max(1, int(self.config.get("batch_size", 50)))
+            except Exception:
+                batch_size = 50
+            try:
+                max_workers = max(1, int(self.advanced_settings.get("parallel_workers", 1)))
+            except Exception:
+                max_workers = 1
 
-            print(f"DEBUG: HarvestWorkerV2 calling run_harvest with db_path='data/lccn_harvester.sqlite3' retry={retry_days}")
+            print(
+                f"DEBUG: HarvestWorkerV2 calling run_harvest with db_path='data/lccn_harvester.sqlite3' "
+                f"retry={retry_days} batch_size={batch_size} workers={max_workers}"
+            )
 
             summary = run_harvest(
                 input_path=Path(self.input_file),
@@ -146,6 +159,9 @@ class HarvestWorkerV2(QThread):
                 targets=targets,
                 bypass_retry_isbns=self.bypass_retry_isbns,
                 progress_cb=progress_callback,
+                cancel_check=lambda: self._stop_requested,
+                batch_size=batch_size,
+                max_workers=max_workers,
             )
             print(f"DEBUG: HarvestWorkerV2 SUMMARY: {summary}")
             
@@ -163,6 +179,9 @@ class HarvestWorkerV2(QThread):
             self.harvest_complete.emit(True, final_stats)
             print("DEBUG: HarvestWorkerV2 completed successfully.")
 
+        except HarvestCancelled:
+            self.status_message.emit("Harvest cancelled by user.")
+            self.harvest_complete.emit(False, self.stats.copy() if hasattr(self, "stats") else {"total": 0, "found": 0, "failed": 0})
         except Exception as e:
             import traceback
             error_msg = f"Error: {str(e)}\\n{traceback.format_exc()}"
@@ -242,11 +261,24 @@ class HarvestWorkerV2(QThread):
         try:
             selected_targets = [t for t in self.targets if t.get("selected", True)]
             sorted_targets = sorted(selected_targets, key=lambda x: x.get("rank", 999))
+            try:
+                global_timeout = int(self.advanced_settings.get("connection_timeout", 0))
+            except Exception:
+                global_timeout = 0
+            try:
+                global_retries = int(self.advanced_settings.get("max_retries", 0))
+            except Exception:
+                global_retries = 0
 
             target_instances = []
             for target_config in sorted_targets:
                 try:
-                    target = create_target_from_config(target_config)
+                    cfg = dict(target_config)
+                    if global_timeout > 0:
+                        cfg["timeout"] = global_timeout
+                    if global_retries >= 0:
+                        cfg["max_retries"] = global_retries
+                    target = create_target_from_config(cfg)
                     target_instances.append(target)
                 except Exception as e:
                     self.status_message.emit(messages.HarvestMessages.failed_create_target.format(
@@ -694,15 +726,27 @@ class HarvestTabV2(QWidget):
             QMessageBox.warning(self, "No Targets", "Please select at least one target in the Targets tab.")
             return
 
+        retry_days = int(config.get("retry_days", 7) or 0)
+        bypass_retry_isbns = self._check_recent_not_found_isbns(retry_days)
+        if bypass_retry_isbns is None:
+            self.log_output.setText("Harvest cancelled: retry window still active for some ISBNs.")
+            return
+
         # 3. Start Worker
         print(f"DEBUG: Starting worker with {len(selected_targets)} selected targets.")
-        self._start_worker(config, targets)
+        self._start_worker(config, targets, bypass_retry_isbns=bypass_retry_isbns)
 
-    def _start_worker(self, config, targets):
+    def _start_worker(self, config, targets, bypass_retry_isbns=None):
         if self.worker and self.worker.isRunning():
             return
 
-        self.worker = HarvestWorkerV2(self.input_file, config, targets)
+        self.worker = HarvestWorkerV2(
+            self.input_file,
+            config,
+            targets,
+            advanced_settings=self._load_advanced_settings(),
+            bypass_retry_isbns=bypass_retry_isbns,
+        )
         self.worker.progress_update.connect(self._on_progress)
         self.worker.harvest_complete.connect(self._on_complete)
         self.worker.stats_update.connect(self._on_stats)
@@ -725,6 +769,106 @@ class HarvestTabV2(QWidget):
             self.status_pill.setText("STOPPING...")
             self.log_output.setText("Stopping harvest (waiting for current thread)...")
             self.btn_stop.setEnabled(False) # Prevent double click
+
+    def _iter_normalized_input_isbns(self):
+        """Yield normalized ISBNs from current input file."""
+        if not self.input_file:
+            return
+        input_path = Path(self.input_file)
+        delimiter = "," if input_path.suffix.lower() == ".csv" else "\t"
+        with open(input_path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            for row in reader:
+                raw = (row[0] or "").strip() if row else ""
+                if not raw or raw.lower().startswith("isbn") or raw.startswith("#"):
+                    continue
+                norm = normalize_isbn(raw)
+                if norm:
+                    yield norm
+
+    def _check_recent_not_found_isbns(self, retry_days: int):
+        """
+        Warn user when ISBNs with recent 'not found' failures are still inside retry window.
+        Returns:
+          - set() to keep retry rule
+          - set(isbns) to bypass retry for selected ISBNs
+          - None if user cancels harvest
+        """
+        if not self.input_file or retry_days <= 0:
+            return set()
+
+        try:
+            db = DatabaseManager("data/lccn_harvester.sqlite3")
+            db.init_db()
+            recent = []
+            for isbn in self._iter_normalized_input_isbns():
+                att = db.get_attempted(isbn)
+                if att is None:
+                    continue
+                err = (att.last_error or "").lower()
+                # Focus this dialog on previous not-found runs, per user expectation.
+                if "not found" not in err:
+                    continue
+                if db.should_skip_retry(isbn, retry_days=retry_days):
+                    recent.append((isbn, att))
+        except Exception as e:
+            self.log_output.setText(f"Warning: could not check retry window ({e})")
+            return set()
+
+        if not recent:
+            return set()
+
+        details = []
+        for isbn, att in recent[:12]:
+            last_attempted = att.last_attempted or "Unknown"
+            try:
+                last_dt = datetime.fromisoformat(last_attempted)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                next_dt = last_dt + timedelta(days=retry_days)
+                next_str = next_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                last_str = last_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                last_str = str(last_attempted)
+                next_str = "Unknown"
+            details.append(f"{isbn} | last not found: {last_str} | retry after: {next_str}")
+        if len(recent) > 12:
+            details.append(f"... and {len(recent) - 12} more")
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Retry Date Not Reached")
+        msg.setText(
+            f"{len(recent)} ISBN(s) were previously not found and are still within the {retry_days}-day retry window."
+        )
+        msg.setInformativeText(
+            "You have not passed the retry date yet for these ISBNs.\n"
+            "Cancel to wait, continue to keep retry skips, or override to rerun now."
+        )
+        msg.setDetailedText("\n".join(details))
+
+        cancel_btn = msg.addButton("Cancel Harvest", QMessageBox.ButtonRole.RejectRole)
+        keep_btn = msg.addButton("Continue (Keep Retry Rules)", QMessageBox.ButtonRole.AcceptRole)
+        override_btn = msg.addButton("Override and Re-run Now", QMessageBox.ButtonRole.ActionRole)
+        msg.setDefaultButton(cancel_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked == cancel_btn:
+            return None
+        if clicked == override_btn:
+            return {isbn for isbn, _ in recent}
+        return set()
+
+    def _load_advanced_settings(self):
+        """Load persisted advanced settings if available."""
+        settings_path = Path("data/advanced_settings.json")
+        if not settings_path.exists():
+            return {}
+        try:
+            return json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
     def _on_progress(self, isbn, status, source, msg):
         # Only show target when running

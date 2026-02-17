@@ -273,24 +273,66 @@ class ResultsTabV2(QWidget):
             self._search_results() # Reset
 
     def _export_results(self, format_type):
-        """Export visible results to file."""
+        """Export results directly from DB (not limited by table cap)."""
         filename = f"lccn_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{format_type}"
         path, _ = QFileDialog.getSaveFileName(self, "Export Results", filename, f"{format_type.upper()} Files (*.{format_type})")
         
         if not path: return
 
         try:
-            headers = [self.results_table.horizontalHeaderItem(i).text() for i in range(self.results_table.columnCount())]
-            rows = []
-            
-            for row in range(self.results_table.rowCount()):
-                if self.results_table.isRowHidden(row): continue
-                
-                row_data = []
-                for col in range(self.results_table.columnCount()):
-                    item = self.results_table.item(row, col)
-                    row_data.append(item.text() if item else "")
-                rows.append(row_data)
+            is_failed = self.table_selector.currentIndex() == 1
+            query_text = self.search_input.text().strip().lower()
+
+            if is_failed:
+                headers = ["ISBN", "Last Target", "Last Attempt", "Fail Count", "Error", "Status"]
+                with self.db.connect() as conn:
+                    if query_text:
+                        like = f"%{query_text}%"
+                        rows_raw = conn.execute(
+                            """
+                            SELECT isbn, last_target, last_attempted, fail_count, last_error, 'Failed' AS status
+                            FROM attempted
+                            WHERE lower(coalesce(isbn, '')) LIKE ?
+                               OR lower(coalesce(last_target, '')) LIKE ?
+                               OR lower(coalesce(last_error, '')) LIKE ?
+                            ORDER BY last_attempted DESC
+                            """,
+                            (like, like, like),
+                        ).fetchall()
+                    else:
+                        rows_raw = conn.execute(
+                            """
+                            SELECT isbn, last_target, last_attempted, fail_count, last_error, 'Failed' AS status
+                            FROM attempted
+                            ORDER BY last_attempted DESC
+                            """
+                        ).fetchall()
+            else:
+                headers = ["ISBN", "LCCN", "Title", "Author", "Pub. Year", "Publisher", "Source", "Created"]
+                with self.db.connect() as conn:
+                    if query_text:
+                        like = f"%{query_text}%"
+                        rows_raw = conn.execute(
+                            """
+                            SELECT isbn, lccn, title, author, pub_year, publisher, source, date_added
+                            FROM main
+                            WHERE lower(coalesce(isbn, '')) LIKE ?
+                               OR lower(coalesce(title, '')) LIKE ?
+                               OR lower(coalesce(author, '')) LIKE ?
+                            ORDER BY date_added DESC
+                            """,
+                            (like, like, like),
+                        ).fetchall()
+                    else:
+                        rows_raw = conn.execute(
+                            """
+                            SELECT isbn, lccn, title, author, pub_year, publisher, source, date_added
+                            FROM main
+                            ORDER BY date_added DESC
+                            """
+                        ).fetchall()
+
+            rows = [list(row) for row in rows_raw]
 
             delimiter = '\t' if format_type == 'tsv' else ','
             with open(path, 'w', newline='', encoding='utf-8') as f:

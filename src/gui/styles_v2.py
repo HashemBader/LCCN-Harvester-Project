@@ -33,6 +33,12 @@ QWidget {
     font-size: 14px;
 }
 
+/* Prevent blocky background rectangles behind text labels */
+QLabel {
+    background: transparent;
+    color: #e6eaf6;
+}
+
 /* --- Sidebar: Gradient Depth --- */
 QFrame#Sidebar {
     background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #24273a, stop:1 #1e2030);
@@ -92,6 +98,7 @@ QLabel#PageTitle {
     font-weight: 800;
     color: #ffffff;
     margin-bottom: 20px;
+    letter-spacing: 0.2px;
 }
 
 /* --- Cards / Panels: The "Pop" --- */
@@ -117,10 +124,9 @@ QFrame#LivePanel {
 
 QLabel[class="CardTitle"], QLabel.CardTitle {
     color: #cad3f5; 
-    font-size: 13px; 
+    font-size: 14px; 
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
+    letter-spacing: 0.2px;
 }
 
 QLabel[class="CardValue"], QLabel.CardValue {
@@ -177,8 +183,9 @@ QTableWidget {
 
 QTableWidget::item {
     border-bottom: 1px solid #2a2d3e; 
-    padding: 10px;
-    color: #ffffff;
+    padding: 9px 10px;
+    color: #e8ebf7;
+    background: transparent;
 }
 
 QTableWidget::item:selected {
@@ -192,13 +199,12 @@ QTableWidget::item:hover {
 
 QHeaderView::section {
     background-color: #181926; 
-    padding: 12px;
+    padding: 10px 12px;
     border: none;
     border-bottom: 2px solid #8aadf4; /* Accent underline for header */
-    font-weight: 800;
-    color: #ffffff;
-    text-transform: uppercase;
-    font-size: 12px;
+    font-weight: 700;
+    color: #eaf0ff;
+    font-size: 13px;
 }
 
 /* Scrollbars */
@@ -222,7 +228,7 @@ QPushButton {
     border-radius: 8px;
     padding: 10px 20px;
     font-weight: 700;
-    font-size: 13px;
+    font-size: 14px;
     border: 1px solid transparent;
 }
 

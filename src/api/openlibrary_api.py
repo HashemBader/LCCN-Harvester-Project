@@ -16,8 +16,8 @@ import json
 import urllib.error
 from typing import Any, Optional
 
-from api.base_api import ApiResult, BaseApiClient
-from api.http_utils import urlopen_with_ca
+from src.api.base_api import ApiResult, BaseApiClient
+from src.api.http_utils import urlopen_with_ca
 
 
 class OpenLibraryApiClient(BaseApiClient):

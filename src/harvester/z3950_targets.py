@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
 
-from harvester.orchestrator import HarvestTarget, TargetResult
+from src.harvester.orchestrator import HarvestTarget, TargetResult
 
 logger = logging.getLogger(__name__)
 

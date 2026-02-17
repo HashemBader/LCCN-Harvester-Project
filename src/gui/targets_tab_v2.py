@@ -6,6 +6,11 @@ Purpose: A modern, dark-themed Target Management tab.
 
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+import sys
+
+# Add src to path for utils/z3950 imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PyQt6.QtCore import Qt, QDateTime, pyqtSignal, QEvent
 from PyQt6.QtWidgets import (

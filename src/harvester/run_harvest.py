@@ -1,11 +1,4 @@
-"""
-run_harvest.py
-
-Sprint 3+: Define the harvest pipeline interface using HarvestOrchestrator.
-
-Sprint 5:
-- Pass batch_size so orchestrator writes in transactions instead of per-ISBN.
-"""
+"""run_harvest.py: Define the harvest pipeline interface using HarvestOrchestrator."""
 
 from __future__ import annotations
 
@@ -85,7 +78,7 @@ def run_harvest(
     progress_cb: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
     max_workers: int = 1,
-    batch_size: int = 50,
+    call_number_mode: str = "both",
     include_z3950: bool = False,
 ) -> HarvestSummary:
 
@@ -112,7 +105,7 @@ def run_harvest(
         progress_cb=progress_cb,
         cancel_check=cancel_check,
         max_workers=max_workers,
-        batch_size=batch_size,
+        call_number_mode=call_number_mode,
     )
 
     orch_summary = orch.run(isbns, dry_run=dry_run)

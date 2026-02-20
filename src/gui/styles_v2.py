@@ -79,6 +79,12 @@ QPushButton[class="NavButton"]:checked, QPushButton.NavButton:checked {
     border-left: 3px solid #8aadf4;
 }
 
+QPushButton[class="NavButton"]:focus, QPushButton.NavButton:focus {
+    border-left: 3px solid #f4dbd6;
+    background-color: rgba(138, 173, 244, 0.16);
+    color: #ffffff;
+}
+
 /* Tooltips */
 QToolTip {
     background-color: #181926;
@@ -158,7 +164,7 @@ QLineEdit, QSpinBox, QComboBox {
 }
 
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-    border: 1px solid #8aadf4; 
+    border: 2px solid #f4dbd6;
     background-color: #1e2030;
 }
 
@@ -232,6 +238,10 @@ QPushButton {
     border: 1px solid transparent;
 }
 
+QPushButton:focus {
+    border: 2px solid #f4dbd6;
+}
+
 /* 1. Primary: Blue Gradient */
 QPushButton[class="PrimaryButton"], QPushButton.PrimaryButton, QPushButton#PrimaryButton {
     background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8aadf4, stop:1 #6d96e8);
@@ -247,7 +257,7 @@ QPushButton[class="PrimaryButton"]:pressed, QPushButton.PrimaryButton:pressed, Q
 }
 QPushButton[class="PrimaryButton"]:disabled, QPushButton.PrimaryButton:disabled, QPushButton#PrimaryButton:disabled {
     background-color: #363a4f;
-    color: #5b6078;
+    color: #c2c8df;
     border: none;
 }
 

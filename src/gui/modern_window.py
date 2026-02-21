@@ -23,7 +23,6 @@ from .ai_assistant_tab import AIAssistantTab
 from .notifications import NotificationManager
 from .styles_v2 import V2_STYLESHEET
 from .shortcuts_dialog import ShortcutsDialog
-from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
     get_icon, get_pixmap, 
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
@@ -269,8 +268,7 @@ class ModernMainWindow(QMainWindow):
         dialog.exec()
 
     def _show_accessibility_statement(self):
-        dialog = AccessibilityStatementDialog(self)
-        dialog.exec()
+        QMessageBox.information(self, "Accessibility Statement", "Accessibility features are being developed.\n\nPlease check back later.")
 
     def _toggle_sidebar(self):
         self.sidebar_collapsed = not self.sidebar_collapsed

@@ -19,13 +19,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from PyQt6.QtWidgets import QApplication
-from gui.styles import MODERN_STYLE
-from gui.main_window import MainWindow
-
-try:
-    from gui.modern_window import ModernMainWindow
-except Exception:
-    ModernMainWindow = None
+from gui.modern_window import ModernMainWindow
 
 
 def _configure_runtime_environment():
@@ -56,12 +50,8 @@ def main():
     app.setOrganizationName("UPEI Library")
     app.setApplicationVersion("1.0.0")
 
-    # Create and show main window (prefer V2 modern shell when available)
-    if ModernMainWindow is not None:
-        window = ModernMainWindow()
-    else:
-        app.setStyleSheet(MODERN_STYLE)
-        window = MainWindow()
+    # Create and show modern V2 main window
+    window = ModernMainWindow()
     window.show()
 
     # Start event loop

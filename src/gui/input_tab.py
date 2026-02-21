@@ -232,7 +232,7 @@ class InputTab(QWidget):
             self,
             "Select ISBN Input File",
             "",
-            "TSV Files (*.tsv);;Text Files (*.txt);;CSV Files (*.csv);;All Files (*.*)"
+            "All Files (*.*);;TSV Files (*.tsv);;Text Files (*.txt);;CSV Files (*.csv)"
         )
 
         if file_path:
@@ -329,9 +329,7 @@ class InputTab(QWidget):
                 f"Valid ISBNs (unique): {unique_valid}\n"
                 f"Valid ISBN rows: {valid_rows}\n"
                 f"Duplicate valid rows: {duplicate_valid_rows}\n"
-                f"Invalid ISBN rows: {invalid_rows}\n"
-                f"Candidate rows (non-comment): {candidate_rows}\n"
-                f"Non-empty lines: {total_nonempty}"
+                f"Invalid ISBN rows: {invalid_rows}"
                 f"{sample_note}"
             )
             self.info_label.setText(info_text)

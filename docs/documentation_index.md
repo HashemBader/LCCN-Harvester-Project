@@ -70,6 +70,8 @@ Technical research and feasibility analysis.
 Test strategy and verification.
 
 - [testing/test_plan.md](testing/test_plan.md) — Testing strategy and acceptance mapping
+- [WCAG_ACCESSIBILITY.md](WCAG_ACCESSIBILITY.md) — Accessibility notes, limitations, and certification path
+- [release/WCAG_SELF_CHECK_REPORT.md](release/WCAG_SELF_CHECK_REPORT.md) — Latest internal WCAG self-check report
 
 ---
 

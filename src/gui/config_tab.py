@@ -157,18 +157,37 @@ class ConfigTab(QWidget):
 
         # Call Number Collection
         collection_group = self._create_group("Call Number Collection")
-        collection_layout = QVBoxLayout()
+        collection_layout = QHBoxLayout()
 
-        self.lccn_checkbox = QCheckBox("Collect Library of Congress Call Numbers (LCCN)")
-        self.lccn_checkbox.setChecked(True)
-        self.lccn_checkbox.stateChanged.connect(self._mark_unsaved)
-        self.lccn_checkbox.setStyleSheet("color: #e6e1d5;")
-        collection_layout.addWidget(self.lccn_checkbox)
-
-        self.nlmcn_checkbox = QCheckBox("Collect NLM Call Numbers (NLMCN)")
-        self.nlmcn_checkbox.stateChanged.connect(self._mark_unsaved)
-        self.nlmcn_checkbox.setStyleSheet("color: #e6e1d5;")
-        collection_layout.addWidget(self.nlmcn_checkbox)
+        collection_label = QLabel("Collection mode:")
+        collection_label.setStyleSheet("color: #e6e1d5;")
+        self.call_number_mode_combo = QComboBox()
+        self.call_number_mode_combo.addItem("LCCN only", "lccn")
+        self.call_number_mode_combo.addItem("NLMCN only", "nlmcn")
+        self.call_number_mode_combo.addItem("Both", "both")
+        self.call_number_mode_combo.currentTextChanged.connect(self._mark_unsaved)
+        self.call_number_mode_combo.setStyleSheet("""
+            QComboBox {
+                padding: 6px 10px;
+                border: 1px solid #2c3440;
+                border-radius: 4px;
+                background: #232a32;
+                color: #e6e1d5;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                border-color: #f4b860;
+            }
+            QComboBox QAbstractItemView {
+                background: #1b1f24;
+                color: #e6e1d5;
+                selection-background-color: #2e3943;
+                selection-color: #f4b860;
+            }
+        """)
+        collection_layout.addWidget(collection_label)
+        collection_layout.addWidget(self.call_number_mode_combo)
+        collection_layout.addStretch()
 
         collection_group.setLayout(collection_layout)
         layout.addWidget(collection_group)
@@ -309,9 +328,10 @@ class ConfigTab(QWidget):
         settings = profile_data.get("settings", {})
 
         # Update UI - check if widgets exist first
-        if hasattr(self, 'lccn_checkbox'):
-            self.lccn_checkbox.setChecked(settings.get("collect_lccn", True))
-            self.nlmcn_checkbox.setChecked(settings.get("collect_nlmcn", False))
+        if hasattr(self, 'call_number_mode_combo'):
+            mode = self._mode_from_settings(settings)
+            idx = self.call_number_mode_combo.findData(mode)
+            self.call_number_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.retry_spinbox.setValue(settings.get("retry_days", 7))
             self.tsv_checkbox.setChecked(settings.get("output_tsv", True))
             self.invalid_isbn_checkbox.setChecked(settings.get("output_invalid_isbn_file", True))
@@ -340,13 +360,31 @@ class ConfigTab(QWidget):
 
     def _get_current_settings(self):
         """Get current settings from UI."""
+        mode = self._current_call_number_mode()
         return {
-            "collect_lccn": self.lccn_checkbox.isChecked(),
-            "collect_nlmcn": self.nlmcn_checkbox.isChecked(),
+            "call_number_mode": mode,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
             "retry_days": self.retry_spinbox.value(),
             "output_tsv": self.tsv_checkbox.isChecked(),
             "output_invalid_isbn_file": self.invalid_isbn_checkbox.isChecked()
         }
+
+    def _current_call_number_mode(self):
+        mode = self.call_number_mode_combo.currentData()
+        return mode if mode in {"lccn", "nlmcn", "both"} else "lccn"
+
+    def _mode_from_settings(self, settings):
+        mode = settings.get("call_number_mode")
+        if mode in {"lccn", "nlmcn", "both"}:
+            return mode
+        collect_lccn = bool(settings.get("collect_lccn", True))
+        collect_nlmcn = bool(settings.get("collect_nlmcn", False))
+        if collect_lccn and collect_nlmcn:
+            return "both"
+        if collect_nlmcn:
+            return "nlmcn"
+        return "lccn"
 
     def _normalize_settings(self, settings):
         """Create a stable comparable representation for settings."""

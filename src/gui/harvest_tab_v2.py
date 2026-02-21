@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QUrl, QSize
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QCursor
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QCursor, QShortcut, QKeySequence
 from pathlib import Path
 import csv
 import sys
@@ -137,10 +137,7 @@ class HarvestWorkerV2(QThread):
 
             # Run the harvest pipeline
             retry_days = self.config.get("retry_days", 7)
-            try:
-                batch_size = max(1, int(self.config.get("batch_size", 50)))
-            except Exception:
-                batch_size = 50
+            call_number_mode = self.config.get("call_number_mode", "lccn")
             try:
                 max_workers = max(1, int(self.advanced_settings.get("parallel_workers", 1)))
             except Exception:
@@ -148,7 +145,7 @@ class HarvestWorkerV2(QThread):
 
             print(
                 f"DEBUG: HarvestWorkerV2 calling run_harvest with db_path='data/lccn_harvester.sqlite3' "
-                f"retry={retry_days} batch_size={batch_size} workers={max_workers}"
+                f"retry={retry_days} mode={call_number_mode} workers={max_workers}"
             )
 
             summary = run_harvest(
@@ -160,8 +157,8 @@ class HarvestWorkerV2(QThread):
                 bypass_retry_isbns=self.bypass_retry_isbns,
                 progress_cb=progress_callback,
                 cancel_check=lambda: self._stop_requested,
-                batch_size=batch_size,
                 max_workers=max_workers,
+                call_number_mode=call_number_mode,
             )
             print(f"DEBUG: HarvestWorkerV2 SUMMARY: {summary}")
             
@@ -325,6 +322,8 @@ class DropZone(QFrame):
         self.setObjectName("DragZone") # Targeted by styles_v2.py
         self.setAcceptDrops(True)
         self.setMinimumHeight(100)
+        self.setAccessibleName("Input file drop zone")
+        self.setAccessibleDescription("Drag and drop a TSV, TXT, or CSV file that contains ISBNs.")
         self._setup_ui()
 
     def _setup_ui(self):
@@ -338,6 +337,7 @@ class DropZone(QFrame):
         self.lbl_text = QLabel("Drag & Drop Input File Here\n(or click 'Browse')")
         self.lbl_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_text.setStyleSheet("color: #8aadf4; font-weight: 600;")
+        self.lbl_text.setAccessibleName("Drop zone instructions")
         
         layout.addWidget(icon)
         layout.addWidget(self.lbl_text)
@@ -382,8 +382,10 @@ class HarvestTabV2(QWidget):
         
         self.processed_count = 0
         self.total_count = 0 
+        self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         
         self._setup_ui()
+        self._setup_shortcuts()
 
     def set_data_sources(self, config_getter, targets_getter):
         """Set callbacks to retrieve config and selected targets."""
@@ -408,6 +410,7 @@ class HarvestTabV2(QWidget):
         self.status_pill = QLabel("IDLE")
         self.status_pill.setProperty("class", "StatusPill")
         self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_pill.setAccessibleName("Harvest status")
         
         header_layout.addWidget(title)
         header_layout.addStretch()
@@ -425,6 +428,7 @@ class HarvestTabV2(QWidget):
         # File Pill (Hidden by default)
         self.file_pill = QFrame()
         self.file_pill.setObjectName("FilePill")
+        self.file_pill.setAccessibleName("Selected input file")
         self.file_pill.setStyleSheet("""
             #FilePill { background-color: #363a4f; border-radius: 8px; border: 1px solid #494d64; }
         """)
@@ -438,17 +442,19 @@ class HarvestTabV2(QWidget):
         self.lbl_pill_info = QLabel("(0 KB)")
         self.lbl_pill_info.setStyleSheet("color: #a5adcb;")
         
-        btn_clear_file = QPushButton("✕")
-        btn_clear_file.setFixedSize(20, 20)
-        btn_clear_file.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_clear_file.setStyleSheet("color: #ed8796; border: none; font-weight: bold;")
-        btn_clear_file.clicked.connect(self._clear_input)
+        self.btn_clear_file = QPushButton("✕")
+        self.btn_clear_file.setFixedSize(20, 20)
+        self.btn_clear_file.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_file.setStyleSheet("color: #ed8796; border: none; font-weight: bold;")
+        self.btn_clear_file.setToolTip("Remove selected input file")
+        self.btn_clear_file.setAccessibleName("Clear selected file")
+        self.btn_clear_file.clicked.connect(self._clear_input)
         
         pill_layout.addWidget(icon_label)
         pill_layout.addWidget(self.lbl_pill_name)
         pill_layout.addWidget(self.lbl_pill_info)
         pill_layout.addStretch()
-        pill_layout.addWidget(btn_clear_file)
+        pill_layout.addWidget(self.btn_clear_file)
         
         # Validation Badge & Browse Area
         controls_layout = QHBoxLayout()
@@ -456,20 +462,24 @@ class HarvestTabV2(QWidget):
         self.badge_validation = QLabel("")
         self.badge_validation.setVisible(False)
         
-        btn_browse = QPushButton("Browse...")
-        btn_browse.setProperty("class", "SecondaryButton")
-        btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_browse.clicked.connect(self._browse_file)
+        self.btn_browse = QPushButton("&Browse...")
+        self.btn_browse.setProperty("class", "SecondaryButton")
+        self.btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
+        mod_name = "Cmd" if self._shortcut_modifier == "Meta" else "Ctrl"
+        self.btn_browse.setToolTip(f"Open file picker ({mod_name}+O)")
+        self.btn_browse.setAccessibleName("Browse input file")
+        self.btn_browse.clicked.connect(self._browse_file)
         
-        sample_link = QPushButton("Expected format?")
-        sample_link.setCursor(Qt.CursorShape.PointingHandCursor)
-        sample_link.setStyleSheet("color: #8aadf4; border: none; text-decoration: underline;")
-        sample_link.clicked.connect(self._show_sample_format)
+        self.sample_link = QPushButton("Expected format?")
+        self.sample_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sample_link.setStyleSheet("color: #8aadf4; border: none; text-decoration: underline;")
+        self.sample_link.setAccessibleName("Show expected file format")
+        self.sample_link.clicked.connect(self._show_sample_format)
         
         controls_layout.addWidget(self.badge_validation)
         controls_layout.addStretch()
-        controls_layout.addWidget(sample_link)
-        controls_layout.addWidget(btn_browse)
+        controls_layout.addWidget(self.sample_link)
+        controls_layout.addWidget(self.btn_browse)
         
         input_layout.addWidget(self.drop_zone)
         input_layout.addWidget(self.file_pill)
@@ -488,7 +498,9 @@ class HarvestTabV2(QWidget):
             QProgressBar { background-color: #181926; height: 12px; border-radius: 6px; }
             QProgressBar::chunk { background-color: #8aadf4; border-radius: 6px; }
         """)
-        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setAccessibleName("Harvest progress")
         
         meta_layout = QHBoxLayout()
         self.lbl_counts = QLabel("0 / 0")
@@ -508,6 +520,7 @@ class HarvestTabV2(QWidget):
         # Log Output (hidden by default or small)
         self.log_output = QLabel("Ready...")
         self.log_output.setStyleSheet("color: #5b6078; font-size: 11px; margin-top: 5px;")
+        self.log_output.setAccessibleName("Harvest status message")
         stats_layout.addWidget(self.log_output)
         
         layout.addWidget(stats_frame)
@@ -516,10 +529,12 @@ class HarvestTabV2(QWidget):
         action_layout = QHBoxLayout()
         
         start_layout = QVBoxLayout()
-        self.btn_start = QPushButton("Start Harvest")
+        self.btn_start = QPushButton("&Start Harvest")
         self.btn_start.setProperty("class", "PrimaryButton")
         self.btn_start.setMinimumHeight(45)
         self.btn_start.setIcon(get_icon(SVG_HARVEST, "#1e2030"))
+        self.btn_start.setToolTip(f"Start harvest ({mod_name}+Enter)")
+        self.btn_start.setAccessibleName("Start harvest")
         self.btn_start.clicked.connect(self._on_start_clicked)
         self.btn_start.setEnabled(False)
         
@@ -530,9 +545,11 @@ class HarvestTabV2(QWidget):
         start_layout.addWidget(self.btn_start)
         start_layout.addWidget(self.lbl_start_helper)
         
-        self.btn_stop = QPushButton("Stop")
+        self.btn_stop = QPushButton("S&top")
         self.btn_stop.setProperty("class", "DangerButton")
         self.btn_stop.setMinimumHeight(45)
+        self.btn_stop.setToolTip(f"Stop running harvest ({mod_name}+.)")
+        self.btn_stop.setAccessibleName("Stop harvest")
         self.btn_stop.clicked.connect(self._stop_harvest)
         self.btn_stop.setEnabled(False)
         
@@ -542,6 +559,12 @@ class HarvestTabV2(QWidget):
         layout.addLayout(action_layout)
 
         layout.addStretch()
+
+    def _setup_shortcuts(self):
+        mod = self._shortcut_modifier
+        QShortcut(QKeySequence(f"{mod}+O"), self, activated=self._browse_file)
+        QShortcut(QKeySequence(f"{mod}+Return"), self, activated=self._on_start_clicked)
+        QShortcut(QKeySequence(f"{mod}+."), self, activated=self._stop_harvest)
 
     def set_input_file(self, path):
         if not path:
@@ -717,7 +740,7 @@ class HarvestTabV2(QWidget):
         print(f"DEBUG: _on_start_clicked with input: {self.input_file}")
         
         # 1. Get Config
-        config = self._config_getter() if self._config_getter else {"retry_days": 7}
+        config = self._config_getter() if self._config_getter else {"retry_days": 7, "call_number_mode": "lccn"}
         
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
@@ -884,6 +907,7 @@ class HarvestTabV2(QWidget):
         self.total_count = total
         
         self.lbl_counts.setText(f"{processed} / {total}")
+        self.progress_bar.setFormat(f"{processed}/{total} (%p%)" if total > 0 else "0/0 (0%)")
         if total > 0:
             self.progress_bar.setValue(int(processed/total*100))
 

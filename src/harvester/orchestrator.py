@@ -74,14 +74,16 @@ class HarvestOrchestrator:
     - Optional progress callback hook
     """
 
+    DEFAULT_FLUSH_BATCH_SIZE = 50
+
     def __init__(
         self,
         db: DatabaseManager,
         targets: Optional[list[HarvestTarget]] = None,
         *,
         retry_days: int = 7,
-        batch_size: int = 50,
         max_workers: int = 1,
+        call_number_mode: str = "both",
         bypass_retry_isbns: Optional[set[str]] = None,
         bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
@@ -93,7 +95,7 @@ class HarvestOrchestrator:
         self.bypass_cache_isbns = set(bypass_cache_isbns or [])
         self.progress_cb = progress_cb
         self.cancel_check = cancel_check
-        self.batch_size = max(1, int(batch_size))
+        self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
         self.max_workers = max(1, int(max_workers))
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
 
@@ -107,6 +109,41 @@ class HarvestOrchestrator:
     def _check_cancelled(self) -> None:
         if self.cancel_check and self.cancel_check():
             raise HarvestCancelled("Harvest cancelled by user")
+
+    @staticmethod
+    def _normalize_call_number_mode(mode: str) -> str:
+        mode_normalized = (mode or "").strip().lower()
+        if mode_normalized in {"lccn", "nlmcn", "both"}:
+            return mode_normalized
+        return "both"
+
+    def _filter_result_by_mode(self, result: TargetResult) -> TargetResult:
+        if not result.success or self.call_number_mode == "both":
+            return result
+
+        if self.call_number_mode == "lccn":
+            if result.lccn:
+                return TargetResult(
+                    success=True,
+                    lccn=result.lccn,
+                    nlmcn=None,
+                    source=result.source,
+                    error=result.error,
+                )
+            return TargetResult(success=False, source=result.source, error="No LCCN call number")
+
+        if self.call_number_mode == "nlmcn":
+            if result.nlmcn:
+                return TargetResult(
+                    success=True,
+                    lccn=None,
+                    nlmcn=result.nlmcn,
+                    source=result.source,
+                    error=result.error,
+                )
+            return TargetResult(success=False, source=result.source, error="No NLMCN call number")
+
+        return result
 
     def process_isbn(
         self,
@@ -147,7 +184,7 @@ class HarvestOrchestrator:
             last_target = getattr(target, "name", target.__class__.__name__)
             self._emit("target_start", {"isbn": isbn, "target": last_target})
 
-            result = target.lookup(isbn)
+            result = self._filter_result_by_mode(target.lookup(isbn))
 
             if result.success:
                 self._emit("success", {"isbn": isbn, "target": last_target})
@@ -243,7 +280,7 @@ class HarvestOrchestrator:
                 self._check_cancelled()
                 status = _one(isbn)
 
-                if (len(pending_main) + len(pending_attempted)) >= self.batch_size:
+                if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
                     flush()
 
                 if status == "cached":
@@ -292,7 +329,7 @@ class HarvestOrchestrator:
                     last_target = getattr(target, "name", target.__class__.__name__)
                     self._emit("target_start", {"isbn": isbn, "target": last_target})
 
-                    result = target.lookup(isbn)
+                    result = self._filter_result_by_mode(target.lookup(isbn))
                     if result.success:
                         self._emit("success", {"isbn": isbn, "target": last_target})
 
@@ -341,7 +378,7 @@ class HarvestOrchestrator:
                     if att is not None:
                         pending_attempted.append(att)
 
-                    if (len(pending_main) + len(pending_attempted)) >= self.batch_size:
+                    if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
                         flush()
 
                     if status == "cached":

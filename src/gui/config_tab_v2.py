@@ -4,7 +4,7 @@ V2 Configuration Tab with modern borderless design and clean form layout.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QFrame, QComboBox, QCheckBox, 
+    QPushButton, QFrame, QComboBox,
     QSpinBox, QMessageBox, QInputDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -14,7 +14,7 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.profile_manager import ProfileManager
-from .icons import get_icon, get_pixmap, SVG_SETTINGS, SVG_HARVEST
+from .icons import get_pixmap, SVG_SETTINGS
 from .styles_v2 import CATPPUCCIN_THEME
 
 class ConfigTabV2(QWidget):
@@ -69,14 +69,17 @@ class ConfigTabV2(QWidget):
         
         # Selector
         info_layout = QVBoxLayout()
-        lbl = QLabel("Active Profile")
+        lbl = QLabel("&Active Profile")
         lbl.setStyleSheet(f"font-weight: bold; color: {CATPPUCCIN_THEME['text']};")
         
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(250)
         self.profile_combo.setProperty("class", "ComboBox")
+        self.profile_combo.setAccessibleName("Active profile selector")
+        self.profile_combo.setAccessibleDescription("Choose which saved profile is active.")
         self._refresh_profile_list()
         self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
+        lbl.setBuddy(self.profile_combo)
         
         info_layout.addWidget(lbl)
         info_layout.addWidget(self.profile_combo)
@@ -87,20 +90,26 @@ class ConfigTabV2(QWidget):
         # Actions
         btn_layout = QHBoxLayout()
         
-        self.btn_new = QPushButton("New Profile")
+        self.btn_new = QPushButton("&New Profile")
         self.btn_new.setProperty("class", "SecondaryButton")
         self.btn_new.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_new.setAccessibleName("Create profile")
+        self.btn_new.setToolTip("Create a new profile from current settings")
         self.btn_new.clicked.connect(self._create_new_profile)
         
-        self.btn_save = QPushButton("Save Changes")
+        self.btn_save = QPushButton("&Save Changes")
         self.btn_save.setProperty("class", "PrimaryButton")
         self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_save.setEnabled(False) # Initially disabled
+        self.btn_save.setAccessibleName("Save profile changes")
+        self.btn_save.setToolTip("Save current settings to the selected profile")
         self.btn_save.clicked.connect(self._save_current_profile)
         
-        self.btn_delete = QPushButton("Delete")
+        self.btn_delete = QPushButton("&Delete")
         self.btn_delete.setProperty("class", "DangerButton")
         self.btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_delete.setAccessibleName("Delete profile")
+        self.btn_delete.setToolTip("Delete the selected profile")
         self.btn_delete.clicked.connect(self._delete_current_profile)
         
         btn_layout.addWidget(self.btn_new)
@@ -130,7 +139,7 @@ class ConfigTabV2(QWidget):
 
         # Retry Days
         retry_row = QHBoxLayout()
-        retry_lbl = QLabel("Retry Interval (Days)")
+        retry_lbl = QLabel("&Retry Interval (Days)")
         retry_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
         retry_desc = QLabel("Skip ISBNs that failed recently")
         retry_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['subtext0']}; font-size: 12px;")
@@ -142,8 +151,12 @@ class ConfigTabV2(QWidget):
         self.spin_retry = QSpinBox()
         self.spin_retry.setRange(0, 365)
         self.spin_retry.setValue(7)
+        self.spin_retry.setSuffix(" days")
         self.spin_retry.setFixedWidth(100)
+        self.spin_retry.setAccessibleName("Retry interval")
+        self.spin_retry.setToolTip("Days to wait before retrying recently failed ISBNs")
         self.spin_retry.valueChanged.connect(self._on_setting_changed)
+        retry_lbl.setBuddy(self.spin_retry)
         # Style spinbox? Maybe later. For now let stylesheet handle generic QSpinBox if any
         
         retry_row.addLayout(desc_layout)
@@ -153,28 +166,33 @@ class ConfigTabV2(QWidget):
         form_layout.addLayout(retry_row)
         form_layout.addWidget(self._create_divider())
         
-        # Batch Size
-        batch_row = QHBoxLayout()
-        batch_lbl = QLabel("Batch Size")
-        batch_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
-        batch_desc = QLabel("Number of ISBNs processed per transaction")
-        batch_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['subtext0']}; font-size: 12px;")
-        
-        batch_desc_layout = QVBoxLayout()
-        batch_desc_layout.addWidget(batch_lbl)
-        batch_desc_layout.addWidget(batch_desc)
-        
-        self.spin_batch = QSpinBox()
-        self.spin_batch.setRange(1, 1000)
-        self.spin_batch.setValue(50)
-        self.spin_batch.setFixedWidth(100)
-        self.spin_batch.valueChanged.connect(self._on_setting_changed)
-        
-        batch_row.addLayout(batch_desc_layout)
-        batch_row.addStretch()
-        batch_row.addWidget(self.spin_batch)
-        
-        form_layout.addLayout(batch_row)
+        # Call Number Mode
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel("Call Number &Mode")
+        mode_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        mode_desc = QLabel("Choose which call number type is accepted during harvest")
+        mode_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['subtext0']}; font-size: 12px;")
+
+        mode_desc_layout = QVBoxLayout()
+        mode_desc_layout.addWidget(mode_lbl)
+        mode_desc_layout.addWidget(mode_desc)
+
+        self.call_number_combo = QComboBox()
+        self.call_number_combo.setFixedWidth(180)
+        self.call_number_combo.setAccessibleName("Call number mode")
+        self.call_number_combo.setAccessibleDescription("Choose whether to collect LCCN only, NLMCN only, or both.")
+        self.call_number_combo.setToolTip("Select which call-number type is accepted during harvest")
+        self.call_number_combo.addItem("LCCN only", "lccn")
+        self.call_number_combo.addItem("NLMCN only", "nlmcn")
+        self.call_number_combo.addItem("Both", "both")
+        self.call_number_combo.currentTextChanged.connect(self._on_setting_changed)
+        mode_lbl.setBuddy(self.call_number_combo)
+
+        mode_row.addLayout(mode_desc_layout)
+        mode_row.addStretch()
+        mode_row.addWidget(self.call_number_combo)
+
+        form_layout.addLayout(mode_row)
         
         settings_layout.addLayout(form_layout)
         layout.addWidget(settings_frame)
@@ -221,13 +239,15 @@ class ConfigTabV2(QWidget):
         
         # Populate UI
         self.spin_retry.blockSignals(True)
-        self.spin_batch.blockSignals(True)
+        self.call_number_combo.blockSignals(True)
         
         self.spin_retry.setValue(config.get("retry_days", 7))
-        self.spin_batch.setValue(config.get("batch_size", 50))
+        mode = self._mode_from_settings(config)
+        idx = self.call_number_combo.findData(mode)
+        self.call_number_combo.setCurrentIndex(idx if idx >= 0 else 0)
         
         self.spin_retry.blockSignals(False)
-        self.spin_batch.blockSignals(False)
+        self.call_number_combo.blockSignals(False)
         
         self.has_unsaved_changes = False
         self.btn_save.setEnabled(False)
@@ -266,9 +286,12 @@ class ConfigTabV2(QWidget):
             )
             return
 
+        mode = self._current_call_number_mode()
         config = {
             "retry_days": self.spin_retry.value(),
-            "batch_size": self.spin_batch.value()
+            "call_number_mode": mode,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
         }
         self.profile_manager.save_profile(self.current_profile_name, config)
         self.has_unsaved_changes = False
@@ -310,12 +333,29 @@ class ConfigTabV2(QWidget):
 
     def get_config(self):
         """Public accessor for other tabs."""
+        mode = self._current_call_number_mode()
         return {
             "retry_days": self.spin_retry.value(),
-            "batch_size": self.spin_batch.value(),
+            "call_number_mode": mode,
             # Keep parity with legacy ConfigTab expected keys.
-            "collect_lccn": True,
-            "collect_nlmcn": False,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
             "output_tsv": True,
             "output_invalid_isbn_file": True,
         }
+
+    def _current_call_number_mode(self):
+        mode = self.call_number_combo.currentData()
+        return mode if mode in {"lccn", "nlmcn", "both"} else "lccn"
+
+    def _mode_from_settings(self, settings):
+        mode = settings.get("call_number_mode")
+        if mode in {"lccn", "nlmcn", "both"}:
+            return mode
+        collect_lccn = bool(settings.get("collect_lccn", True))
+        collect_nlmcn = bool(settings.get("collect_nlmcn", False))
+        if collect_lccn and collect_nlmcn:
+            return "both"
+        if collect_nlmcn:
+            return "nlmcn"
+        return "lccn"

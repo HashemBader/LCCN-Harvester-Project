@@ -130,16 +130,13 @@ class HarvestWorker(QThread):
 
             # Run the harvest pipeline
             retry_days = self.config.get("retry_days", 7)
+            call_number_mode = self.config.get("call_number_mode", "lccn")
             try:
                 max_workers = max(1, int(self.advanced_settings.get("parallel_workers", 1)))
             except Exception:
                 max_workers = 1
-            try:
-                batch_size = max(1, int(self.advanced_settings.get("batch_size", self.config.get("batch_size", 50))))
-            except Exception:
-                batch_size = 50
             self.status_message.emit(
-                f"Using performance settings: workers={max_workers}, batch_size={batch_size}"
+                f"Using performance settings: workers={max_workers}, mode={call_number_mode}"
             )
 
             summary = run_harvest(
@@ -153,7 +150,7 @@ class HarvestWorker(QThread):
                 progress_cb=progress_callback,
                 cancel_check=lambda: self._stop_requested,
                 max_workers=max_workers,
-                batch_size=batch_size,
+                call_number_mode=call_number_mode,
             )
 
             # Final stats
@@ -1267,6 +1264,7 @@ class HarvestTab(QWidget):
             return parent.config_tab.get_config()
 
         return {
+            "call_number_mode": "lccn",
             "collect_lccn": True,
             "collect_nlmcn": False,
             "retry_days": 7,

@@ -34,7 +34,6 @@ class AdvancedSettingsDialog(QDialog):
             "cache_ttl_days": 30,
             "enable_logging": True,
             "log_level": "INFO",
-            "batch_size": 100,
             "enable_api_throttling": True,
             "api_delay_ms": 500,
             "show_api_responses": False,
@@ -122,21 +121,6 @@ class AdvancedSettingsDialog(QDialog):
 
         parallel_group.setLayout(parallel_layout)
         layout.addWidget(parallel_group)
-
-        # Batch Processing
-        batch_group = QGroupBox("Batch Processing")
-        batch_layout = QHBoxLayout()
-
-        batch_layout.addWidget(QLabel("Batch Size:"))
-        self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(10, 1000)
-        self.batch_spin.setValue(self.settings["batch_size"])
-        self.batch_spin.setToolTip("Number of records to process before committing to database")
-        batch_layout.addWidget(self.batch_spin)
-        batch_layout.addStretch()
-
-        batch_group.setLayout(batch_layout)
-        layout.addWidget(batch_group)
 
         # Statistics
         stats_group = QGroupBox("Statistics")
@@ -309,7 +293,7 @@ class AdvancedSettingsDialog(QDialog):
         self.settings["cache_ttl_days"] = self.cache_ttl_spin.value()
         self.settings["enable_logging"] = self.logging_check.isChecked()
         self.settings["log_level"] = self.log_level_combo.currentText()
-        self.settings["batch_size"] = self.batch_spin.value()
+        self.settings.pop("batch_size", None)
         self.settings["enable_api_throttling"] = self.throttle_check.isChecked()
         self.settings["api_delay_ms"] = self.api_delay_spin.value()
         self.settings["show_api_responses"] = self.show_responses_check.isChecked()
@@ -339,7 +323,6 @@ class AdvancedSettingsDialog(QDialog):
             self.cache_ttl_spin.setValue(30)
             self.logging_check.setChecked(True)
             self.log_level_combo.setCurrentText("INFO")
-            self.batch_spin.setValue(100)
             self.throttle_check.setChecked(True)
             self.api_delay_spin.setValue(500)
             self.show_responses_check.setChecked(False)

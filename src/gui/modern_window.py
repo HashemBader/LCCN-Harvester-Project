@@ -11,7 +11,6 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPropertyAnimation, QEasingCurve
 import sys
 
 # Import Tabs
-from .input_tab import InputTab
 from .targets_tab_v2 import TargetsTabV2
 from .config_tab_v2 import ConfigTabV2
 from .harvest_tab_v2 import HarvestTabV2
@@ -96,15 +95,13 @@ class ModernMainWindow(QMainWindow):
 
         # Navigation Buttons (Icon + Text)
         self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
-        self.btn_input = self._create_nav_btn("Input", SVG_INPUT, 1)
-        self.btn_targets = self._create_nav_btn("Targets", SVG_TARGETS, 2)
-        self.btn_config = self._create_nav_btn("Settings", SVG_SETTINGS, 3)
-        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 4)
-        self.btn_results = self._create_nav_btn("Results", SVG_RESULTS, 5)
-        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 6)
+        self.btn_targets = self._create_nav_btn("Targets", SVG_TARGETS, 1)
+        self.btn_config = self._create_nav_btn("Settings", SVG_SETTINGS, 2)
+        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 3)
+        self.btn_results = self._create_nav_btn("Results", SVG_RESULTS, 4)
+        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 5)
 
         sidebar_layout.addWidget(self.btn_dashboard)
-        sidebar_layout.addWidget(self.btn_input)
         sidebar_layout.addWidget(self.btn_targets)
         sidebar_layout.addWidget(self.btn_config)
         sidebar_layout.addWidget(self.btn_harvest)
@@ -165,7 +162,6 @@ class ModernMainWindow(QMainWindow):
         
         # Instantiate Pages (Using V2 tabs)
         self.dashboard_tab = DashboardTabV2()
-        self.input_tab = InputTab()
         self.targets_tab = TargetsTabV2()
         self.config_tab = ConfigTabV2()
         self.harvest_tab = HarvestTabV2()
@@ -173,13 +169,11 @@ class ModernMainWindow(QMainWindow):
         self.ai_assistant_tab = AIAssistantTab()
 
         self.stack.addWidget(self.dashboard_tab) # 0
-        self.stack.addWidget(self.input_tab)     # 1
-        self.stack.addWidget(self.targets_tab)   # 2
-        # 4. Config Tab
-        self.stack.addWidget(self.config_tab)    # 3
-        self.stack.addWidget(self.harvest_tab)   # 4
-        self.stack.addWidget(self.results_tab)   # 5
-        self.stack.addWidget(self.ai_assistant_tab) # 6
+        self.stack.addWidget(self.targets_tab)   # 1
+        self.stack.addWidget(self.config_tab)    # 2
+        self.stack.addWidget(self.harvest_tab)   # 3
+        self.stack.addWidget(self.results_tab)   # 4
+        self.stack.addWidget(self.ai_assistant_tab) # 5
 
         content_layout.addWidget(self.stack)
         main_layout.addWidget(content_container)
@@ -230,12 +224,11 @@ class ModernMainWindow(QMainWindow):
         QShortcut(QKeySequence(f"{mod}+B"), self, activated=self._toggle_sidebar)
         QShortcut(QKeySequence(f"{mod}+Q"), self, activated=self.close)
         QShortcut(QKeySequence(f"{mod}+1"), self, activated=lambda: self.btn_dashboard.click())
-        QShortcut(QKeySequence(f"{mod}+2"), self, activated=lambda: self.btn_input.click())
-        QShortcut(QKeySequence(f"{mod}+3"), self, activated=lambda: self.btn_targets.click())
-        QShortcut(QKeySequence(f"{mod}+4"), self, activated=lambda: self.btn_config.click())
-        QShortcut(QKeySequence(f"{mod}+5"), self, activated=lambda: self.btn_harvest.click())
-        QShortcut(QKeySequence(f"{mod}+6"), self, activated=lambda: self.btn_results.click())
-        QShortcut(QKeySequence(f"{mod}+7"), self, activated=lambda: self.btn_ai.click())
+        QShortcut(QKeySequence(f"{mod}+2"), self, activated=lambda: self.btn_targets.click())
+        QShortcut(QKeySequence(f"{mod}+3"), self, activated=lambda: self.btn_config.click())
+        QShortcut(QKeySequence(f"{mod}+4"), self, activated=lambda: self.btn_harvest.click())
+        QShortcut(QKeySequence(f"{mod}+5"), self, activated=lambda: self.btn_results.click())
+        QShortcut(QKeySequence(f"{mod}+6"), self, activated=lambda: self.btn_ai.click())
 
         QShortcut(QKeySequence(f"{mod}+Shift+D"), self, activated=lambda: self.btn_dashboard.click())
         QShortcut(QKeySequence(f"{mod}+Shift+H"), self, activated=lambda: self.btn_harvest.click())
@@ -323,7 +316,6 @@ class ModernMainWindow(QMainWindow):
         self.page_title.setText(btn.property("full_text"))
 
     def _connect_signals(self):
-        self.input_tab.file_selected.connect(self._on_file_selected)
         
         # Harvest Signals
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
@@ -361,6 +353,10 @@ class ModernMainWindow(QMainWindow):
             progress=pct,
             msg=message
         )
+        
+        # Real-time results update
+        if status in ("found", "failed", "cached", "skipped"):
+            self.results_tab.refresh()
 
     # --- Logic ---
 
@@ -368,13 +364,10 @@ class ModernMainWindow(QMainWindow):
         # AI Button now always visible, so we don't toggle it here
         # self.btn_ai.setVisible(self.advanced_mode) <--- REMOVED
         
-        for tab in [self.dashboard_tab, self.input_tab, self.targets_tab, 
+        for tab in [self.dashboard_tab, self.targets_tab, 
                    self.config_tab, self.harvest_tab, self.results_tab]:
             if hasattr(tab, 'set_advanced_mode'):
                 tab.set_advanced_mode(self.advanced_mode)
-
-    def _on_file_selected(self, path):
-        self.harvest_tab.set_input_file(path)
 
     def _on_harvest_started(self):
         self.status_pill.setText("Running")
@@ -388,11 +381,16 @@ class ModernMainWindow(QMainWindow):
         self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
         self.results_tab.refresh()
         self.dashboard_tab.refresh_data()
+        
         if success:
             self.notification_manager.notify_harvest_completed(stats)
+        elif isinstance(stats, dict) and stats.get("cancelled", False):
+            # Quietly finish without an error toast for deliberate cancellations
+            pass
         else:
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
             self.notification_manager.notify_harvest_error(error_msg)
+            
         self.dashboard_tab.set_idle(success)
 
 

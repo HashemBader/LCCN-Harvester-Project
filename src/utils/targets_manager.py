@@ -39,6 +39,8 @@ class Target:
     record_syntax: str        # e.g. USMARC, UNIMARC (Z39.50 only)
     rank: int                 # Execution order (lower number = higher priority)
     selected: bool            # Whether this target is currently active
+    username: str = ""        # Username for target authentication
+    password: str = ""        # Password for target authentication
 
 class TargetsManager:
     """
@@ -70,7 +72,9 @@ class TargetsManager:
                     database="",
                     record_syntax="",
                     rank=1,
-                    selected=True
+                    selected=True,
+                    username="",
+                    password=""
                 ),
                 Target(
                     target_id="2",
@@ -81,7 +85,9 @@ class TargetsManager:
                     database="",
                     record_syntax="",
                     rank=2,
-                    selected=True
+                    selected=True,
+                    username="",
+                    password=""
                 ),
                 Target(
                     target_id="3",
@@ -92,7 +98,9 @@ class TargetsManager:
                     database="",
                     record_syntax="",
                     rank=3,
-                    selected=True
+                    selected=True,
+                    username="",
+                    password=""
                 )
             ]
             self.save_targets(default_targets)
@@ -134,6 +142,8 @@ class TargetsManager:
                     record_syntax="",
                     rank=next_rank,
                     selected=True,
+                    username="",
+                    password="",
                 )
             )
             next_id += 1
@@ -175,7 +185,9 @@ class TargetsManager:
                             database=row["database"],
                             record_syntax=row["record_syntax"],
                             rank=int(row["rank"]) if row.get("rank") else 0,
-                            selected=is_selected
+                            selected=is_selected,
+                            username=row.get("username", ""),
+                            password=row.get("password", "")
                         )
                     )
         except Exception as e:
@@ -201,7 +213,7 @@ class TargetsManager:
                 # Write header row
                 writer.writerow([
                     "target_id", "name", "target_type", "host", "port", 
-                    "database", "record_syntax", "rank", "selected"
+                    "database", "record_syntax", "rank", "selected", "username", "password"
                 ])
 
                 # Write data rows
@@ -215,7 +227,9 @@ class TargetsManager:
                         t.database,
                         t.record_syntax,
                         t.rank,
-                        str(t.selected) # Serialize boolean to "True" or "False"
+                        str(t.selected), # Serialize boolean to "True" or "False"
+                        t.username,
+                        t.password
                     ])
         except Exception as e:
             print(ConfigMessages.save_error.format(error=e))

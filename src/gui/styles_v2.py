@@ -271,6 +271,11 @@ QPushButton[class="SecondaryButton"]:hover, QPushButton.SecondaryButton:hover, Q
     background-color: #494d64;
     border-color: #5b6078;
 }
+QPushButton[class="SecondaryButton"]:disabled, QPushButton.SecondaryButton:disabled, QPushButton#SecondaryButton:disabled {
+    background-color: #363a4f;
+    color: #6e738d;
+    border: 1px solid #363a4f;
+}
 
 /* 3. Danger: Red Gradient */
 QPushButton[class="DangerButton"], QPushButton.DangerButton, QPushButton#DangerButton {
@@ -280,5 +285,10 @@ QPushButton[class="DangerButton"], QPushButton.DangerButton, QPushButton#DangerB
 }
 QPushButton[class="DangerButton"]:hover, QPushButton.DangerButton:hover, QPushButton#DangerButton:hover {
     background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f5bde6, stop:1 #ed8796);
+}
+QPushButton[class="DangerButton"]:disabled, QPushButton.DangerButton:disabled, QPushButton#DangerButton:disabled {
+    background-color: #363a4f;
+    color: #6e738d;
+    border: 1px solid #363a4f;
 }
 """

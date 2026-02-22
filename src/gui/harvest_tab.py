@@ -17,7 +17,7 @@ import sys
 # Add src to path for database import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import DatabaseManager
-from harvester.run_harvest import run_harvest, read_isbns_from_tsv
+from harvester.run_harvest import run_harvest, parse_isbn_file
 from harvester.targets import create_target_from_config
 from harvester.orchestrator import HarvestCancelled
 from utils.isbn_validator import normalize_isbn
@@ -789,7 +789,7 @@ class HarvestTab(QWidget):
         try:
             db = DatabaseManager()
             db.init_db()
-            isbns = read_isbns_from_tsv(input_path)
+            isbns = parse_isbn_file(input_path).unique_valid
         except Exception as e:
             self._log(f"Warning: could not check cached ISBNs - {e}")
             return set()
@@ -893,7 +893,7 @@ class HarvestTab(QWidget):
         try:
             db = DatabaseManager()
             db.init_db()
-            isbns = read_isbns_from_tsv(input_path)
+            isbns = parse_isbn_file(input_path).unique_valid
         except Exception as e:
             self._log(f"Warning: could not check recent failures - {e}")
             return set()

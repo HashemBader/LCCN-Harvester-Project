@@ -24,7 +24,7 @@ from .icons import get_icon, SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
 
 # Add imports for Worker
 from PyQt6.QtCore import QThread
-from src.harvester.run_harvest import run_harvest
+from src.harvester.run_harvest import run_harvest, parse_isbn_file
 from src.harvester.targets import create_target_from_config
 from src.harvester.orchestrator import HarvestCancelled
 from src.database import DatabaseManager
@@ -201,34 +201,12 @@ class HarvestWorkerV2(QThread):
             self.stats_update.emit(self.stats.copy())
 
     def _read_and_validate_isbns(self):
-        """Read and validate ISBNs from input file."""
+        """Read and validate ISBNs using the centralized parser."""
         try:
-            input_path = Path(self.input_file)
-            delimiter = "," if input_path.suffix.lower() == ".csv" else "\t"
-
-            with open(self.input_file, "r", encoding="utf-8-sig", newline="") as f:
-                reader = csv.reader(f, delimiter=delimiter)
-                valid_isbns = []
-                invalid_list = []
-                invalid_count = 0
-
-                for row in reader:
-                    raw_isbn = (row[0] or "").strip() if row else ""
-                    if not raw_isbn or raw_isbn.lower().startswith("isbn") or raw_isbn.startswith("#"):
-                        continue  # Skip header
-
-                    normalized = normalize_isbn(raw_isbn)
-                    if normalized:
-                        valid_isbns.append(normalized)
-                    else:
-                        invalid_count += 1
-                        invalid_list.append(raw_isbn)
-                        self.status_message.emit(messages.HarvestMessages.invalid_isbn_skipped.format(isbn=raw_isbn))
-
-                if invalid_count > 0:
-                    self.status_message.emit(messages.HarvestMessages.invalid_isbns_count.format(count=invalid_count))
-
-                return valid_isbns, invalid_list
+            parsed = parse_isbn_file(Path(self.input_file))
+            if parsed.invalid_isbns:
+                self.status_message.emit(messages.HarvestMessages.invalid_isbns_count.format(count=len(parsed.invalid_isbns)))
+            return parsed.unique_valid, parsed.invalid_isbns
         except Exception as e:
             self.status_message.emit(messages.HarvestMessages.error_reading_file.format(error=str(e)))
             return [], []
@@ -666,52 +644,13 @@ class HarvestTabV2(QWidget):
             sampled = path_obj.stat().st_size > 20 * 1024 * 1024  # 20 MB
             INFO_SAMPLE_MAX_LINES = 200_000
 
-            total_nonempty = 0
-            candidate_rows = 0
-            valid_rows = 0
-            invalid_rows = 0
-            seen = set()
-            unique_valid = 0
+            parsed = parse_isbn_file(path_obj, max_lines=INFO_SAMPLE_MAX_LINES if sampled else 0)
             
-            with open(path, 'r', encoding='utf-8-sig') as f:
-                first_data_row_seen = False
-                for i, line in enumerate(f, start=1):
-                    raw_line = line.strip()
-                    if not raw_line: continue
-                    total_nonempty += 1
-                    
-                    # Split TSV/CSV - take first column
-                    if '\t' in raw_line:
-                        raw_isbn = raw_line.split('\t')[0].strip()
-                    elif ',' in raw_line and path_obj.suffix.lower() == '.csv':
-                        raw_isbn = raw_line.split(',')[0].strip()
-                    else:
-                        raw_isbn = raw_line
-                    
-                    if not raw_isbn: continue
-                    if raw_isbn.startswith('#'): continue
-
-                    if not first_data_row_seen and raw_isbn.lower() in {'isbn', 'isbns', 'isbn13', 'isbn10'}:
-                        first_data_row_seen = True
-                        continue
-                    
-                    first_data_row_seen = True
-                    candidate_rows += 1
-
-                    normalized = normalize_isbn(raw_isbn)
-                    if not normalized:
-                        invalid_rows += 1
-                        continue
-                    
-                    valid_rows += 1
-                    if normalized not in seen:
-                        seen.add(normalized)
-                        unique_valid += 1
-                    
-                    if sampled and i >= INFO_SAMPLE_MAX_LINES:
-                        break
+            unique_valid = len(parsed.unique_valid)
+            valid_rows = parsed.valid_count
+            invalid_rows = len(parsed.invalid_isbns)
+            duplicate_valid_rows = parsed.duplicate_count
             
-            duplicate_valid_rows = max(0, valid_rows - unique_valid)
             sample_note = ""
             if sampled:
                 sample_note = f"\nNote: Large file detected. Stats based on first {INFO_SAMPLE_MAX_LINES:,} lines."

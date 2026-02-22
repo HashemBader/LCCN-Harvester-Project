@@ -2,6 +2,7 @@
 Module: profile_manager.py
 Manages configuration profiles for the LCCN Harvester.
 """
+import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 import json
@@ -19,6 +20,7 @@ class ProfileManager:
 
         self.default_profile_path = self.app_root / "config" / "default_profile.json"
         self.active_profile_path = self.app_root / "config" / "active_profile.txt"
+        self.default_targets_path = self.app_root / "data" / "targets.tsv"
 
         # Ensure default profile exists
         if not self.default_profile_path.exists():
@@ -53,6 +55,17 @@ class ProfileManager:
 
         with open(self.default_profile_path, 'w') as f:
             json.dump(default_settings, f, indent=2)
+
+    def get_targets_file(self, name: str) -> Path:
+        """Return the Path to the targets TSV file for the given profile.
+
+        "Default Settings" uses the shared ``data/targets.tsv``.
+        All other profiles use ``config/profiles/<slug>_targets.tsv``.
+        """
+        if name == "Default Settings":
+            return self.default_targets_path
+        filename = name.lower().replace(" ", "_").replace("/", "_")
+        return self.profiles_dir / f"{filename}_targets.tsv"
 
     def list_profiles(self) -> List[str]:
         """Return list of available profile names."""
@@ -108,6 +121,11 @@ class ProfileManager:
         with open(file_path, 'w') as f:
             json.dump(profile_data, f, indent=2)
 
+        # On first creation, seed a profile-specific targets file from the default.
+        targets_file = self.get_targets_file(name)
+        if not targets_file.exists() and self.default_targets_path.exists():
+            shutil.copy2(self.default_targets_path, targets_file)
+
         return True
 
     def _create_profile_data(self, name: str, settings: Dict, description: str) -> Dict:
@@ -130,6 +148,10 @@ class ProfileManager:
                 data = self._load_json(file)
                 if data.get("profile_name") == name:
                     file.unlink()
+                    # Remove the associated targets TSV if present
+                    targets_file = self.get_targets_file(name)
+                    if targets_file.exists():
+                        targets_file.unlink()
                     return True
             except Exception:
                 continue
@@ -146,16 +168,29 @@ class ProfileManager:
         if not profile_data:
             return False
 
-        # Delete old profile
-        self.delete_profile(old_name)
+        # Rename the targets TSV before deleting the old profile record
+        old_targets = self.get_targets_file(old_name)
+        new_targets = self.get_targets_file(new_name)
+        if old_targets.exists() and not new_targets.exists():
+            old_targets.rename(new_targets)
 
-        # Save with new name
+        # Delete old profile (targets file already renamed, so skip implicit delete)
+        for file in self.profiles_dir.glob("*.json"):
+            try:
+                data = self._load_json(file)
+                if data.get("profile_name") == old_name:
+                    file.unlink()
+                    break
+            except Exception:
+                continue
+
+        # Save with new name (save_profile won't overwrite new_targets because it now exists)
         profile_data["profile_name"] = new_name
-        self.save_profile(
-            new_name,
-            profile_data["settings"],
-            profile_data.get("description", "")
-        )
+        filename = new_name.lower().replace(" ", "_").replace("/", "_")
+        file_path = self.profiles_dir / f"{filename}.json"
+        profile_data["last_modified"] = datetime.now().isoformat()
+        with open(file_path, 'w') as f:
+            json.dump(profile_data, f, indent=2)
 
         return True
 

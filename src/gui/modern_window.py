@@ -332,6 +332,9 @@ class ModernMainWindow(QMainWindow):
         # Target Updates
         self.targets_tab.targets_changed.connect(self.harvest_tab.on_targets_changed)
 
+        # Reload targets when the active profile changes
+        self.config_tab.profile_changed.connect(self.targets_tab.load_profile_targets)
+
     def _on_harvest_progress(self, isbn, status, source, message):
         """Pass real-time harvest events to dashboard."""
         # Calculate approximate progress if possible, or just pass 0 if unknown

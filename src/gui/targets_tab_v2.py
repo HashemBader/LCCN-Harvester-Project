@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.targets_manager import TargetsManager, Target
+from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
 
 
@@ -315,7 +316,10 @@ class TargetsTabV2(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.manager = TargetsManager()
+        self._profile_manager = ProfileManager()
+        active_profile = self._profile_manager.get_active_profile()
+        targets_file = self._profile_manager.get_targets_file(active_profile)
+        self.manager = TargetsManager(targets_file=targets_file)
         self.history = []
         self.server_status = {}  # Cache for server status checks
         self._setup_ui()
@@ -351,6 +355,18 @@ class TargetsTabV2(QWidget):
     def set_advanced_mode(self, enabled):
         """No-op for compatibility with main window calls."""
         _ = enabled
+
+    def load_profile_targets(self, profile_name: str):
+        """Switch to the targets file associated with *profile_name*.
+
+        Called automatically when the active profile changes so that
+        each profile maintains its own independent set of targets.
+        """
+        targets_file = self._profile_manager.get_targets_file(profile_name)
+        self.manager = TargetsManager(targets_file=targets_file)
+        self.server_status.clear()
+        self.history.clear()
+        self._check_on_startup()
 
     def eventFilter(self, obj, event):
         """Filter out wheel events on comboboxes to prevent accidental value changes."""

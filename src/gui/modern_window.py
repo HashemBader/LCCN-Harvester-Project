@@ -22,6 +22,7 @@ from .ai_assistant_tab import AIAssistantTab
 from .notifications import NotificationManager
 from .styles_v2 import V2_STYLESHEET
 from .shortcuts_dialog import ShortcutsDialog
+from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
     get_icon, get_pixmap, 
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
@@ -134,7 +135,7 @@ class ModernMainWindow(QMainWindow):
         self.btn_shortcuts.setToolTip(f"Open keyboard shortcuts ({mod_label}+/)")
         sidebar_layout.addWidget(self.btn_shortcuts)
 
-        self.btn_accessibility = QPushButton("Accessibility")
+        self.btn_accessibility = QPushButton("Accessibility Statement")
         self.btn_accessibility.setIcon(get_icon(SVG_SETTINGS, "#a5adcb"))
         self.btn_accessibility.setObjectName("NavButton")
         self.btn_accessibility.setProperty("class", "NavButton")
@@ -261,7 +262,8 @@ class ModernMainWindow(QMainWindow):
         dialog.exec()
 
     def _show_accessibility_statement(self):
-        QMessageBox.information(self, "Accessibility Statement", "Accessibility features are being developed.\n\nPlease check back later.")
+        dialog = AccessibilityStatementDialog(self)
+        dialog.exec()
 
     def _toggle_sidebar(self):
         self.sidebar_collapsed = not self.sidebar_collapsed
@@ -308,7 +310,7 @@ class ModernMainWindow(QMainWindow):
             self.btn_accessibility.setToolTip("Accessibility statement")
         else:
             self.btn_shortcuts.setText("Shortcuts")
-            self.btn_accessibility.setText("Accessibility")
+            self.btn_accessibility.setText("Accessibility Statement")
 
     def _on_nav_clicked(self, btn):
         index = btn.property("page_index")

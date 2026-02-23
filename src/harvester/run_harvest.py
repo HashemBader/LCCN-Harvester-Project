@@ -27,43 +27,63 @@ class HarvestSummary:
     dry_run: bool
 
 
-def read_isbns_from_tsv(input_path: Path) -> list[str]:
-    isbns: list[str] = []
+@dataclass
+class ParsedISBNFile:
+    unique_valid: list[str]
+    valid_count: int
+    duplicate_count: int
+    invalid_isbns: list[str]
+    total_nonempty: int
+
+def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
+    """Parse a TSV/CSV/TXT file and return structured statistics and deduplicated ISBNs."""
+    valid_isbns: list[str] = []
+    invalid_isbns: list[str] = []
+    seen = set()
+    total_nonempty = 0
+    valid_count = 0
 
     with input_path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f, delimiter="\t")
-        first_row = next(reader, None)
-        if first_row is None:
-            return []
+        delimiter = "," if input_path.suffix.lower() == ".csv" else "\t"
+        reader = csv.reader(f, delimiter=delimiter)
+        first_data_row_seen = False
 
-        has_header = len(first_row) > 0 and first_row[0].strip().lower() == "isbn"
+        for i, row in enumerate(reader, start=1):
+            if max_lines and i > max_lines:
+                break
 
-        def add_raw(raw_val: str) -> None:
-            if raw_val.startswith("#"):
-                return
-            norm = isbn_validator.normalize_isbn(raw_val)
-            if norm:
-                isbns.append(norm)
+            # Check if entirely empty
+            if not row or not "".join(row).strip():
+                continue
+            total_nonempty += 1
 
-        if has_header:
-            for row in reader:
-                if row and (row[0] or "").strip():
-                    add_raw((row[0] or "").strip())
-        else:
-            if first_row and (first_row[0] or "").strip():
-                add_raw((first_row[0] or "").strip())
-            for row in reader:
-                if row and (row[0] or "").strip():
-                    add_raw((row[0] or "").strip())
+            raw_isbn = row[0].strip() if row else ""
+            if not raw_isbn or raw_isbn.startswith("#"):
+                continue
 
-    # de-dup preserve order
-    seen = set()
-    uniq: list[str] = []
-    for v in isbns:
-        if v not in seen:
-            uniq.append(v)
-            seen.add(v)
-    return uniq
+            # Header skip
+            if not first_data_row_seen and raw_isbn.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
+                first_data_row_seen = True
+                continue
+
+            first_data_row_seen = True
+            normalized = isbn_validator.normalize_isbn(raw_isbn)
+
+            if normalized:
+                valid_count += 1
+                if normalized not in seen:
+                    seen.add(normalized)
+                    valid_isbns.append(normalized)
+            else:
+                invalid_isbns.append(raw_isbn)
+
+    return ParsedISBNFile(
+        unique_valid=valid_isbns,
+        valid_count=valid_count,
+        duplicate_count=valid_count - len(valid_isbns),
+        invalid_isbns=invalid_isbns,
+        total_nonempty=total_nonempty,
+    )
 
 
 def run_harvest(
@@ -87,7 +107,8 @@ def run_harvest(
     db = DatabaseManager(db_path)
     db.init_db()
 
-    isbns = read_isbns_from_tsv(input_path)
+    parsed = parse_isbn_file(input_path)
+    isbns = parsed.unique_valid
 
     if targets is None:
         targets = []

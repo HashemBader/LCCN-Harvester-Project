@@ -291,4 +291,109 @@ QPushButton[class="DangerButton"]:disabled, QPushButton.DangerButton:disabled, Q
     color: #6e738d;
     border: 1px solid #363a4f;
 }
+
+/* Dashboard Profile Dock (right-side utility component) */
+QFrame#DashboardProfilePanel {
+    background-color: qlineargradient(
+        x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(30, 30, 46, 0.96),
+        stop:1 rgba(36, 39, 58, 0.96)
+    );
+    border: 1px solid #3a3f59;
+    border-top: 1px solid #667091;
+    border-radius: 14px;
+}
+
+QFrame#DashboardProfilePanel:hover {
+    border-color: #5b6078;
+    border-top-color: #7ea7ff;
+}
+
+QLabel#DashboardProfileIcon {
+    background-color: rgba(138, 173, 244, 0.10);
+    border: 1px solid rgba(138, 173, 244, 0.22);
+    border-radius: 9px;
+    padding: 0;
+}
+
+QLabel#DashboardProfileEyebrow {
+    color: #cad3f5;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.9px;
+}
+
+QLabel#DashboardProfileMeta {
+    color: #a5adcb;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QComboBox#DashboardProfileCombo {
+    min-height: 40px;
+    padding: 6px 42px 6px 12px;
+    border-radius: 12px;
+    background-color: #171927;
+    border: 1px solid #4d5675;
+    color: #ffffff;
+    font-weight: 600;
+    selection-background-color: #8aadf4;
+    selection-color: #1e2030;
+}
+
+QComboBox#DashboardProfileCombo:hover {
+    border-color: #677297;
+    background-color: #1b1e30;
+}
+
+QComboBox#DashboardProfileCombo:focus {
+    border: 1px solid #8aadf4;
+    background-color: #1b1e30;
+}
+
+QComboBox#DashboardProfileCombo::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 40px;
+    background-color: #101321;
+    border-left: 1px solid #4d5675;
+    border-top-right-radius: 11px;
+    border-bottom-right-radius: 11px;
+}
+
+QComboBox#DashboardProfileCombo::down-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+}
+
+QComboBox#DashboardProfileCombo:on {
+    border-color: #8aadf4;
+}
+
+QComboBox#DashboardProfileCombo:on::drop-down {
+    border-left-color: #8aadf4;
+    background-color: #151a2c;
+}
+
+QPushButton#DashboardProfileAction {
+    min-height: 40px;
+    padding: 8px 16px;
+    border-radius: 10px;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #323a56, stop:1 #2a3148);
+    color: #e6eaf6;
+    border: 1px solid #505d81;
+    border-top: 1px solid #7b89b6;
+    font-weight: 700;
+}
+
+QPushButton#DashboardProfileAction:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c4670, stop:1 #303a58);
+    border-color: #8aadf4;
+    color: #ffffff;
+}
+
+QPushButton#DashboardProfileAction:pressed {
+    background-color: #2b3044;
+}
 """

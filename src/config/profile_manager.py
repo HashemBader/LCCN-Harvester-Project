@@ -67,16 +67,26 @@ class ProfileManager:
         filename = name.lower().replace(" ", "_").replace("/", "_")
         return self.profiles_dir / f"{filename}_targets.tsv"
 
+    def _normalize_profile_name(self, name: str) -> str:
+        """Normalize names for case-insensitive duplicate checks."""
+        return " ".join((name or "").split()).strip().casefold()
+
     def list_profiles(self) -> List[str]:
         """Return list of available profile names."""
         profiles = ["Default Settings"]  # Built-in always first
+        seen = {self._normalize_profile_name("Default Settings")}
 
         # Add user-created profiles
         for file in sorted(self.profiles_dir.glob("*.json")):
             try:
                 with open(file) as f:
                     data = json.load(f)
-                    profiles.append(data.get("profile_name", file.stem))
+                    profile_name = data.get("profile_name", file.stem)
+                    norm = self._normalize_profile_name(profile_name)
+                    if not norm or norm in seen:
+                        continue
+                    seen.add(norm)
+                    profiles.append(profile_name)
             except Exception:
                 # Skip corrupted profiles
                 continue
@@ -89,15 +99,30 @@ class ProfileManager:
             return self._load_json(self.default_profile_path)
 
         # Search user profiles
+        normalized_target = self._normalize_profile_name(name)
         for file in self.profiles_dir.glob("*.json"):
             try:
                 data = self._load_json(file)
-                if data.get("profile_name") == name:
+                if self._normalize_profile_name(data.get("profile_name", "")) == normalized_target:
                     return data
             except Exception:
                 continue
 
         return None
+
+    def profile_name_exists(self, name: str, exclude_name: Optional[str] = None) -> bool:
+        """Return True if a profile name already exists (case-insensitive)."""
+        normalized_name = self._normalize_profile_name(name)
+        normalized_exclude = self._normalize_profile_name(exclude_name or "")
+        if not normalized_name:
+            return False
+        for profile_name in self.list_profiles():
+            norm = self._normalize_profile_name(profile_name)
+            if norm == normalized_exclude:
+                continue
+            if norm == normalized_name:
+                return True
+        return False
 
     def save_profile(self, name: str, settings: Dict, description: str = ""):
         """Save settings as a named profile."""

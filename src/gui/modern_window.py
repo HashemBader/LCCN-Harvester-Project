@@ -28,6 +28,7 @@ from .icons import (
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
     SVG_HARVEST, SVG_RESULTS, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
 )
+from config.profile_manager import ProfileManager
 
 class ModernMainWindow(QMainWindow):
     def __init__(self):
@@ -39,6 +40,7 @@ class ModernMainWindow(QMainWindow):
         self.advanced_mode = False
         self.sidebar_collapsed = False
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
+        self._profile_manager = ProfileManager()
         
         # Core Services
         self.notification_manager = NotificationManager(self)
@@ -189,6 +191,8 @@ class ModernMainWindow(QMainWindow):
         self._connect_signals()
         self._setup_accessibility()
         self._setup_shortcuts()
+        self._refresh_dashboard_profile_controls()
+        self._sync_tab_state()
         
         # Select default
         self.btn_dashboard.setChecked(True)
@@ -330,10 +334,18 @@ class ModernMainWindow(QMainWindow):
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
 
         # Target Updates
-        self.targets_tab.targets_changed.connect(self.harvest_tab.on_targets_changed)
+        self.targets_tab.targets_changed.connect(self._on_targets_changed)
 
         # Reload targets when the active profile changes
         self.config_tab.profile_changed.connect(self.targets_tab.load_profile_targets)
+        self.config_tab.profile_changed.connect(self._on_profile_changed)
+
+        # Dashboard profile dock controls
+        self.dashboard_tab.profile_selected.connect(self._on_dashboard_profile_selected)
+        self.dashboard_tab.create_profile_requested.connect(self._open_profile_settings)
+
+        # Keep tab state fresh when navigating
+        self.stack.currentChanged.connect(self._on_page_changed)
 
     def _on_harvest_progress(self, isbn, status, source, message):
         """Pass real-time harvest events to dashboard."""
@@ -362,6 +374,57 @@ class ModernMainWindow(QMainWindow):
         # Real-time results update
         if status in ("found", "failed", "cached", "skipped"):
             self.results_tab.refresh()
+            self.dashboard_tab.refresh_data()
+
+    def _sync_tab_state(self):
+        """Initial cross-tab synchronization after signals are connected."""
+        try:
+            self._on_targets_changed(self.targets_tab.get_targets())
+        except Exception:
+            pass
+        try:
+            self.dashboard_tab.refresh_data()
+        except Exception:
+            pass
+
+    def _on_targets_changed(self, targets):
+        """Fan out target changes to dependent tabs."""
+        self.harvest_tab.on_targets_changed(targets)
+        # Dashboard stats come from DB, but refreshing keeps UI current after navigation/actions.
+        self.dashboard_tab.refresh_data()
+
+    def _refresh_dashboard_profile_controls(self):
+        profiles = self.config_tab.list_profile_names()
+        current = self._profile_manager.get_active_profile()
+        self.dashboard_tab.set_profile_options(profiles, current)
+
+    def _on_dashboard_profile_selected(self, name):
+        if not name:
+            return
+        self.config_tab.select_profile(name)
+        # If user cancels due to unsaved changes, resync displayed selection.
+        self._refresh_dashboard_profile_controls()
+
+    def _open_profile_settings(self):
+        self.btn_config.click()
+        if hasattr(self.config_tab, "btn_new"):
+            self.config_tab.btn_new.setFocus()
+
+    def _on_profile_changed(self, profile_name):
+        self._profile_manager.set_active_profile(profile_name)
+        self._refresh_dashboard_profile_controls()
+        self.dashboard_tab.refresh_data()
+        self.results_tab.refresh()
+
+    def _on_page_changed(self, index):
+        """Refresh dependent tabs on navigation to keep views current."""
+        if index == 0:  # Dashboard
+            self.dashboard_tab.refresh_data()
+        elif index == 1:  # Targets
+            # Reflect latest profile/target state when revisiting the tab.
+            self.targets_tab.refresh_targets()
+        elif index == 3:  # Harvest
+            self.harvest_tab.on_targets_changed(self.targets_tab.get_targets())
 
     # --- Logic ---
 

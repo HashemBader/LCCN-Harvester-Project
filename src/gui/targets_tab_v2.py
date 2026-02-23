@@ -493,6 +493,7 @@ class TargetsTabV2(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(52)
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setAlternatingRowColors(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

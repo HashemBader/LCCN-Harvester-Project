@@ -85,7 +85,11 @@ class OpenLibraryApiClient(BaseApiClient):
             lccn_values = identifiers.get("lccn", [])
             if isinstance(lccn_values, list) and lccn_values:
                 lccn = str(lccn_values[0]).strip() or None
-        
+
+        # Validate extracted call numbers
+        lccn = validate_lccn(lccn, source=self.source)
+        nlmcn = validate_nlmcn(nlmcn, source=self.source)
+
         if lccn or nlmcn:
              return ApiResult(
                 isbn=isbn,

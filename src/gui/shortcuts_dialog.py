@@ -184,11 +184,9 @@ class ShortcutsDialog(QDialog):
                 ("Ctrl+3", "Targets tab"),
                 ("Ctrl+4", "Configuration tab"),
                 ("Ctrl+5", "Harvest tab"),
-                ("Ctrl+6", "Results tab"),
-                ("Ctrl+7", "AI Agent tab"),
+                ("Ctrl+6", "AI Agent tab"),
                 ("Ctrl+Shift+D", "Jump to Dashboard"),
                 ("Ctrl+Shift+H", "Jump to Harvest"),
-                ("Ctrl+Shift+R", "Jump to Results"),
             ]),
             ("Harvest", [
                 ("Ctrl+H", "Start harvest"),

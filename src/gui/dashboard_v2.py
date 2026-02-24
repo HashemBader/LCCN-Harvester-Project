@@ -5,15 +5,15 @@ Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout,
     QProgressBar, QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
-    QGraphicsDropShadowEffect
+    QGraphicsDropShadowEffect, QComboBox, QPushButton, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from datetime import datetime
-from PyQt6.QtGui import QColor, QPixmap
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 
 from database import DatabaseManager
 from .icons import (
-    get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE, SVG_X_CIRCLE, SVG_DASHBOARD
+    get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE, SVG_X_CIRCLE, SVG_DASHBOARD, SVG_SETTINGS
 )
 
 class DashboardCard(QFrame):
@@ -182,7 +182,26 @@ class RecentResultsPanel(QFrame):
             self.table.setItem(row_idx, 2, item_detail)
 
 
+class ProfileSwitchCombo(QComboBox):
+    """Dashboard profile switcher with a guaranteed visible chevron affordance."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#e6eaf6"), 2))
+        cx = self.width() - 21
+        cy = self.height() // 2 + 1
+        s = 5
+        painter.drawLine(cx - s, cy - 2, cx, cy + 3)
+        painter.drawLine(cx, cy + 3, cx + s, cy - 2)
+        painter.end()
+
+
 class DashboardTabV2(QWidget):
+    profile_selected = pyqtSignal(str)
+    create_profile_requested = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.db = DatabaseManager()
@@ -215,6 +234,63 @@ class DashboardTabV2(QWidget):
         header_layout.addStretch()
         
         main_layout.addLayout(header_layout)
+
+        # 1b. Profile dock (right utility)
+        profile_row = QHBoxLayout()
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.setSpacing(0)
+        profile_row.addStretch()
+
+        self.profile_panel = QFrame()
+        self.profile_panel.setObjectName("DashboardProfilePanel")
+        self.profile_panel.setMinimumHeight(74)
+        self.profile_panel.setMaximumWidth(720)
+        self.profile_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        profile_panel_layout = QHBoxLayout(self.profile_panel)
+        profile_panel_layout.setContentsMargins(12, 10, 12, 10)
+        profile_panel_layout.setSpacing(10)
+
+        self.profile_icon = QLabel()
+        self.profile_icon.setObjectName("DashboardProfileIcon")
+        self.profile_icon.setFixedSize(30, 30)
+        self.profile_icon.setPixmap(get_pixmap(SVG_SETTINGS, "#8aadf4", 18))
+        self.profile_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        profile_panel_layout.addWidget(self.profile_icon)
+
+        profile_text_col = QVBoxLayout()
+        profile_text_col.setSpacing(1)
+
+        self.profile_title = QLabel("PROFILES")
+        self.profile_title.setObjectName("DashboardProfileEyebrow")
+        profile_text_col.addWidget(self.profile_title)
+
+        self.profile_meta = QLabel("0 saved")
+        self.profile_meta.setObjectName("DashboardProfileMeta")
+        profile_text_col.addWidget(self.profile_meta)
+
+        profile_panel_layout.addLayout(profile_text_col)
+        profile_panel_layout.addSpacing(4)
+
+        self.profile_combo = ProfileSwitchCombo()
+        self.profile_combo.setObjectName("DashboardProfileCombo")
+        self.profile_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_combo.setMinimumWidth(260)
+        self.profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.profile_combo.setMaximumWidth(390)
+        self.profile_combo.setToolTip("")
+        self.profile_combo.currentTextChanged.connect(self._on_profile_combo_changed)
+        profile_panel_layout.addWidget(self.profile_combo, 1)
+
+        self.btn_new_profile = QPushButton("Manage Profiles")
+        self.btn_new_profile.setObjectName("DashboardProfileAction")
+        self.btn_new_profile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_new_profile.setMinimumWidth(142)
+        self.btn_new_profile.setToolTip("")
+        self.btn_new_profile.clicked.connect(self.create_profile_requested.emit)
+        profile_panel_layout.addWidget(self.btn_new_profile)
+
+        profile_row.addWidget(self.profile_panel)
+        main_layout.addLayout(profile_row)
 
         # 2. KPI Cards Row
         kpi_layout = QHBoxLayout()
@@ -287,6 +363,21 @@ class DashboardTabV2(QWidget):
     def update_live_status(self, target, isbn, progress, msg):
         """Called by MainWindow during harvest."""
         self.live_panel.update_status(target, isbn, progress, msg)
+
+    def set_profile_options(self, profiles, current_profile):
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItems(profiles or [])
+        idx = self.profile_combo.findText(current_profile or "")
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
+        count = len(profiles or [])
+        self.profile_meta.setText(f"{count} saved profiles")
+
+    def _on_profile_combo_changed(self, name):
+        if name:
+            self.profile_selected.emit(name)
         
 
     def set_advanced_mode(self, enabled):

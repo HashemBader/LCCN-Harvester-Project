@@ -5,7 +5,7 @@ V2 Configuration Tab with modern borderless design and clean form layout.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QComboBox,
-    QSpinBox, QMessageBox, QInputDialog
+    QSpinBox, QMessageBox, QDialog, QDialogButtonBox, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from pathlib import Path
@@ -16,6 +16,121 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.profile_manager import ProfileManager
 from .icons import get_pixmap, SVG_SETTINGS
 from .styles_v2 import CATPPUCCIN_THEME
+
+
+class CreateProfileDialog(QDialog):
+    """Profile creation dialog with inline settings controls."""
+
+    def __init__(self, parent=None, initial_settings=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Profile")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+        self._initial_settings = initial_settings or {}
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        title = QLabel("Create New Profile")
+        title.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {CATPPUCCIN_THEME['text']};")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Choose a profile name and starting settings.")
+        subtitle.setStyleSheet(f"color: {CATPPUCCIN_THEME['subtext0']}; font-size: 12px;")
+        layout.addWidget(subtitle)
+
+        name_label = QLabel("Profile Name")
+        name_label.setStyleSheet(f"font-weight: 600; color: {CATPPUCCIN_THEME['text']};")
+        layout.addWidget(name_label)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g., Quick Harvest / Medical / Batch Retry")
+        self.name_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.name_edit)
+
+        settings_frame = QFrame()
+        settings_frame.setProperty("class", "Card")
+        settings_layout = QVBoxLayout(settings_frame)
+        settings_layout.setContentsMargins(14, 14, 14, 14)
+        settings_layout.setSpacing(12)
+
+        settings_title = QLabel("Starting Settings")
+        settings_title.setStyleSheet(f"font-weight: 700; color: {CATPPUCCIN_THEME['text']};")
+        settings_layout.addWidget(settings_title)
+
+        retry_row = QHBoxLayout()
+        retry_label = QLabel("Retry Interval")
+        retry_label.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        self.retry_spin = QSpinBox()
+        self.retry_spin.setRange(0, 365)
+        self.retry_spin.setSuffix(" days")
+        self.retry_spin.setFixedWidth(120)
+        self.retry_spin.setValue(int(self._initial_settings.get("retry_days", 7)))
+        retry_row.addWidget(retry_label)
+        retry_row.addStretch()
+        retry_row.addWidget(self.retry_spin)
+        settings_layout.addLayout(retry_row)
+
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Call Number Mode")
+        mode_label.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        self.mode_combo = QComboBox()
+        self.mode_combo.setFixedWidth(180)
+        self.mode_combo.addItem("LCCN only", "lccn")
+        self.mode_combo.addItem("NLMCN only", "nlmcn")
+        self.mode_combo.addItem("Both", "both")
+        initial_mode = self._initial_settings.get("call_number_mode", "lccn")
+        idx = self.mode_combo.findData(initial_mode)
+        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        mode_row.addWidget(mode_label)
+        mode_row.addStretch()
+        mode_row.addWidget(self.mode_combo)
+        settings_layout.addLayout(mode_row)
+
+        layout.addWidget(settings_frame)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Create Profile")
+        ok_btn.setProperty("class", "PrimaryButton")
+        cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_btn.setProperty("class", "SecondaryButton")
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setStyleSheet("""
+            QDialog { background-color: #24273a; color: #ffffff; }
+            QLabel { background: transparent; }
+        """)
+
+    def _validate_and_accept(self):
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, "Missing Name", "Please enter a profile name.")
+            self.name_edit.setFocus()
+            return
+        self.accept()
+
+    def profile_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def profile_settings(self) -> dict:
+        mode = self.mode_combo.currentData()
+        mode = mode if mode in {"lccn", "nlmcn", "both"} else "lccn"
+        return {
+            "retry_days": self.retry_spin.value(),
+            "call_number_mode": mode,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
+            "output_tsv": True,
+            "output_invalid_isbn_file": True,
+        }
+
 
 class ConfigTabV2(QWidget):
     config_changed = pyqtSignal(dict)
@@ -206,6 +321,30 @@ class ConfigTabV2(QWidget):
         line.setStyleSheet(f"background-color: {CATPPUCCIN_THEME['surface1']}; max-height: 1px;")
         return line
 
+    def _comparable_settings(self, settings):
+        """Normalize settings for duplicate-content comparisons."""
+        if not isinstance(settings, dict):
+            return {}
+        mode = self._mode_from_settings(settings)
+        return {
+            "retry_days": int(settings.get("retry_days", 7)),
+            "call_number_mode": mode,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
+        }
+
+    def _find_profile_with_same_settings(self, candidate_settings, exclude_name: str = ""):
+        """Return the first profile name whose comparable settings match *candidate_settings*."""
+        normalized_candidate = self._comparable_settings(candidate_settings)
+        for profile_name in self.profile_manager.list_profiles():
+            if profile_name == exclude_name:
+                continue
+            profile = self.profile_manager.load_profile(profile_name)
+            existing_settings = self._extract_profile_settings(profile)
+            if self._comparable_settings(existing_settings) == normalized_candidate:
+                return profile_name
+        return None
+
     # =========================================================================
     # Logic Methods (Adapted from original ConfigTab)
     # =========================================================================
@@ -300,19 +439,28 @@ class ConfigTabV2(QWidget):
         QMessageBox.information(self, "Saved", f"Profile '{self.current_profile_name}' saved.")
 
     def _create_new_profile(self):
-        name, ok = QInputDialog.getText(self, "New Profile", "Profile Name:")
-        if ok and name:
-            name = name.strip()
-            if not name:
-                return
-            if name in self.profile_manager.list_profiles():
-                QMessageBox.warning(self, "Error", "Profile already exists.")
-                return
-            
-            # Create from current visible settings (matches old tab "Save As" behavior).
-            self.profile_manager.save_profile(name, self.get_config())
-            self._refresh_profile_list()
-            self.profile_combo.setCurrentText(name) # Will trigger load
+        dialog = CreateProfileDialog(self, initial_settings=self.get_config())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name = dialog.profile_name()
+        if self.profile_manager.profile_name_exists(name):
+            QMessageBox.warning(self, "Duplicate Name", "A profile with that name already exists.")
+            return
+
+        new_settings = dialog.profile_settings()
+        matching_profile = self._find_profile_with_same_settings(new_settings)
+        if matching_profile:
+            QMessageBox.information(
+                self,
+                "Matching Settings Found",
+                f"These settings already exist under '{matching_profile}'.\n\n"
+                "You can still create this profile if you want a separate copy."
+            )
+
+        self.profile_manager.save_profile(name, new_settings)
+        self._refresh_profile_list()
+        self.profile_combo.setCurrentText(name) # Will trigger load
 
     def _delete_current_profile(self):
         if self.current_profile_name == "Default Settings":
@@ -330,6 +478,24 @@ class ConfigTabV2(QWidget):
             self._refresh_profile_list()
             self._load_profile("Default Settings")
             # It will auto-select default or first available
+
+    def list_profile_names(self):
+        """Public accessor for available profile names."""
+        return self.profile_manager.list_profiles()
+
+    def select_profile(self, name: str) -> bool:
+        """Switch profiles through the existing UI flow (prompts included)."""
+        if not name:
+            return False
+        self._refresh_profile_list()
+        if name not in self.profile_manager.list_profiles():
+            return False
+        self.profile_combo.setCurrentText(name)
+        return self.current_profile_name == name
+
+    def create_new_profile(self):
+        """Open the standard new-profile dialog."""
+        self._create_new_profile()
 
     def get_config(self):
         """Public accessor for other tabs."""

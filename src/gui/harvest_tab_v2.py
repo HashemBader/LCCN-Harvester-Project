@@ -15,6 +15,7 @@ from itertools import islice
 import csv
 import sys
 import json
+import threading
 # Add src to path for utils import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.isbn_validator import normalize_isbn
@@ -50,6 +51,8 @@ class HarvestWorkerV2(QThread):
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
         self._stop_requested = False
         self._pause_requested = False
+        self._live_results_lock = threading.Lock()
+        self._live_result_handles = {}
 
     def run(self):
         """Run the harvest operation in background thread."""
@@ -63,6 +66,10 @@ class HarvestWorkerV2(QThread):
             total = len(isbns)
             invalid_count = len(invalid_list)
             print(f"DEBUG: HarvestWorkerV2 read {total} valid ISBNs, {invalid_count} invalid.")
+
+            # Overwrite live result files at the start of each run
+            self._prepare_live_result_files()
+            self._write_invalid_live_rows(invalid_list)
 
             # Record invalid stats
             if invalid_count > 0:
@@ -92,10 +99,25 @@ class HarvestWorkerV2(QThread):
 
                 elif event == "cached":
                     self.progress_update.emit(isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache)
+                    self._append_live_success(
+                        isbn,
+                        payload.get("source") or "Cache",
+                        "Found in cache",
+                        lccn=payload.get("lccn"),
+                        nlmcn=payload.get("nlmcn"),
+                    )
                     self._update_processed()
 
                 elif event == "skip_retry":
                     self.progress_update.emit(isbn, "skipped", "", messages.HarvestMessages.skipped_recent_failure)
+                    retry_days = payload.get("retry_days", self.config.get("retry_days", 7))
+                    self._append_live_failed(
+                        isbn,
+                        f"Skipped due to retry window ({retry_days} days)",
+                        "RetryRule",
+                        retry_days=retry_days,
+                        other_errors=[f"RetryRule: Skipped due to retry window ({retry_days} days)"],
+                    )
                     self._update_processed()
 
                 elif event == "target_start":
@@ -110,12 +132,29 @@ class HarvestWorkerV2(QThread):
                 elif event == "success":
                     source = payload.get("target", "")
                     self.progress_update.emit(isbn, "found", source, "Found")
+                    self._append_live_success(
+                        isbn,
+                        payload.get("source") or source or "Target",
+                        "Found",
+                        lccn=payload.get("lccn"),
+                        nlmcn=payload.get("nlmcn"),
+                    )
                     self._update_processed()
 
                 elif event == "failed":
                     error = payload.get("last_error") or payload.get("error", "No results")
                     source = payload.get("last_target") or "All"
                     self.progress_update.emit(isbn, "failed", source, error)
+                    self._append_live_failed(
+                        isbn,
+                        error,
+                        source,
+                        retry_days=self.config.get("retry_days", 7),
+                        not_found_targets=payload.get("not_found_targets"),
+                        z3950_unsupported_targets=payload.get("z3950_unsupported_targets"),
+                        offline_targets=payload.get("offline_targets"),
+                        other_errors=payload.get("other_errors"),
+                    )
                     self._update_processed()
                 
                 elif event == "stats":
@@ -188,6 +227,8 @@ class HarvestWorkerV2(QThread):
             print(f"DEBUG: HarvestWorkerV2 CRASHED: {error_msg}")
             self.status_message.emit(error_msg)
             self.harvest_complete.emit(False, {"total": 0, "found": 0, "failed": 0})
+        finally:
+            self._close_live_result_files()
 
     def _update_processed(self):
         """Update processed count and emit stats/milestones."""
@@ -199,6 +240,114 @@ class HarvestWorkerV2(QThread):
         # Emit stats update for UI
         if self.processed_count % 5 == 0 or self.processed_count == self.stats["total"]:
             self.stats_update.emit(self.stats.copy())
+
+    def _prepare_live_result_files(self):
+        """Create/overwrite per-run TSV output files."""
+        out_dir = Path("data")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        files = {
+            "successful": (out_dir / "successful.tsv", ["ISBN", "Call No.", "Title", "Pub Year", "Source"]),
+            "invalid": (out_dir / "invalid.tsv", ["ISBN"]),
+            "failed": (
+                out_dir / "failed.tsv",
+                ["ISBN", "Not Found", "Z39.50 Unsupported", "Offline", "Other Errors", "Next Try"],
+            ),
+        }
+        self._close_live_result_files()
+        for key, (path, header) in files.items():
+            fh = open(path, "w", encoding="utf-8", newline="")
+            writer = csv.writer(fh, delimiter="\t")
+            writer.writerow(header)
+            fh.flush()
+            self._live_result_handles[key] = fh
+
+    def _close_live_result_files(self):
+        for fh in self._live_result_handles.values():
+            try:
+                fh.flush()
+                fh.close()
+            except Exception:
+                pass
+        self._live_result_handles = {}
+
+    def _append_live_row(self, bucket, row):
+        fh = self._live_result_handles.get(bucket)
+        if fh is None:
+            return
+        with self._live_results_lock:
+            writer = csv.writer(fh, delimiter="\t")
+            writer.writerow(row)
+            fh.flush()
+
+    def _write_invalid_live_rows(self, invalid_list):
+        for raw_isbn in invalid_list or []:
+            self._append_live_row("invalid", [raw_isbn])
+
+    def _append_live_success(self, isbn, source, message, lccn=None, nlmcn=None):
+        call_parts = [v for v in [lccn, nlmcn] if v]
+        call_no = " | ".join(call_parts) if call_parts else (message or "")
+        self._append_live_row(
+            "successful",
+            [isbn, call_no, "", "", source or "-"],
+        )
+
+    def _compute_next_try_value(self, isbn, retry_days):
+        try:
+            retry_days = int(retry_days or 0)
+        except Exception:
+            retry_days = 0
+        if retry_days <= 0:
+            return ""
+        try:
+            db = DatabaseManager("data/lccn_harvester.sqlite3")
+            att = db.get_attempted(isbn)
+            if att and att.last_attempted:
+                base_dt = datetime.fromisoformat(att.last_attempted)
+            else:
+                base_dt = datetime.now(timezone.utc)
+            if base_dt.tzinfo is None:
+                base_dt = base_dt.replace(tzinfo=timezone.utc)
+            return (base_dt + timedelta(days=retry_days)).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return ""
+
+    def _append_live_failed(
+        self,
+        isbn,
+        reason,
+        source,
+        *,
+        retry_days=None,
+        not_found_targets=None,
+        z3950_unsupported_targets=None,
+        offline_targets=None,
+        other_errors=None,
+    ):
+        def _fmt_targets(values):
+            vals = [str(v).strip() for v in (values or []) if str(v).strip()]
+            if not vals:
+                return ""
+            return "[" + " | ".join(vals) + "]"
+
+        retry_days = self.config.get("retry_days", 7) if retry_days is None else retry_days
+        not_found = _fmt_targets(not_found_targets)
+        z3950_unsupported = _fmt_targets(z3950_unsupported_targets)
+        offline = _fmt_targets(offline_targets)
+        other = " ; ".join(other_errors or [])
+        # Preserve reason if it doesn't map cleanly
+        if (not not_found and not z3950_unsupported and not offline) and reason:
+            other = reason if not other else f"{other} ; {reason}"
+        self._append_live_row(
+            "failed",
+            [
+                isbn,
+                not_found,
+                z3950_unsupported,
+                offline,
+                other,
+                self._compute_next_try_value(isbn, retry_days),
+            ],
+        )
 
     def _read_and_validate_isbns(self):
         """Read and validate ISBNs using the centralized parser."""

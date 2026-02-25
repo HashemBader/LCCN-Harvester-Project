@@ -145,6 +145,54 @@ class HarvestOrchestrator:
 
         return result
 
+    @staticmethod
+    def _classify_other_error_target(error_text: str) -> str:
+        e = (error_text or "").strip().lower()
+        if "z39.50 support not available" in e:
+            return "z3950_unsupported"
+        if (
+            "remote end closed connection without response" in e
+            or "timed out" in e
+            or "connection refused" in e
+            or "connection reset" in e
+            or "temporary failure in name resolution" in e
+            or "name or service not known" in e
+        ):
+            return "offline"
+        return "other"
+
+    def _build_failed_payload(
+        self,
+        *,
+        isbn: str,
+        last_target: Optional[str],
+        last_error: Optional[str],
+        not_found_targets: list[str],
+        other_errors: list[tuple[str, str]],
+    ) -> dict:
+        z3950_unsupported_targets: list[str] = []
+        offline_targets: list[str] = []
+        other_error_items: list[str] = []
+
+        for target_name, err in other_errors:
+            bucket = self._classify_other_error_target(err)
+            if bucket == "z3950_unsupported":
+                z3950_unsupported_targets.append(target_name)
+            elif bucket == "offline":
+                offline_targets.append(target_name)
+            else:
+                other_error_items.append(f"{target_name}: {err}")
+
+        return {
+            "isbn": isbn,
+            "last_target": last_target,
+            "last_error": last_error,
+            "not_found_targets": not_found_targets,
+            "z3950_unsupported_targets": z3950_unsupported_targets,
+            "offline_targets": offline_targets,
+            "other_errors": other_error_items,
+        }
+
     def process_isbn(
         self,
         isbn: str,
@@ -162,8 +210,19 @@ class HarvestOrchestrator:
         self._emit("isbn_start", {"isbn": isbn})
 
         # 1) cache check
-        if isbn not in self.bypass_cache_isbns and self.db.get_main(isbn) is not None:
-            self._emit("cached", {"isbn": isbn})
+        cached_rec = None
+        if isbn not in self.bypass_cache_isbns:
+            cached_rec = self.db.get_main(isbn)
+        if cached_rec is not None:
+            self._emit(
+                "cached",
+                {
+                    "isbn": isbn,
+                    "source": cached_rec.source,
+                    "lccn": cached_rec.lccn,
+                    "nlmcn": cached_rec.nlmcn,
+                },
+            )
             return "cached"
 
         # 2) retry-skip check
@@ -177,7 +236,7 @@ class HarvestOrchestrator:
         last_error: Optional[str] = None
         last_target: Optional[str] = None
         not_found_targets: list[str] = []
-        other_errors: list[str] = []
+        other_errors: list[tuple[str, str]] = []
 
         for target in self.targets:
             self._check_cancelled()
@@ -187,7 +246,16 @@ class HarvestOrchestrator:
             result = self._filter_result_by_mode(target.lookup(isbn))
 
             if result.success:
-                self._emit("success", {"isbn": isbn, "target": last_target})
+                self._emit(
+                    "success",
+                    {
+                        "isbn": isbn,
+                        "target": last_target,
+                        "source": result.source or last_target,
+                        "lccn": result.lccn,
+                        "nlmcn": result.nlmcn,
+                    },
+                )
 
                 if not dry_run:
                     rec = MainRecord(
@@ -207,7 +275,7 @@ class HarvestOrchestrator:
             if err.lower().startswith("no records found in"):
                 not_found_targets.append(last_target)
             elif err:
-                other_errors.append(f"{last_target}: {err}")
+                other_errors.append((last_target, err))
 
         # 4) all targets failed
         if not_found_targets and not other_errors:
@@ -217,15 +285,18 @@ class HarvestOrchestrator:
                 "Not found in: "
                 + ", ".join(not_found_targets)
                 + " | Other errors: "
-                + " ; ".join(other_errors)
+                + " ; ".join(f"{t}: {e}" for t, e in other_errors)
             )
         elif other_errors:
-            last_error = " ; ".join(other_errors)
+            last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
 
-        self._emit(
-            "failed",
-            {"isbn": isbn, "last_target": last_target, "last_error": last_error},
-        )
+        self._emit("failed", self._build_failed_payload(
+            isbn=isbn,
+            last_target=last_target,
+            last_error=last_error,
+            not_found_targets=not_found_targets,
+            other_errors=other_errors,
+        ))
 
         if not dry_run:
             pending_attempted.append((isbn, last_target, utc_now_iso(), last_error))
@@ -311,8 +382,16 @@ class HarvestOrchestrator:
                 # Also: emitting progress from threads is okay only if your GUI callback is thread-safe.
                 self._emit("isbn_start", {"isbn": isbn})
 
-                if isbn not in self.bypass_cache_isbns and self.db.get_main(isbn) is not None:
-                    self._emit("cached", {"isbn": isbn})
+                cached_rec = None
+                if isbn not in self.bypass_cache_isbns:
+                    cached_rec = self.db.get_main(isbn)
+                if cached_rec is not None:
+                    self._emit("cached", {
+                        "isbn": isbn,
+                        "source": cached_rec.source,
+                        "lccn": cached_rec.lccn,
+                        "nlmcn": cached_rec.nlmcn,
+                    })
                     return ("cached", None, None)
 
                 if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(isbn, retry_days=self.retry_days):
@@ -322,7 +401,7 @@ class HarvestOrchestrator:
                 last_error = None
                 last_target = None
                 not_found_targets: list[str] = []
-                other_errors: list[str] = []
+                other_errors: list[tuple[str, str]] = []
 
                 for target in self.targets:
                     self._check_cancelled()
@@ -331,7 +410,13 @@ class HarvestOrchestrator:
 
                     result = self._filter_result_by_mode(target.lookup(isbn))
                     if result.success:
-                        self._emit("success", {"isbn": isbn, "target": last_target})
+                        self._emit("success", {
+                            "isbn": isbn,
+                            "target": last_target,
+                            "source": result.source or last_target,
+                            "lccn": result.lccn,
+                            "nlmcn": result.nlmcn,
+                        })
 
                         rec = None
                         if not dry_run:
@@ -348,7 +433,7 @@ class HarvestOrchestrator:
                     if err.lower().startswith("no records found in"):
                         not_found_targets.append(last_target)
                     elif err:
-                        other_errors.append(f"{last_target}: {err}")
+                        other_errors.append((last_target, err))
 
                 if not_found_targets and not other_errors:
                     last_error = "Not found in: " + ", ".join(not_found_targets)
@@ -357,12 +442,18 @@ class HarvestOrchestrator:
                         "Not found in: "
                         + ", ".join(not_found_targets)
                         + " | Other errors: "
-                        + " ; ".join(other_errors)
+                        + " ; ".join(f"{t}: {e}" for t, e in other_errors)
                     )
                 elif other_errors:
-                    last_error = " ; ".join(other_errors)
+                    last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
 
-                self._emit("failed", {"isbn": isbn, "last_target": last_target, "last_error": last_error})
+                self._emit("failed", self._build_failed_payload(
+                    isbn=isbn,
+                    last_target=last_target,
+                    last_error=last_error,
+                    not_found_targets=not_found_targets,
+                    other_errors=other_errors,
+                ))
 
                 att = None
                 if not dry_run:

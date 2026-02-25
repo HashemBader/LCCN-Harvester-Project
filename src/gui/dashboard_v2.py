@@ -5,11 +5,12 @@ Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout,
     QProgressBar, QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
-    QGraphicsDropShadowEffect, QComboBox, QPushButton, QSizePolicy
+    QGraphicsDropShadowEffect, QComboBox, QPushButton, QSizePolicy, QMessageBox
 )
-from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QUrl
 from datetime import datetime
-from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
+from pathlib import Path
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen, QDesktopServices
 
 from database import DatabaseManager
 from .icons import (
@@ -206,6 +207,11 @@ class DashboardTabV2(QWidget):
         super().__init__()
         self.db = DatabaseManager()
         self.db.init_db()
+        self.result_files = {
+            "successful": Path("data/successful.tsv"),
+            "invalid": Path("data/invalid.tsv"),
+            "failed": Path("data/failed.tsv"),
+        }
         self._setup_ui()
         
         # Auto-refresh timer (2s for live feel)
@@ -310,10 +316,15 @@ class DashboardTabV2(QWidget):
 
         # 3. Main Content Split (Live vs Recent)
         content_split = QHBoxLayout()
-        
-        # Left: Live Panel (40%)
+
+        # Left: Live panel + result-file actions (40%)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(14)
         self.live_panel = LiveActivityPanel()
-        content_split.addWidget(self.live_panel, stretch=2)
+        left_col.addWidget(self.live_panel)
+        left_col.addWidget(self._build_result_files_panel())
+        left_col.addStretch()
+        content_split.addLayout(left_col, stretch=2)
         
         # Right: Recent Results (60%)
         self.recent_panel = RecentResultsPanel()
@@ -322,18 +333,81 @@ class DashboardTabV2(QWidget):
         main_layout.addLayout(content_split)
         
         main_layout.addStretch()
+        self._refresh_result_file_buttons()
+
+    def _build_result_files_panel(self):
+        panel = QFrame()
+        panel.setProperty("class", "Card")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("RESULT FILES")
+        title.setProperty("class", "CardTitle")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Live TSV files are overwritten when a new harvest starts.")
+        subtitle.setStyleSheet("color: #a5adcb; font-size: 12px;")
+        layout.addWidget(subtitle)
+
+        self.btn_open_successful = self._create_result_open_button("Open successful.tsv", "successful")
+        self.btn_open_invalid = self._create_result_open_button("Open invalid.tsv", "invalid")
+        self.btn_open_failed = self._create_result_open_button("Open failed.tsv", "failed")
+        layout.addWidget(self.btn_open_successful)
+        layout.addWidget(self.btn_open_invalid)
+        layout.addWidget(self.btn_open_failed)
+        return panel
+
+    def _create_result_open_button(self, text, key):
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setMinimumHeight(42)
+        btn.setStyleSheet(
+            "QPushButton {"
+            " background-color: #2b3042; color: #eef1fb; border: 1px solid #51576d;"
+            " border-radius: 10px; padding: 10px 14px; font-weight: 700; text-align: left;"
+            "}"
+            "QPushButton:hover { background-color: #363d54; border-color: #8aadf4; }"
+            "QPushButton:disabled { color: #7f849c; background-color: #232634; border-color: #3b4058; }"
+        )
+        btn.setEnabled(False)
+        btn.clicked.connect(lambda: self._open_result_file(key))
+        return btn
+
+    def _refresh_result_file_buttons(self):
+        if not hasattr(self, "btn_open_successful"):
+            return
+        mapping = {
+            "successful": self.btn_open_successful,
+            "invalid": self.btn_open_invalid,
+            "failed": self.btn_open_failed,
+        }
+        for key, btn in mapping.items():
+            btn.setEnabled(self.result_files[key].exists())
+
+    def _open_result_file(self, key):
+        path = self.result_files[key]
+        if not path.exists():
+            QMessageBox.warning(self, "File Not Found", f"{path} does not exist yet.")
+            self._refresh_result_file_buttons()
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            QMessageBox.warning(self, "Open Failed", f"Could not open {path}.")
 
     def refresh_data(self):
         """Fetch latest stats from DB and update cards."""
         try:
+            self._refresh_result_file_buttons()
             stats = self.db.get_global_stats()
+            invalid = int(stats.get('invalid', 0))
+            failed_noninvalid = max(0, int(stats.get('failed', 0)) - invalid)
             
             # Update Cards
             self.card_proc.set_data(stats['processed'], "Total records attempted")
             self.card_found.set_data(stats['found'], "Successfully harvested")
-            self.card_failed.set_data(stats['failed'], "Errors or Not Found")
+            self.card_failed.set_data(failed_noninvalid, "Errors or Not Found (excluding invalid)")
             # Invalid logic tracked via specific error message in DB
-            self.card_invalid.set_data(stats.get('invalid', 0), "Invalid ISBNs") 
+            self.card_invalid.set_data(invalid, "Invalid ISBNs")
 
             # Update Recent
             recent = self.db.get_recent_results(limit=10)
@@ -384,12 +458,14 @@ class DashboardTabV2(QWidget):
         pass
 
     def set_running(self):
+        self._refresh_result_file_buttons()
         self.lbl_run_status.setText("● RUNNING")
         self.lbl_run_status.setStyleSheet(
             "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
         )
 
     def set_idle(self, success: bool | None = None):
+        self._refresh_result_file_buttons()
         if success is True:
             self.lbl_run_status.setText("● COMPLETED")
             self.lbl_run_status.setStyleSheet(

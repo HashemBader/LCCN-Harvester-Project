@@ -1,14 +1,14 @@
 target_id	name	target_type	host	port	database	record_syntax	rank	selected	username	password
-13	aass	Z3950	ss	210	ss	USMARC	1	False		
-15	sss	Z3950	s	210	s	USMARC	2	False		
-21	aaaaa	Z3950	aaaaa	210	aaaaaa	USMARC	3	False		
-16	UAlberta	Z3950	ualapp.library.ualberta.ca	2200	unicorn	USMARC	4	True		
-17	xx	Z3950	xx	210	xx	USMARC	5	False		
-5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	6	True		
-18	tt	Z3950	tt	210	tt	USMARC	7	False		
-20	Toronto	Z3950	utoronto.alma.exlibrisgroup.com	1921	01UTORONTO_INST	USMARC	8	True		
-19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	9	False		
-14	s	Z3950	s	210	s	USMARC	10	False		
-8	OpenLibrary API	API					11	True		
-10	Harvard Library API	API					12	True		
+8	OpenLibrary API	API					1	True		
+13	aass	Z3950	ss	210	ss	USMARC	2	True		
+10	Harvard Library API	API					3	True		
+15	sss	Z3950	s	210	s	USMARC	4	False		
+21	aaaaa	Z3950	aaaaa	210	aaaaaa	USMARC	5	False		
+16	UAlberta	Z3950	ualapp.library.ualberta.ca	2200	unicorn	USMARC	6	True		
+17	xx	Z3950	xx	210	xx	USMARC	7	False		
+5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	8	True		
+18	tt	Z3950	tt	210	tt	USMARC	9	False		
+20	Toronto	Z3950	utoronto.alma.exlibrisgroup.com	1921	01UTORONTO_INST	USMARC	10	True		
+19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	11	True		
+14	s	Z3950	s	210	s	USMARC	12	False		
 9	Library of Congress API	API					13	True		

@@ -35,7 +35,30 @@ class ModernMainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("LCCN Harvester Pro")
         self.setGeometry(100, 100, 1380, 900)
-        
+        # Ensure window is resizable: clear accidental maximum constraints and enable min/max buttons
+        try:
+            # sensible minimum so layout remains usable
+            self.setMinimumSize(400, 300)
+            # remove any accidental maximum constraint
+            self.setMaximumSize(16777215, 16777215)
+            # ensure title and min/max buttons are present
+            self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
+            self.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint, True)
+            # ensure not forced on top
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+            # commit flags (some Qt versions require resetting flags)
+            self.setWindowFlags(self.windowFlags())
+        except Exception:
+            pass
+
+        # Small diagnostic print to help debug resize/flag issues (harmless)
+        try:
+            print("[ModernMainWindow] size=%s min=%s max=%s flags=%s" % (
+                str(self.size()), str(self.minimumSize()), str(self.maximumSize()), str(int(self.windowFlags()))
+            ))
+        except Exception:
+            pass
+
         # Data
         self.advanced_mode = False
         self.sidebar_collapsed = False

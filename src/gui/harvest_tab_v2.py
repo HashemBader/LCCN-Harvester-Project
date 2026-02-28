@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QMimeData, QUrl, QSize
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QCursor, QShortcut, QKeySequence
 from pathlib import Path
 from enum import Enum, auto
+from itertools import islice
 import csv
 import sys
 import json

@@ -16,6 +16,8 @@ import xml.etree.ElementTree as ET
 
 from src.api.base_api import ApiResult, BaseApiClient
 from src.api.http_utils import urlopen_with_ca
+from src.utils.call_number_validators import validate_lccn, validate_nlmcn
+from src.utils import marc_parser
 
 
 class LocApiClient(BaseApiClient):
@@ -66,35 +68,10 @@ class LocApiClient(BaseApiClient):
         except Exception as e:
             raise Exception(f"Invalid LoC SRU XML response: {e}")
 
-    @staticmethod
-    def _normalize_call_number(parts: list[str]) -> Optional[str]:
-        clean = [p.strip() for p in parts if isinstance(p, str) and p.strip()]
-        if not clean:
-            return None
-        return " ".join(clean)
-
-    def _extract_field(self, marc_record: ET.Element, tag: str) -> Optional[str]:
-        field = marc_record.find(f".//marc:datafield[@tag='{tag}']", self.namespaces)
-        if field is None:
-            return None
-
-        part_a = [
-            sf.text or ""
-            for sf in field.findall("marc:subfield[@code='a']", self.namespaces)
-        ]
-        part_b = [
-            sf.text or ""
-            for sf in field.findall("marc:subfield[@code='b']", self.namespaces)
-        ]
-        return self._normalize_call_number(part_a + part_b)
-
     def extract_call_numbers(self, isbn: str, payload: Any) -> ApiResult:
         """
-        Extract call numbers from LoC SRU MARCXML response.
+        Extract call numbers from LoC SRU MARCXML response using marc_parser.
         """
-        lccn: Optional[str] = None
-        nlmcn: Optional[str] = None
-
         if not isinstance(payload, ET.Element):
             return ApiResult(
                 isbn=isbn,
@@ -125,8 +102,12 @@ class LocApiClient(BaseApiClient):
                 error_message="LoC record found but MARC payload missing",
             )
 
-        lccn = self._extract_field(marc_record, "050")
-        nlmcn = self._extract_field(marc_record, "060")
+        # Use marc_parser to extract call numbers
+        lccn, nlmcn = marc_parser.extract_call_numbers_from_xml(marc_record, self.namespaces)
+
+        # Validate extracted call numbers
+        lccn = validate_lccn(lccn, source=self.source)
+        nlmcn = validate_nlmcn(nlmcn, source=self.source)
 
         if lccn or nlmcn:
             return ApiResult(

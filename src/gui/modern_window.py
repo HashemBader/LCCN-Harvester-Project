@@ -14,7 +14,6 @@ import sys
 from .targets_tab_v2 import TargetsTabV2
 from .config_tab_v2 import ConfigTabV2
 from .harvest_tab_v2 import HarvestTabV2
-from .results_tab_v2 import ResultsTabV2
 from .dashboard_v2 import DashboardTabV2
 from .ai_assistant_tab import AIAssistantTab
 
@@ -26,7 +25,7 @@ from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
     get_icon, get_pixmap, 
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
-    SVG_HARVEST, SVG_RESULTS, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
+    SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
 )
 from .theme_manager import ThemeManager
 from config.profile_manager import ProfileManager
@@ -127,14 +126,12 @@ class ModernMainWindow(QMainWindow):
         self.btn_targets = self._create_nav_btn("Targets", SVG_TARGETS, 1)
         self.btn_config = self._create_nav_btn("Settings", SVG_SETTINGS, 2)
         self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 3)
-        self.btn_results = self._create_nav_btn("Results", SVG_RESULTS, 4)
-        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 5)
+        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 4)
 
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_targets)
         sidebar_layout.addWidget(self.btn_config)
         sidebar_layout.addWidget(self.btn_harvest)
-        sidebar_layout.addWidget(self.btn_results)
         sidebar_layout.addWidget(self.btn_ai)
 
         sidebar_layout.addStretch() # Spacer
@@ -204,15 +201,13 @@ class ModernMainWindow(QMainWindow):
         self.targets_tab = TargetsTabV2()
         self.config_tab = ConfigTabV2()
         self.harvest_tab = HarvestTabV2()
-        self.results_tab = ResultsTabV2()
         self.ai_assistant_tab = AIAssistantTab()
 
         self.stack.addWidget(self.dashboard_tab) # 0
         self.stack.addWidget(self.targets_tab)   # 1
         self.stack.addWidget(self.config_tab)    # 2
         self.stack.addWidget(self.harvest_tab)   # 3
-        self.stack.addWidget(self.results_tab)   # 4
-        self.stack.addWidget(self.ai_assistant_tab) # 5
+        self.stack.addWidget(self.ai_assistant_tab) # 4
 
         content_layout.addWidget(self.stack)
         main_layout.addWidget(content_container)
@@ -269,12 +264,10 @@ class ModernMainWindow(QMainWindow):
         QShortcut(QKeySequence(f"{mod}+2"), self, activated=lambda: self.btn_targets.click())
         QShortcut(QKeySequence(f"{mod}+3"), self, activated=lambda: self.btn_config.click())
         QShortcut(QKeySequence(f"{mod}+4"), self, activated=lambda: self.btn_harvest.click())
-        QShortcut(QKeySequence(f"{mod}+5"), self, activated=lambda: self.btn_results.click())
-        QShortcut(QKeySequence(f"{mod}+6"), self, activated=lambda: self.btn_ai.click())
+        QShortcut(QKeySequence(f"{mod}+5"), self, activated=lambda: self.btn_ai.click())
 
         QShortcut(QKeySequence(f"{mod}+Shift+D"), self, activated=lambda: self.btn_dashboard.click())
         QShortcut(QKeySequence(f"{mod}+Shift+H"), self, activated=lambda: self.btn_harvest.click())
-        QShortcut(QKeySequence(f"{mod}+Shift+R"), self, activated=lambda: self.btn_results.click())
 
         QShortcut(QKeySequence(f"{mod}+H"), self, activated=self._shortcut_start_harvest)
         QShortcut(QKeySequence("Esc"), self, activated=self._shortcut_stop_harvest)
@@ -413,7 +406,6 @@ class ModernMainWindow(QMainWindow):
         
         # Real-time results update
         if status in ("found", "failed", "cached", "skipped"):
-            self.results_tab.refresh()
             self.dashboard_tab.refresh_data()
 
     def _sync_tab_state(self):
@@ -454,7 +446,6 @@ class ModernMainWindow(QMainWindow):
         self._profile_manager.set_active_profile(profile_name)
         self._refresh_dashboard_profile_controls()
         self.dashboard_tab.refresh_data()
-        self.results_tab.refresh()
 
     def _on_page_changed(self, index):
         """Refresh dependent tabs on navigation to keep views current."""
@@ -473,7 +464,7 @@ class ModernMainWindow(QMainWindow):
         # self.btn_ai.setVisible(self.advanced_mode) <--- REMOVED
         
         for tab in [self.dashboard_tab, self.targets_tab, 
-                   self.config_tab, self.harvest_tab, self.results_tab]:
+                   self.config_tab, self.harvest_tab, self.ai_assistant_tab]:
             if hasattr(tab, 'set_advanced_mode'):
                 tab.set_advanced_mode(self.advanced_mode)
 
@@ -487,7 +478,6 @@ class ModernMainWindow(QMainWindow):
     def _on_harvest_finished(self, success, stats):
         self.status_pill.setText("Idle")
         self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
-        self.results_tab.refresh()
         self.dashboard_tab.refresh_data()
         
         if success:

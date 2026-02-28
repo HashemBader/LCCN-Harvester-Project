@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.api.base_api import ApiResult, BaseApiClient
 from src.api.http_utils import urlopen_with_ca
+from src.utils.call_number_validators import validate_lccn, validate_nlmcn
 
 
 class HarvardApiClient(BaseApiClient):
@@ -212,6 +213,10 @@ class HarvardApiClient(BaseApiClient):
         candidates = self._extract_candidates(payload)
         lccn = candidates["lc"][0] if candidates["lc"] else None
         nlmcn = candidates["nlm"][0] if candidates["nlm"] else None
+
+        # Validate extracted call numbers
+        lccn = validate_lccn(lccn, source=self.source)
+        nlmcn = validate_nlmcn(nlmcn, source=self.source)
 
         if lccn or nlmcn:
             return ApiResult(

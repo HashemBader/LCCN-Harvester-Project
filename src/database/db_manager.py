@@ -65,55 +65,96 @@ class DatabaseManager:
     def __init__(self, db_path: Path | str = "data/lccn_harvester.sqlite3"):
         self.db_path = Path(db_path)
 
-    def connect(self) -> sqlite3.Connection:
-        """Open a connection and apply performance-friendly PRAGMAs."""
+    @contextmanager
+    def connect(self):
+        """
+        Open a connection, yield it, commit on success, rollback on error,
+        and ALWAYS close it.
+
+        ``sqlite3.Connection`` used as a plain ``with`` statement only commits
+        or rolls back – it never closes the connection.  That leaks open handles
+        which keep the WAL file active and can corrupt the database if the
+        process is killed.  This wrapper guarantees the connection is closed
+        after every ``with self.connect() as conn:`` block.
+        """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # timeout helps when multiple threads/processes try to write
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
 
-        # Safety + perf pragmas
+        # Safety + performance pragmas
         conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA journal_mode = WAL;")      # better concurrent reads/writes
-        conn.execute("PRAGMA synchronous = NORMAL;")    # faster than FULL, still safe enough
-        conn.execute("PRAGMA temp_store = MEMORY;")     # faster temp operations
-        conn.execute("PRAGMA busy_timeout = 5000;")     # wait up to 5s if db is busy
+        conn.execute("PRAGMA journal_mode = WAL;")     # better concurrent reads/writes
+        conn.execute("PRAGMA synchronous = FULL;")     # fsync WAL on every commit – prevents corruption on crash
+        conn.execute("PRAGMA temp_store = MEMORY;")    # faster temp operations
+        conn.execute("PRAGMA busy_timeout = 5000;")    # wait up to 5 s if db is locked
 
-        return conn
-
-
-    def init_db(self, schema_path: Optional[Path] = None) -> None:
-        """
-        Initialize database using schema.sql.
-        If schema_path is None, it loads schema.sql from the same folder as this file.
-        """
-        if schema_path is None:
-            schema_path = Path(__file__).with_name("schema.sql")
-
-        schema_sql = schema_path.read_text(encoding="utf-8")
-
-        with self.connect() as conn:
-            conn.executescript(schema_sql)
-            conn.commit()
-
-    @contextmanager
-    def transaction(self) -> sqlite3.Connection:
-        """
-        Open a transaction connection.
-        - Commits if the block succeeds
-        - Rolls back if an exception is raised
-        """
-        conn = self.connect()
         try:
-            conn.execute("BEGIN;")
             yield conn
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
+            conn.close()  # always release – checkpoints WAL and frees the file lock
+
+
+    def _is_db_healthy(self) -> bool:
+        """Return True if the database file passes a quick integrity check."""
+        if not self.db_path.exists():
+            return True  # Will be created fresh
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=5.0)
+            result = conn.execute("PRAGMA quick_check").fetchone()
             conn.close()
+            return result is not None and result[0] == "ok"
+        except Exception:
+            return False
+
+    def _reset_db_files(self) -> None:
+        """Delete the DB and any WAL/SHM side-files so it can be recreated clean."""
+        import logging
+        for suffix in ("", "-shm", "-wal"):
+            path = self.db_path.parent / (self.db_path.name + suffix)
+            try:
+                if path.exists():
+                    path.unlink()
+                    logging.getLogger(__name__).warning("Deleted corrupt DB file: %s", path)
+            except Exception as exc:
+                logging.getLogger(__name__).error("Could not delete %s: %s", path, exc)
+
+    def init_db(self, schema_path: Optional[Path] = None) -> None:
+        """
+        Initialize database using schema.sql.
+        If schema_path is None, it loads schema.sql from the same folder as this file.
+        If the database file is corrupt, it is automatically deleted and recreated.
+        """
+        if schema_path is None:
+            schema_path = Path(__file__).with_name("schema.sql")
+
+        # Auto-repair: if the existing file is malformed, wipe and start fresh
+        if not self._is_db_healthy():
+            import logging
+            logging.getLogger(__name__).error(
+                "Database at %s is malformed – resetting to a clean state.", self.db_path
+            )
+            self._reset_db_files()
+
+        schema_sql = schema_path.read_text(encoding="utf-8")
+
+        with self.connect() as conn:
+            conn.executescript(schema_sql)
+
+    @contextmanager
+    def transaction(self):
+        """
+        Open a transaction connection.
+        - Commits if the block succeeds
+        - Rolls back if an exception is raised
+        - Always closes the connection (delegates to connect())
+        """
+        with self.connect() as conn:
+            yield conn
 
     def close(self) -> None:
         """
@@ -321,7 +362,6 @@ class DatabaseManager:
     def clear_attempted(self, isbn: str) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM attempted WHERE isbn = ?", (isbn,))
-            conn.commit()
 
     def clear_attempted_many(self, conn: sqlite3.Connection, isbns: Iterable[str]) -> None:
         isbns_list = list(isbns)

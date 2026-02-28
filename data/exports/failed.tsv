@@ -1,2 +1,7 @@
 ﻿ISBN	Last Target	Last Attempted	Fail Count	Last Error
-9780596158101	Library of Congress	2026-02-24T07:52:36+00:00	6	Not found in: OpenLibrary, Harvard LibraryCloud, Library of Congress | Other errors: aass: Z39.50 support not available - install PyZ3950 ; UAlberta: Z39.50 support not available - install PyZ3950 ; NYC: Z39.50 support not available - install PyZ3950 ; Toronto: Z39.50 support not available - install PyZ3950 ; Oxford: Z39.50 support not available - install PyZ3950
+9780306406157	OpenLibrary	2026-02-28 19:25:56	1	Not found in: Library of Congress, Harvard LibraryCloud, OpenLibrary
+0306406152	OpenLibrary	2026-02-28 19:25:59	1	Not found in: Library of Congress, Harvard LibraryCloud, OpenLibrary
+9780000000002	OpenLibrary	2026-02-28 19:26:02	1	Not found in: Library of Congress, Harvard LibraryCloud, OpenLibrary
+9791234567896	OpenLibrary	2026-02-28 19:26:04	1	Not found in: Library of Congress, Harvard LibraryCloud, OpenLibrary
+1111111111	OpenLibrary	2026-02-28 19:26:06	1	Not found in: Library of Congress, Harvard LibraryCloud, OpenLibrary
+123456789X	OpenLibrary	2026-02-28 19:26:07	1	Not found in: Library of Congress, Harvard LibraryCloud, OpenLibrary

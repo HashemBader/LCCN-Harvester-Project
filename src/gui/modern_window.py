@@ -207,6 +207,7 @@ class ModernMainWindow(QMainWindow):
         self.harvest_tab.set_data_sources(
             config_getter=self.config_tab.get_config,
             targets_getter=self.targets_tab.get_targets,
+            profile_getter=self._profile_manager.get_active_profile,
         )
 
         self._connect_signals()
@@ -345,6 +346,7 @@ class ModernMainWindow(QMainWindow):
         # Harvest Signals
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
+        self.harvest_tab.result_files_ready.connect(self.dashboard_tab.set_result_files)
         self.harvest_tab.milestone_reached.connect(
             lambda t, v: self.notification_manager.notify_milestone(t, v)
         )
@@ -440,8 +442,6 @@ class ModernMainWindow(QMainWindow):
         elif index == 1:  # Targets
             # Reflect latest profile/target state when revisiting the tab.
             self.targets_tab.refresh_targets()
-        elif index == 3:  # Harvest
-            self.harvest_tab.on_targets_changed(self.targets_tab.get_targets())
 
     # --- Logic ---
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from enum import Enum, auto
 from itertools import islice
 import csv
+import re
 import sys
 import json
 import threading
@@ -33,6 +34,19 @@ from src.database import DatabaseManager
 from datetime import datetime
 from src.utils import messages
 
+def _extract_lc_classification(lccn: str) -> str:
+    """Derive the LC class prefix (letters only) from an LCCN / call-number string."""
+    if not lccn:
+        return ""
+    m = re.match(r'^([A-Za-z]+)', lccn.strip())
+    return m.group(1).upper() if m else ""
+
+
+def _safe_filename(s: str) -> str:
+    """Strip characters that are invalid in file names."""
+    return re.sub(r'[\\/:*?"<>|\s]+', '_', s).strip('_') or "default"
+
+
 class HarvestWorkerV2(QThread):
     """Background worker thread for harvest operations (V2)."""
 
@@ -43,7 +57,7 @@ class HarvestWorkerV2(QThread):
     milestone_reached = pyqtSignal(str, int)  # milestone_type, value
     stats_update = pyqtSignal(dict)  # real-time statistics update
 
-    def __init__(self, input_file, config, targets, advanced_settings=None, bypass_retry_isbns=None):
+    def __init__(self, input_file, config, targets, advanced_settings=None, bypass_retry_isbns=None, live_paths=None):
         super().__init__()
         self.input_file = input_file
         self.config = config
@@ -54,6 +68,12 @@ class HarvestWorkerV2(QThread):
         self._pause_requested = False
         self._live_results_lock = threading.Lock()
         self._live_result_handles = {}
+        # Paths for the live output files (computed before thread starts)
+        self.live_paths = live_paths or {}
+        # Session-only result accumulators (never read from DB)
+        self._session_success = []   # [isbn, lccn, nlmcn, classification, source, date_added]
+        self._session_failed = []    # [isbn, last_target, last_attempted, fail_count, last_error]
+        self._session_invalid = []   # [isbn]
 
     def run(self):
         """Run the harvest operation in background thread."""
@@ -67,6 +87,11 @@ class HarvestWorkerV2(QThread):
             total = len(isbns)
             invalid_count = len(invalid_list)
             print(f"DEBUG: HarvestWorkerV2 read {total} valid ISBNs, {invalid_count} invalid.")
+
+            # Reset session accumulators for this run
+            self._session_success = []
+            self._session_failed = []
+            self._session_invalid = list(invalid_list)
 
             # Overwrite live result files at the start of each run
             self._prepare_live_result_files()
@@ -100,24 +125,39 @@ class HarvestWorkerV2(QThread):
 
                 elif event == "cached":
                     self.progress_update.emit(isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache)
+                    _lccn = payload.get("lccn") or ""
+                    _nlmcn = payload.get("nlmcn") or ""
+                    _src = payload.get("source") or "Cache"
+                    self._session_success.append([
+                        isbn, _lccn, _nlmcn,
+                        _extract_lc_classification(_lccn),
+                        _src,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    ])
                     self._append_live_success(
                         isbn,
-                        payload.get("source") or "Cache",
+                        _src,
                         "Found in cache",
-                        lccn=payload.get("lccn"),
-                        nlmcn=payload.get("nlmcn"),
+                        lccn=_lccn,
+                        nlmcn=_nlmcn,
                     )
                     self._update_processed()
 
                 elif event == "skip_retry":
                     self.progress_update.emit(isbn, "skipped", "", messages.HarvestMessages.skipped_recent_failure)
                     retry_days = payload.get("retry_days", self.config.get("retry_days", 7))
+                    _err = f"Skipped due to retry window ({retry_days} days)"
+                    self._session_failed.append([
+                        isbn, "RetryRule",
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        1, _err,
+                    ])
                     self._append_live_failed(
                         isbn,
-                        f"Skipped due to retry window ({retry_days} days)",
+                        _err,
                         "RetryRule",
                         retry_days=retry_days,
-                        other_errors=[f"RetryRule: Skipped due to retry window ({retry_days} days)"],
+                        other_errors=[f"RetryRule: {_err}"],
                     )
                     self._update_processed()
 
@@ -133,12 +173,21 @@ class HarvestWorkerV2(QThread):
                 elif event == "success":
                     source = payload.get("target", "")
                     self.progress_update.emit(isbn, "found", source, "Found")
+                    _lccn = payload.get("lccn") or ""
+                    _nlmcn = payload.get("nlmcn") or ""
+                    _src = payload.get("source") or source or "Target"
+                    self._session_success.append([
+                        isbn, _lccn, _nlmcn,
+                        _extract_lc_classification(_lccn),
+                        _src,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    ])
                     self._append_live_success(
                         isbn,
-                        payload.get("source") or source or "Target",
+                        _src,
                         "Found",
-                        lccn=payload.get("lccn"),
-                        nlmcn=payload.get("nlmcn"),
+                        lccn=_lccn,
+                        nlmcn=_nlmcn,
                     )
                     self._update_processed()
 
@@ -146,6 +195,11 @@ class HarvestWorkerV2(QThread):
                     error = payload.get("last_error") or payload.get("error", "No results")
                     source = payload.get("last_target") or "All"
                     self.progress_update.emit(isbn, "failed", source, error)
+                    self._session_failed.append([
+                        isbn, source,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        1, error,
+                    ])
                     self._append_live_failed(
                         isbn,
                         error,
@@ -224,10 +278,10 @@ class HarvestWorkerV2(QThread):
             self.harvest_complete.emit(False, stats)
         except Exception as e:
             import traceback
-            error_msg = f"Error: {str(e)}\\n{traceback.format_exc()}"
+            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
             print(f"DEBUG: HarvestWorkerV2 CRASHED: {error_msg}")
             self.status_message.emit(error_msg)
-            self.harvest_complete.emit(False, {"total": 0, "found": 0, "failed": 0})
+            self.harvest_complete.emit(False, {"total": 0, "found": 0, "failed": 0, "error": str(e)})
         finally:
             self._close_live_result_files()
 
@@ -243,19 +297,16 @@ class HarvestWorkerV2(QThread):
             self.stats_update.emit(self.stats.copy())
 
     def _prepare_live_result_files(self):
-        """Create/overwrite per-run TSV output files."""
-        out_dir = Path("data")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        files = {
-            "successful": (out_dir / "successful.tsv", ["ISBN", "Call No.", "Title", "Pub Year", "Source"]),
-            "invalid": (out_dir / "invalid.tsv", ["ISBN"]),
-            "failed": (
-                out_dir / "failed.tsv",
-                ["ISBN", "Not Found", "Z39.50 Unsupported", "Offline", "Other Errors", "Next Try"],
-            ),
+        """Create per-run TSV output files using the pre-computed named paths."""
+        headers = {
+            "successful": ["ISBN", "Call No.", "Title", "Pub Year", "Source"],
+            "invalid": ["ISBN"],
+            "failed": ["ISBN", "Not Found", "Z39.50 Unsupported", "Offline", "Other Errors", "Next Try"],
         }
         self._close_live_result_files()
-        for key, (path, header) in files.items():
+        for key, header in headers.items():
+            path = Path(self.live_paths.get(key, f"data/{key}.tsv"))
+            path.parent.mkdir(parents=True, exist_ok=True)
             fh = open(path, "w", encoding="utf-8", newline="")
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow(header)
@@ -300,15 +351,10 @@ class HarvestWorkerV2(QThread):
         if retry_days <= 0:
             return ""
         try:
-            db = DatabaseManager("data/lccn_harvester.sqlite3")
-            att = db.get_attempted(isbn)
-            if att and att.last_attempted:
-                base_dt = datetime.fromisoformat(att.last_attempted)
-            else:
-                base_dt = datetime.now(timezone.utc)
-            if base_dt.tzinfo is None:
-                base_dt = base_dt.replace(tzinfo=timezone.utc)
-            return (base_dt + timedelta(days=retry_days)).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            # Compute "next try" from *now* – no DB query needed during a live run.
+            # The attempted record may not be committed yet at the moment this is called.
+            next_dt = datetime.now(timezone.utc) + timedelta(days=retry_days)
+            return next_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return ""
 
@@ -518,6 +564,7 @@ class HarvestTabV2(QWidget):
     harvest_finished = pyqtSignal(bool, dict)
     milestone_reached = pyqtSignal(str, int)
     progress_updated = pyqtSignal(str, str, str, str) # isbn, status, source, message
+    result_files_ready = pyqtSignal(dict)  # emitted when live output paths are known
 
     # Signals to request data from main window
     request_start_harvest = pyqtSignal() 
@@ -528,10 +575,18 @@ class HarvestTabV2(QWidget):
         self.is_running = False
         self.current_state = UIState.IDLE
         self.input_file = None
-        
+        # Session-only result snapshots populated after each harvest completes
+        self._last_session_success = []
+        self._last_session_failed = []
+        self._last_session_invalid = []
+        # Current-run output file paths (set in _start_worker)
+        self._run_live_paths = {}    # paths for dashboard live files
+        self._run_export_paths = {}  # paths for banner/final export files
+
         # External data sources (set by Main Window)
         self._config_getter = None
         self._targets_getter = None
+        self._profile_getter = None
         
         self.processed_count = 0
         self.total_count = 0 
@@ -540,13 +595,17 @@ class HarvestTabV2(QWidget):
         self._setup_ui()
         self._setup_shortcuts()
 
-    def set_data_sources(self, config_getter, targets_getter):
-        """Set callbacks to retrieve config and selected targets."""
+    def set_data_sources(self, config_getter, targets_getter, profile_getter=None):
+        """Set callbacks to retrieve config, targets, and active profile name."""
         self._config_getter = config_getter
         self._targets_getter = targets_getter
+        self._profile_getter = profile_getter
 
     def on_targets_changed(self, targets):
         """Handle target selection changes from TargetsTab."""
+        # Don't reset UI state while a harvest is in progress or showing results
+        if self.current_state in (UIState.RUNNING, UIState.PAUSED, UIState.COMPLETED, UIState.CANCELLED):
+            return
         self._check_start_conditions()
 
     def _setup_ui(self):
@@ -609,26 +668,26 @@ class HarvestTabV2(QWidget):
         btn_banner_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_banner_folder.clicked.connect(self._open_output_folder)
         
-        btn_open_success = QPushButton("success.tsv")
-        btn_open_success.setProperty("class", "SecondaryButton")
-        btn_open_success.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_open_success.clicked.connect(lambda: self._open_file_in_explorer("data/exports/success.tsv"))
+        self.btn_banner_success = QPushButton("success.tsv")
+        self.btn_banner_success.setProperty("class", "SecondaryButton")
+        self.btn_banner_success.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_success.clicked.connect(lambda: self._open_file_in_explorer(self._run_export_paths.get("success", "")))
         
-        btn_open_failed = QPushButton("failed.tsv")
-        btn_open_failed.setProperty("class", "SecondaryButton")
-        btn_open_failed.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_open_failed.clicked.connect(lambda: self._open_file_in_explorer("data/exports/failed.tsv"))
+        self.btn_banner_failed = QPushButton("failed.tsv")
+        self.btn_banner_failed.setProperty("class", "SecondaryButton")
+        self.btn_banner_failed.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_failed.clicked.connect(lambda: self._open_file_in_explorer(self._run_export_paths.get("failed", "")))
         
-        btn_open_invalid = QPushButton("invalid.tsv")
-        btn_open_invalid.setProperty("class", "SecondaryButton")
-        btn_open_invalid.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_open_invalid.clicked.connect(lambda: self._open_file_in_explorer("data/exports/invalid.tsv"))
+        self.btn_banner_invalid = QPushButton("invalid.tsv")
+        self.btn_banner_invalid.setProperty("class", "SecondaryButton")
+        self.btn_banner_invalid.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_invalid.clicked.connect(lambda: self._open_file_in_explorer(self._run_export_paths.get("invalid", "")))
         
         banner_bottom.addWidget(self.lbl_banner_out)
         banner_bottom.addStretch()
-        banner_bottom.addWidget(btn_open_success)
-        banner_bottom.addWidget(btn_open_failed)
-        banner_bottom.addWidget(btn_open_invalid)
+        banner_bottom.addWidget(self.btn_banner_success)
+        banner_bottom.addWidget(self.btn_banner_failed)
+        banner_bottom.addWidget(self.btn_banner_invalid)
         banner_bottom.addWidget(btn_banner_folder)
         
         banner_layout.addLayout(banner_top)
@@ -1103,25 +1162,22 @@ class HarvestTabV2(QWidget):
             self._set_invalid_state(path_obj.name, f"Error reading file: {e}")
 
     def _check_start_conditions(self, isbn_count=None):
-        """Enable start button only if file is valid AND targets are selected."""
-        # Get ISBN count if not passed (parse from label or store in member)
+        """Enable start button when a valid file is loaded.
+        Target validation happens only at harvest time in _on_start_clicked.
+        """
+        # Never override the UI while a harvest is running, paused, or showing completion
+        if self.current_state in (UIState.RUNNING, UIState.PAUSED, UIState.COMPLETED, UIState.CANCELLED):
+            return
+
         if not self.input_file:
             self._transition_state(UIState.IDLE)
             return
 
-        # Check targets
-        targets = self._targets_getter() if self._targets_getter else []
-        selected_targets = [t for t in targets if t.get("selected", True)]
-        if not selected_targets:
-            self._transition_state(UIState.ERROR)
-            self.log_output.setText("Select at least one target in Targets tab.")
-            return
-
-        # Valid
         count_text = self.lbl_counts.text()
         count = count_text.replace("Loaded: ", "").replace(" ISBNs", "") if "Loaded" in count_text else "?"
-        if isbn_count is not None: count = str(isbn_count)
-        
+        if isbn_count is not None:
+            count = str(isbn_count)
+
         self._transition_state(UIState.READY, count=count)
 
     def _load_file_preview(self):
@@ -1251,12 +1307,41 @@ class HarvestTabV2(QWidget):
         if self.worker and self.worker.isRunning():
             return
 
+        # Compute timestamped output file names for this run
+        profile = "default"
+        if self._profile_getter:
+            try:
+                profile = _safe_filename(self._profile_getter() or "default")
+            except Exception:
+                pass
+        date_str = datetime.now().strftime('%Y-%m-%d-%H')
+        # Use format: profilename-success-YYYY-MM-DD-HH.tsv
+        live_dir = Path("data")
+        export_dir = Path("data/exports")
+        live_dir.mkdir(parents=True, exist_ok=True)
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        self._run_live_paths = {
+            "successful": str(live_dir / f"{profile}-success-{date_str}.tsv"),
+            "failed":     str(live_dir / f"{profile}-failed-{date_str}.tsv"),
+            "invalid":    str(live_dir / f"{profile}-invalid-{date_str}.tsv"),
+        }
+        self._run_export_paths = {
+            "success": str(export_dir / f"{profile}-success-{date_str}.tsv"),
+            "failed":  str(export_dir / f"{profile}-failed-{date_str}.tsv"),
+            "invalid": str(export_dir / f"{profile}-invalid-{date_str}.tsv"),
+        }
+
+        # Notify dashboard of new live file paths
+        self.result_files_ready.emit(self._run_live_paths)
+
         self.worker = HarvestWorkerV2(
             self.input_file,
             config,
             targets,
             advanced_settings=self._load_advanced_settings(),
             bypass_retry_isbns=bypass_retry_isbns,
+            live_paths=self._run_live_paths,
         )
         self.worker.progress_update.connect(self._on_progress)
         self.worker.harvest_complete.connect(self._on_complete)
@@ -1432,20 +1517,37 @@ class HarvestTabV2(QWidget):
     def _on_complete(self, success, stats):
         self.is_running = False
         self.run_timer.stop()
-        
+
+        # Snapshot session results from the worker BEFORE any DB query
+        if self.worker is not None:
+            self._last_session_success = list(self.worker._session_success)
+            self._last_session_failed = list(self.worker._session_failed)
+            self._last_session_invalid = list(self.worker._session_invalid)
+
+        error_msg = stats.get("error") if not success else None
         final_state = UIState.COMPLETED if success else UIState.CANCELLED
         self._transition_state(final_state, stats=stats)
         
         if not success:
-            # Reset UI progress and labels upon cancellation
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("0/0 (0%)")
             self.lbl_counts.setText("0 / 0 processed")
             self.lbl_run_progress.setText("0 / 0")
-            self.log_output.setText("Ready...")
+            if error_msg:
+                # Crash/exception — show a clear error dialog and keep the message
+                self.log_output.setText(f"Harvest failed: {error_msg}")
+                self.log_output.setStyleSheet("color: #ed8796; font-size: 13px; font-weight: bold;")
+                QMessageBox.critical(
+                    self,
+                    "Harvest Error",
+                    f"The harvest encountered an error and could not complete:\n\n{error_msg}",
+                )
+            else:
+                self.log_output.setText("Ready...")
         else:
             self.log_output.setText("Harvest successfully completed. Exporting results...")
             self._auto_export_results()
+            self._update_banner_paths()
             self.log_output.setText("Harvest successfully completed. Results exported to data/exports/")
             
             # Change progress bar green
@@ -1456,57 +1558,47 @@ class HarvestTabV2(QWidget):
         
         self.harvest_finished.emit(success, stats)
 
-    def _auto_export_results(self):
-        """Automatically write success.tsv, failed.tsv, and invalid.tsv for THIS run only."""
-        if not self.input_file:
+    def _update_banner_paths(self):
+        """Update banner file button labels and output folder label to match current run."""
+        if not self._run_export_paths:
             return
-            
+        success_path = Path(self._run_export_paths.get("success", ""))
+        failed_path  = Path(self._run_export_paths.get("failed",  ""))
+        invalid_path = Path(self._run_export_paths.get("invalid", ""))
+        self.btn_banner_success.setText(success_path.name)
+        self.btn_banner_failed.setText(failed_path.name)
+        self.btn_banner_invalid.setText(invalid_path.name)
+        self.lbl_banner_out.setText(f"Saved to: {success_path.parent}/")
+
+    def _auto_export_results(self):
+        """Write named export files (profile-type-datetime.tsv) for THIS session only.
+
+        Data comes entirely from in-memory session accumulators — the database is NOT
+        queried, so results from previous sessions are never included.
+        """
         try:
-            parsed = parse_isbn_file(Path(self.input_file))
-            invalid_list = parsed.invalid_isbns
-            valid_list = parsed.unique_valid
-            
-            db = DatabaseManager("data/lccn_harvester.sqlite3")
-            success_rows = []
-            failed_rows = []
-            
-            with db.connect() as conn:
-                for isbn in valid_list:
-                    # Check main table
-                    cur = conn.execute("SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main WHERE isbn=?", (isbn,))
-                    row = cur.fetchone()
-                    if row:
-                        success_rows.append(list(row))
-                    else:
-                        # Check attempted table
-                        cur = conn.execute("SELECT isbn, last_target, last_attempted, fail_count, last_error FROM attempted WHERE isbn=?", (isbn,))
-                        row = cur.fetchone()
-                        if row:
-                            failed_rows.append(list(row))
-                        else:
-                            # Not found in db? (cancelled before reaching)
-                            failed_rows.append([isbn, "Unknown", "", 0, "Not processed"])
-                            
-            # Write to data/exports/
-            export_dir = Path("data/exports")
-            export_dir.mkdir(parents=True, exist_ok=True)
-            
-            with open(export_dir / "invalid.tsv", "w", encoding="utf-8-sig", newline="") as f:
+            invalid_path = self._run_export_paths.get("invalid", "data/exports/invalid.tsv")
+            success_path = self._run_export_paths.get("success", "data/exports/success.tsv")
+            failed_path  = self._run_export_paths.get("failed",  "data/exports/failed.tsv")
+
+            Path(invalid_path).parent.mkdir(parents=True, exist_ok=True)
+
+            with open(invalid_path, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f, delimiter="\t")
                 writer.writerow(["ISBN", "Error"])
-                for inv in invalid_list:
+                for inv in self._last_session_invalid:
                     writer.writerow([inv, "Invalid format"])
-                    
-            with open(export_dir / "success.tsv", "w", encoding="utf-8-sig", newline="") as f:
+
+            with open(success_path, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f, delimiter="\t")
                 writer.writerow(["ISBN", "LCCN", "NLMCN", "Classification", "Source", "Date Added"])
-                writer.writerows(success_rows)
-                
-            with open(export_dir / "failed.tsv", "w", encoding="utf-8-sig", newline="") as f:
+                writer.writerows(self._last_session_success)
+
+            with open(failed_path, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f, delimiter="\t")
                 writer.writerow(["ISBN", "Last Target", "Last Attempted", "Fail Count", "Last Error"])
-                writer.writerows(failed_rows)
-                
+                writer.writerows(self._last_session_failed)
+
         except Exception as e:
             print(f"DEBUG: Auto export failed: {e}")
 

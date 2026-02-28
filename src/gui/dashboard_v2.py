@@ -207,10 +207,11 @@ class DashboardTabV2(QWidget):
         super().__init__()
         self.db = DatabaseManager()
         self.db.init_db()
+        # No result files until a harvest runs this session
         self.result_files = {
-            "successful": Path("data/successful.tsv"),
-            "invalid": Path("data/invalid.tsv"),
-            "failed": Path("data/failed.tsv"),
+            "successful": None,
+            "invalid": None,
+            "failed": None,
         }
         self._setup_ui()
         
@@ -358,7 +359,7 @@ class DashboardTabV2(QWidget):
         title.setProperty("class", "CardTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel("Live TSV files are overwritten when a new harvest starts.")
+        subtitle = QLabel("Live TSV files are created fresh for each harvest run.")
         subtitle.setStyleSheet("color: #a5adcb; font-size: 12px;")
         layout.addWidget(subtitle)
 
@@ -386,6 +387,15 @@ class DashboardTabV2(QWidget):
         btn.clicked.connect(lambda: self._open_result_file(key))
         return btn
 
+    def set_result_files(self, paths: dict):
+        """Called when a new harvest starts with the paths of the live output files."""
+        self.result_files = {
+            "successful": Path(paths["successful"]) if paths.get("successful") else None,
+            "invalid":    Path(paths["invalid"])    if paths.get("invalid")    else None,
+            "failed":     Path(paths["failed"])     if paths.get("failed")     else None,
+        }
+        self._refresh_result_file_buttons()
+
     def _refresh_result_file_buttons(self):
         if not hasattr(self, "btn_open_successful"):
             return
@@ -395,7 +405,13 @@ class DashboardTabV2(QWidget):
             "failed": self.btn_open_failed,
         }
         for key, btn in mapping.items():
-            btn.setEnabled(self.result_files[key].exists())
+            path = self.result_files.get(key)
+            enabled = path is not None and path.exists()
+            btn.setEnabled(enabled)
+            if path is not None:
+                btn.setText(f"Open {path.name}")
+            else:
+                btn.setText(f"Open {key}.tsv")
 
     def _open_result_file(self, key):
         path = self.result_files[key]

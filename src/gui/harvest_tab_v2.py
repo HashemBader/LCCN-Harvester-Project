@@ -5,7 +5,7 @@ V2 Harvest Tab: Functional Core with Professional UI.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QTextEdit, QProgressBar,
-    QCheckBox, QSpinBox, QFrame, QGridLayout, QMessageBox, QFileDialog, QLineEdit, QSizePolicy, QListWidget
+    QCheckBox, QSpinBox, QFrame, QGridLayout, QMessageBox, QFileDialog, QLineEdit, QSizePolicy, QListWidget, QScrollArea
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QMimeData, QUrl, QSize
@@ -549,9 +549,22 @@ class HarvestTabV2(QWidget):
         self._check_start_conditions()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Outer layout: scrollable content area + sticky action bar at the bottom
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scr_content = QWidget()
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll, 1)
+
+        layout = QVBoxLayout(_scr_content)
         layout.setSpacing(20)
-        layout.setContentsMargins(30,30,30,30)
+        layout.setContentsMargins(30, 30, 30, 30)
 
         # 1. Header Area
         header_layout = QHBoxLayout()
@@ -904,7 +917,7 @@ class HarvestTabV2(QWidget):
         
         action_layout.addLayout(buttons_layout, stretch=1)
         
-        layout.addWidget(action_frame)
+        _outer.addWidget(action_frame)
         
         self._transition_state(UIState.IDLE)
 

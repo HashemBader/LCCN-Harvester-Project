@@ -222,7 +222,19 @@ class DashboardTabV2(QWidget):
         self.refresh_data()
 
     def _setup_ui(self):
-        main_layout = QVBoxLayout(self)
+        # Wrap content in a scroll area so widgets never get compressed on resize
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scr_content = QWidget()
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+        main_layout = QVBoxLayout(_scr_content)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(20)
 

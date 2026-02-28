@@ -32,12 +32,15 @@ from config.profile_manager import ProfileManager
 class ModernMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LCCN Harvester Pro")
+        self.setWindowTitle("LCCN Harvester")
         self.setGeometry(100, 100, 1380, 900)
         # Ensure window is resizable: clear accidental maximum constraints and enable min/max buttons
         try:
-            # sensible minimum so layout remains usable
-            self.setMinimumSize(400, 300)
+            # Minimum size derived from the widest fixed-width content:
+            # sidebar(240) + content-margins(60) + content(660) = 960 wide;
+            # dashboard stacked content (profile panel 74 + KPI cards ~120 +
+            # content split ~200 + headers/spacing ~100) + margins(60) = 660 tall.
+            self.setMinimumSize(1100, 660)
             # remove any accidental maximum constraint
             self.setMaximumSize(16777215, 16777215)
             # ensure title and min/max buttons are present

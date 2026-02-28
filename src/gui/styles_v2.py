@@ -227,6 +227,21 @@ QScrollBar::handle:vertical {
 QScrollBar::handle:vertical:hover {
     background-color: #5b6078;
 }
+QScrollBar:horizontal {
+    background-color: #1e2030;
+    height: 12px;
+    border-radius: 6px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #494d64;
+    border-radius: 6px;
+    border: 2px solid #1e2030;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #5b6078;
+}
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 
 /* --- BUTTON SYSTEM (VIBRANT) --- */
 

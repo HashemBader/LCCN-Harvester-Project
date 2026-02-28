@@ -19,7 +19,7 @@ from .ai_assistant_tab import AIAssistantTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
-from .styles_v2 import V2_STYLESHEET
+from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .shortcuts_dialog import ShortcutsDialog
 from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
@@ -27,6 +27,7 @@ from .icons import (
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
     SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
 )
+from .theme_manager import ThemeManager
 from config.profile_manager import ProfileManager
 
 class ModernMainWindow(QMainWindow):
@@ -63,7 +64,9 @@ class ModernMainWindow(QMainWindow):
         self.sidebar_collapsed = False
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         self._profile_manager = ProfileManager()
-        
+        # Theme manager: persist and read preferred theme
+        self._theme_manager = ThemeManager()
+
         # Core Services
         self.notification_manager = NotificationManager(self)
         self.notification_manager.setup_system_tray()
@@ -166,6 +169,16 @@ class ModernMainWindow(QMainWindow):
         self.btn_accessibility.setToolTip(f"Open accessibility statement ({mod_label}+Shift+A)")
         sidebar_layout.addWidget(self.btn_accessibility)
 
+        # Theme toggle button (bottom, like Accessibility)
+        self.btn_theme = QPushButton("Toggle Theme (BETA)")
+        self.btn_theme.setIcon(get_icon(SVG_SETTINGS, "#a5adcb"))
+        self.btn_theme.setObjectName("NavButton")
+        self.btn_theme.setProperty("class", "NavButton")
+        self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_theme.clicked.connect(self._toggle_theme)
+        self.btn_theme.setToolTip("Toggle application theme (dark / light)")
+        sidebar_layout.addWidget(self.btn_theme)
+
         main_layout.addWidget(self.sidebar)
 
         # 2. Right Content Area
@@ -240,6 +253,7 @@ class ModernMainWindow(QMainWindow):
 
         self.btn_shortcuts.setAccessibleName("Show keyboard shortcuts")
         self.btn_accessibility.setAccessibleName("Show accessibility statement")
+        self.btn_theme.setAccessibleName("Toggle application theme")
         self.status_pill.setAccessibleName("Application status")
 
     def _setup_shortcuts(self):
@@ -328,9 +342,12 @@ class ModernMainWindow(QMainWindow):
             self.btn_shortcuts.setToolTip("Keyboard shortcuts")
             self.btn_accessibility.setText("")
             self.btn_accessibility.setToolTip("Accessibility statement")
+            self.btn_theme.setText("")
+            self.btn_theme.setToolTip("Toggle application theme (dark / light)")
         else:
             self.btn_shortcuts.setText("Shortcuts")
             self.btn_accessibility.setText("Accessibility Statement")
+            self.btn_theme.setText("Toggle Theme")
 
     def _on_nav_clicked(self, btn):
         index = btn.property("page_index")
@@ -474,6 +491,18 @@ class ModernMainWindow(QMainWindow):
             
         self.dashboard_tab.set_idle(success)
 
+    def _toggle_theme(self):
+        """Toggle between dark and light themes and apply immediately."""
+        try:
+            current = self._theme_manager.get_theme()
+            new = "light" if current == "dark" else "dark"
+            self._apply_theme(new)
+        except Exception:
+            # best-effort only
+            try:
+                self._apply_theme("dark")
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         if self.harvest_tab.is_running:
@@ -484,3 +513,101 @@ class ModernMainWindow(QMainWindow):
                 return
             self.harvest_tab.stop_harvest()
         event.accept()
+
+    def _apply_theme(self, theme: str):
+        """Apply color theme (light first, then optional pyqtdarktheme for dark).
+
+        Strategy:
+        - Apply the light stylesheet first to create a consistent base.
+        - If dark is requested, attempt to use `pyqtdarktheme` (best-effort) to
+          obtain and apply a richer dark stylesheet. If that fails, fall back to
+          the internal dark palette via `generate_stylesheet(CATPPUCCIN_DARK)`.
+        - Persist the selection via ThemeManager.
+        """
+        try:
+            mode = theme if isinstance(theme, str) and theme in ("dark", "light") else self._theme_manager.get_theme()
+
+            # Apply light base first for a predictable starting state
+            try:
+                light_qss = generate_stylesheet(CATPPUCCIN_LIGHT)
+                self.setStyleSheet(light_qss)
+            except Exception:
+                # fallback to bundled stylesheet if generation fails
+                try:
+                    self.setStyleSheet(V2_STYLESHEET)
+                except Exception:
+                    pass
+
+            if mode == "dark":
+                # Best-effort: try to use pyqtdarktheme if installed
+                try:
+                    import pyqtdarktheme as _pdt
+                    stylesheet = None
+
+                    # Candidate functions that may produce a QSS string
+                    candidates = (
+                        "apply_dark_theme", "enable_dark_theme", "setup_theme",
+                        "get_stylesheet", "load_stylesheet", "get_qss", "get_style_sheet",
+                    )
+                    applied_by_module = False
+                    for cand in candidates:
+                        func = getattr(_pdt, cand, None)
+                        if callable(func):
+                            try:
+                                # Some APIs accept a widget/window reference
+                                try:
+                                    out = func(self)
+                                except TypeError:
+                                    out = func()
+                                # If function returns a stylesheet string, use it
+                                if isinstance(out, str) and out.strip():
+                                    stylesheet = out
+                                    break
+                                # If function returns None or True, assume it applied the theme directly
+                                if out is None or out is True:
+                                    stylesheet = None
+                                    applied_by_module = True
+                                    break
+                            except Exception:
+                                stylesheet = None
+                                applied_by_module = False
+
+                    # Try module-level stylesheet variables
+                    if not stylesheet:
+                        for var in ("STYLESHEET", "STYLE_SHEET", "stylesheet", "style_sheet"):
+                            val = getattr(_pdt, var, None)
+                            if isinstance(val, str) and val.strip():
+                                stylesheet = val
+                                break
+
+                    if stylesheet:
+                        self.setStyleSheet(stylesheet)
+                    elif applied_by_module:
+                        # Module applied theme in-place — don't override
+                        pass
+                    else:
+                        self.setStyleSheet(generate_stylesheet(CATPPUCCIN_DARK))
+                except Exception:
+                    # pyqtdarktheme absent or failed; use internal dark stylesheet
+                    try:
+                        self.setStyleSheet(generate_stylesheet(CATPPUCCIN_DARK))
+                    except Exception:
+                        try:
+                            self.setStyleSheet(V2_STYLESHEET)
+                        except Exception:
+                            pass
+            else:
+                # Light requested — already applied above
+                pass
+
+            # Persist selection (best-effort)
+            try:
+                self._theme_manager.set_theme(mode)
+            except Exception:
+                pass
+        except Exception:
+            # Very last-resort fallback
+            try:
+                self.setStyleSheet(V2_STYLESHEET)
+            except Exception:
+                pass

@@ -556,9 +556,8 @@ class HarvestTabV2(QWidget):
         # 1. Header Area
         header_layout = QHBoxLayout()
         title = QLabel("Harvest Execution")
-        title.setProperty("class", "CardTitle")
-        title.setStyleSheet("font-size: 18px;")
-        
+        title.setProperty("class", "SectionTitle")
+
         self.status_pill = QLabel("IDLE")
         self.status_pill.setProperty("class", "StatusPill")
         self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -569,6 +568,45 @@ class HarvestTabV2(QWidget):
         header_layout.addWidget(self.status_pill)
         layout.addLayout(header_layout)
 
+        # 2. Input Section
+        input_frame = QFrame()
+        input_frame.setProperty("class", "Card")
+        input_layout = QVBoxLayout(input_frame)
+
+        # Drag & Drop Zone
+        self.drop_zone = ClickableDropZone()
+        self.drop_zone.setObjectName("DropZone")  # For styling
+        self.drop_zone.clicked.connect(self._browse_file)  # Connect click to browse
+        self.drop_zone.file_dropped.connect(self.set_input_file)  # Connect drop to handler
+
+        drop_layout = QVBoxLayout()
+        drop_icon = QLabel("📁")
+        drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_icon.setProperty("class", "DropIcon")
+
+        drop_text = QLabel("Drag & Drop ISBN File Here\nor click anywhere to browse")
+        drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_text.setProperty("class", "DropText")
+
+        drop_hint = QLabel("Supports: .tsv, .txt, .csv files")
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_hint.setProperty("class", "DropHint")
+
+        drop_layout.addWidget(drop_icon)
+        drop_layout.addWidget(drop_text)
+        drop_layout.addWidget(drop_hint)
+        drop_layout.setContentsMargins(16, 16, 16, 16)
+        drop_layout.setSpacing(6)
+
+        self.drop_zone.setLayout(drop_layout)
+        input_layout.addWidget(self.drop_zone)
+
+        # File selection group
+        file_group = QGroupBox("Select Input File")
+        file_layout = QVBoxLayout()
+
+        # File path display and browse button
+        path_layout = QHBoxLayout()
         # Banner (Hidden initially)
         self.banner_frame = QFrame()
         self.banner_frame.setStyleSheet("background-color: #24273a; border-radius: 8px; border: 1px solid #a6da95;")
@@ -792,6 +830,12 @@ class HarvestTabV2(QWidget):
         # Collapsible Preview
         self.preview_group = QGroupBox("Preview (first 50 lines) • truncated")
         preview_layout = QVBoxLayout(self.preview_group)
+
+        self.info_label = QLabel("No file selected")
+        self.info_label.setWordWrap(True)
+        self.info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.info_label.setProperty("class", "CardHelper")
+
         preview_layout.setContentsMargins(12, 12, 12, 12)
         
         self.preview_text = QTextEdit()
@@ -863,6 +907,11 @@ class HarvestTabV2(QWidget):
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(12)
         
+        # Log Output (hidden by default or small)
+        self.log_output = QLabel("Ready...")
+        self.log_output.setProperty("class", "CardHelper")
+        self.log_output.setAccessibleName("Harvest status message")
+        stats_layout.addWidget(self.log_output)
         self.btn_stop = QPushButton("Cancel")
         self.btn_stop.setProperty("class", "DangerButton")
         self.btn_stop.setMinimumHeight(40)
@@ -886,6 +935,18 @@ class HarvestTabV2(QWidget):
         self.btn_start.clicked.connect(self._on_start_clicked)
         self.btn_start.setEnabled(False)
         
+        self.lbl_start_helper = QLabel("Select a valid TSV file to start.")
+        self.lbl_start_helper.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_start_helper.setText("Select a valid TSV file to start.")
+        self.lbl_start_helper.setProperty("class", "CardHelper")
+
+        self.btn_pause = QPushButton("Pa&use")
+        self.btn_pause.setProperty("class", "SecondaryButton")
+        self.btn_pause.setMinimumHeight(45)
+        self.btn_pause.setToolTip(f"Pause or resume the harvest")
+        self.btn_pause.setAccessibleName("Pause harvest")
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_pause.setEnabled(False)
         self.btn_new_run = QPushButton("New Harvest")
         self.btn_new_run.setProperty("class", "PrimaryButton")
         self.btn_new_run.setMinimumHeight(40)
@@ -1064,6 +1125,8 @@ class HarvestTabV2(QWidget):
             self.lbl_counts.setText(f"0 / {unique_valid} processed")
             self.log_output.setText(f"Ready to harvest {unique_valid} unique ISBNs.")
             
+            self.info_label.setText(info_text)
+            self.file_path_edit.setText(str(path_obj))
             # File summary
             self.lbl_val_size.setText(f"{size_kb:.2f} KB")
             self.lbl_val_rows_valid.setText(str(valid_rows))
@@ -1135,6 +1198,7 @@ class HarvestTabV2(QWidget):
         """Reset input state."""
         self.input_file = None
         self.file_path_edit.clear()
+        self.info_label.setText("No file selected")
         
         self.lbl_val_size.setText("-")
         self.lbl_val_rows_valid.setText("-")

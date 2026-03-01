@@ -347,9 +347,8 @@ class ModernMainWindow(QMainWindow):
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
         self.harvest_tab.result_files_ready.connect(self.dashboard_tab.set_result_files)
-        self.harvest_tab.milestone_reached.connect(
-            lambda t, v: self.notification_manager.notify_milestone(t, v)
-        )
+        self.harvest_tab.harvest_reset.connect(self._on_harvest_reset)
+        self.harvest_tab.harvest_paused.connect(self._on_harvest_paused)
         
         # Live Dashboard Updates
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
@@ -462,21 +461,43 @@ class ModernMainWindow(QMainWindow):
 
 
     def _on_harvest_finished(self, success, stats):
-        self.status_pill.setText("Idle")
-        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        is_cancelled = isinstance(stats, dict) and stats.get("cancelled", False)
+        has_error = isinstance(stats, dict) and bool(stats.get("error"))
+        if success:
+            self.status_pill.setText("Completed")
+            self.status_pill.setStyleSheet("background-color: #a6da95; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+        elif is_cancelled:
+            self.status_pill.setText("Cancelled")
+            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+        elif has_error:
+            self.status_pill.setText("Error")
+            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+        else:
+            self.status_pill.setText("Cancelled")
+            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
         self.dashboard_tab.refresh_data()
         
-        if success:
-            self.notification_manager.notify_harvest_completed(stats)
-        elif isinstance(stats, dict) and stats.get("cancelled", False):
-            # Quietly finish without an error toast for deliberate cancellations
-            pass
-        else:
+        if isinstance(stats, dict) and not stats.get("cancelled", False) and not success:
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
             self.notification_manager.notify_harvest_error(error_msg)
             
         self.dashboard_tab.set_idle(success)
 
+    def _on_harvest_paused(self, is_paused: bool):
+        """Sync sidebar and dashboard pills when harvest is paused or resumed."""
+        if is_paused:
+            self.status_pill.setText("Paused")
+            self.status_pill.setStyleSheet("background-color: #eeba0b; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        else:
+            self.status_pill.setText("Running")
+            self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.set_paused(is_paused)
+
+    def _on_harvest_reset(self):
+        """Called when user presses New Harvest — reset sidebar pill and dashboard status to Idle."""
+        self.status_pill.setText("Idle")
+        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.set_idle()
 
     def closeEvent(self, event):
         if self.harvest_tab.is_running:

@@ -492,6 +492,18 @@ class DashboardTabV2(QWidget):
             "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
         )
 
+    def set_paused(self, is_paused: bool):
+        if is_paused:
+            self.lbl_run_status.setText("● PAUSED")
+            self.lbl_run_status.setStyleSheet(
+                "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #eeba0b; border-radius: 6px;"
+            )
+        else:
+            self.lbl_run_status.setText("● RUNNING")
+            self.lbl_run_status.setStyleSheet(
+                "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
+            )
+
     def set_idle(self, success: bool | None = None):
         self._refresh_result_file_buttons()
         if success is True:
@@ -500,7 +512,7 @@ class DashboardTabV2(QWidget):
                 "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #a6da95; border-radius: 6px;"
             )
         elif success is False:
-            self.lbl_run_status.setText("● STOPPED")
+            self.lbl_run_status.setText("● Cancelled")
             self.lbl_run_status.setStyleSheet(
                 "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #ed8796; border-radius: 6px;"
             )

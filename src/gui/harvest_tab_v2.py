@@ -18,11 +18,14 @@ from itertools import islice
 import sys
 import json
 import threading
+import re
+import shutil
 # Add src to path for utils import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.isbn_validator import normalize_isbn
 
 from .icons import get_icon, SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
+from .input_tab import ClickableDropZone
 # from .harvest_tab import HarvestWorker  # REMOVED: Using internal HarvestWorkerV2 for separation
 
 # Add imports for Worker
@@ -450,6 +453,17 @@ class HarvestWorkerV2(QThread):
         """Toggle pause state."""
         self._pause_requested = not self._pause_requested
 
+    def request_pause(self):
+        """Pause processing at the next cooperative checkpoint."""
+        self._pause_requested = True
+
+    def request_resume(self):
+        """Resume processing if currently paused."""
+        self._pause_requested = False
+
+    def is_paused(self) -> bool:
+        return self._pause_requested
+
     def _check_cancel_and_pause(self):
         import time
         while self._pause_requested and not self._stop_requested:
@@ -525,6 +539,7 @@ class HarvestTabV2(QWidget):
     harvest_reset = pyqtSignal()
     harvest_paused = pyqtSignal(bool)  # True = paused, False = resumed
     progress_updated = pyqtSignal(str, str, str, str) # isbn, status, source, message
+    stats_updated = pyqtSignal(dict)  # live run counters for dashboard cards
     result_files_ready = pyqtSignal(dict)  # emitted when live output paths are known
 
     # Signals to request data from main window
@@ -546,6 +561,7 @@ class HarvestTabV2(QWidget):
         self._config_getter = None
         self._targets_getter = None
         self._profile_getter = None
+        self._clear_after_stop = False
         
         self.processed_count = 0
         self.total_count = 0 
@@ -562,8 +578,8 @@ class HarvestTabV2(QWidget):
 
     def on_targets_changed(self, targets):
         """Handle target selection changes from TargetsTab."""
-        # Don't reset UI state while a harvest is in progress or showing results
-        if self.current_state in (UIState.RUNNING, UIState.PAUSED, UIState.COMPLETED, UIState.CANCELLED):
+        # Don't reset UI state while a harvest is actively in progress.
+        if self.current_state in (UIState.RUNNING, UIState.PAUSED):
             return
         self._check_start_conditions()
 
@@ -608,7 +624,7 @@ class HarvestTabV2(QWidget):
         self.drop_zone = ClickableDropZone()
         self.drop_zone.setObjectName("DropZone")  # For styling
         self.drop_zone.clicked.connect(self._browse_file)  # Connect click to browse
-        self.drop_zone.file_dropped.connect(self.set_input_file)  # Connect drop to handler
+        self.drop_zone.fileDropped.connect(self.set_input_file)  # Connect drop to handler
 
         drop_layout = QVBoxLayout()
         drop_icon = QLabel("📁")
@@ -863,11 +879,6 @@ class HarvestTabV2(QWidget):
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(12)
         
-        # Log Output (hidden by default or small)
-        self.log_output = QLabel("Ready...")
-        self.log_output.setProperty("class", "CardHelper")
-        self.log_output.setAccessibleName("Harvest status message")
-        stats_layout.addWidget(self.log_output)
         self.btn_stop = QPushButton("Cancel")
         self.btn_stop.setProperty("class", "DangerButton")
         self.btn_stop.setMinimumHeight(40)
@@ -1089,6 +1100,16 @@ class HarvestTabV2(QWidget):
             if sampled:
                 sample_note = f"\nNote: Large file detected. Stats based on first {INFO_SAMPLE_MAX_LINES:,} lines."
 
+            info_text = (
+                f"File: {path_obj.name}\n"
+                f"Size: {size_kb:.2f} KB\n"
+                f"Valid ISBNs (unique): {unique_valid}\n"
+                f"Valid ISBN rows: {valid_rows}\n"
+                f"Duplicate valid rows: {duplicate_valid_rows}\n"
+                f"Invalid ISBN rows: {invalid_rows}"
+                f"{sample_note}"
+            )
+
             print(f"DEBUG: Validation Results - Unique Valid: {unique_valid}, Invalid: {invalid_rows}")
 
             if valid_rows == 0:
@@ -1143,8 +1164,8 @@ class HarvestTabV2(QWidget):
         """Enable start button when a valid file is loaded.
         Target validation happens only at harvest time in _on_start_clicked.
         """
-        # Never override the UI while a harvest is running, paused, or showing completion
-        if self.current_state in (UIState.RUNNING, UIState.PAUSED, UIState.COMPLETED, UIState.CANCELLED):
+        # Never override the UI while a harvest is actively running/paused.
+        if self.current_state in (UIState.RUNNING, UIState.PAUSED):
             return
 
         if not self.input_file:
@@ -1179,8 +1200,15 @@ class HarvestTabV2(QWidget):
         except Exception as e:
             self.preview_text.setPlainText(f"Error reading file preview: {str(e)}")
 
-    def _clear_input(self):
+    def _clear_input(self, force: bool = False):
         """Reset input state."""
+        if not force and self.worker and self.worker.isRunning():
+            # Clear should always be actionable: request stop and clear once worker exits.
+            self._clear_after_stop = True
+            self._stop_harvest()
+            self.log_output.setText("Stopping harvest and clearing input...")
+            return
+
         self.input_file = None
         self.file_path_edit.clear()
         self.info_label.setText("No file selected")
@@ -1267,7 +1295,12 @@ class HarvestTabV2(QWidget):
     def _on_start_clicked(self):
         """Prepare and start harvest using external config."""
         if not self.input_file:
-            print("DEBUG: _on_start_clicked called but no input_file.")
+            QMessageBox.warning(
+                self,
+                "No Input File",
+                "Please select an input file before starting harvest."
+            )
+            self.log_output.setText("Start blocked: no input file selected.")
             return
 
         print(f"DEBUG: _on_start_clicked with input: {self.input_file}")
@@ -1293,7 +1326,24 @@ class HarvestTabV2(QWidget):
         self._start_worker(config, targets, bypass_retry_isbns=bypass_retry_isbns)
 
     def _start_worker(self, config, targets, bypass_retry_isbns=None):
+        self._clear_after_stop = False
+
+        if not self.input_file:
+            QMessageBox.warning(
+                self,
+                "No Input File",
+                "Please select an input file before starting harvest."
+            )
+            self.log_output.setText("Start blocked: no input file selected.")
+            self._transition_state(UIState.IDLE)
+            return
+
         if self.worker and self.worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Harvest Already Running",
+                "A harvest is already running or paused. Resume it or cancel it first."
+            )
             return
 
         # Compute timestamped output file names for this run
@@ -1362,18 +1412,25 @@ class HarvestTabV2(QWidget):
             self.btn_pause.setEnabled(False)
 
     def _toggle_pause(self):
-        if self.worker:
-            self.worker.toggle_pause()
-            if self.worker._pause_requested:
-                self._transition_state(UIState.PAUSED)
-                self.log_output.setText("Harvest paused. Click Resume to continue.")
-                self.timer_is_paused = True
-                self.harvest_paused.emit(True)
-            else:
-                self._transition_state(UIState.RUNNING)
-                self.log_output.setText("Harvest resumed...")
-                self.timer_is_paused = False
-                self.harvest_paused.emit(False)
+        if not self.worker or not self.worker.isRunning():
+            return
+
+        # Use explicit pause/resume intent based on current UI state to avoid
+        # toggle desynchronization from rapid/double clicks.
+        if self.current_state == UIState.PAUSED or self.worker.is_paused():
+            self.worker.request_resume()
+            self._transition_state(UIState.RUNNING)
+            self.log_output.setText("Harvest resumed...")
+            self.timer_is_paused = False
+            self.harvest_paused.emit(False)
+            return
+
+        if self.current_state == UIState.RUNNING:
+            self.worker.request_pause()
+            self._transition_state(UIState.PAUSED)
+            self.log_output.setText("Harvest paused. Click Resume to continue.")
+            self.timer_is_paused = True
+            self.harvest_paused.emit(True)
 
     def _iter_normalized_input_isbns(self):
         """Yield normalized ISBNs from current input file."""
@@ -1493,6 +1550,7 @@ class HarvestTabV2(QWidget):
         self.progress_bar.setFormat(f"{progress_str} (%p%)" if total > 0 else "0/0 (0%)")
         if total > 0:
             self.progress_bar.setValue(int(processed/total*100))
+        self.stats_updated.emit(dict(stats))
 
     def _on_status(self, msg):
         self.log_output.setText(msg)
@@ -1500,6 +1558,7 @@ class HarvestTabV2(QWidget):
     def _on_complete(self, success, stats):
         self.is_running = False
         self.run_timer.stop()
+        clear_after_stop = self._clear_after_stop
 
         # Snapshot session results from the worker BEFORE any DB query
         if self.worker is not None:
@@ -1538,7 +1597,47 @@ class HarvestTabV2(QWidget):
                 QProgressBar::chunk { background-color: #a6da95; border-radius: 4px; }
             """)
         
+        # Mark worker slot free for next run.
+        self.worker = None
+
+        # Deferred clear requested while run was active.
+        if clear_after_stop:
+            self._clear_after_stop = False
+            self._clear_input(force=True)
+
         self.harvest_finished.emit(success, stats)
+
+    def _auto_export_results(self):
+        """
+        Copy per-run live files into data/exports.
+        Writes both:
+        - the run-specific filename (timestamp/profile encoded)
+        - a stable latest filename (successful.tsv / failed.tsv / invalid.tsv)
+        """
+        export_dir = Path("data/exports")
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        latest_names = {
+            "successful": "successful.tsv",
+            "failed": "failed.tsv",
+            "invalid": "invalid.tsv",
+        }
+
+        for key, latest_name in latest_names.items():
+            src_raw = self._run_live_paths.get(key) if isinstance(self._run_live_paths, dict) else None
+            if not src_raw:
+                continue
+            src = Path(src_raw)
+            if not src.exists():
+                continue
+
+            # Keep the run-specific artifact
+            run_dst = export_dir / src.name
+            shutil.copy2(src, run_dst)
+
+            # Also update a stable "latest" artifact for quick access
+            latest_dst = export_dir / latest_name
+            shutil.copy2(src, latest_dst)
 
     def _update_banner_paths(self):
         """Update banner file button labels and output folder label to match current run."""

@@ -63,17 +63,20 @@ class TargetDialog(QDialog):
     def _setup_ui(self):
         layout = QVBoxLayout()
         form_layout = QFormLayout()
+        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.name_edit = QLineEdit(self.target.name if self.target else "")
         self.host_edit = QLineEdit(self.target.host if self.target else "")
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(self.target.port if self.target and self.target.port else 210)
+        self.port_spin.setMinimumWidth(140)
         self.database_edit = QLineEdit(self.target.database if self.target else "")
 
         # Rank selector — range grows to include +1 slot when adding
         self.rank_spin = QSpinBox()
         self.rank_spin.setRange(1, self.total_targets)
+        self.rank_spin.setMinimumWidth(140)
         if self.target:
             self.rank_spin.setValue(self.target.rank if self.target.rank else 1)
         else:
@@ -112,6 +115,7 @@ class TargetDialog(QDialog):
         layout.addLayout(bottom_layout)
 
         self.setLayout(layout)
+        self.setMinimumWidth(560)
 
     def _apply_styles(self):
         self.setStyleSheet(
@@ -324,8 +328,21 @@ class TargetsTabV2(QWidget):
         self.manager = TargetsManager(targets_file=targets_file)
         self.history = []
         self.server_status = {}  # Cache for server status checks
+        self._interaction_locked = False
         self._setup_ui()
         self._check_on_startup()  # Check APIs + active Z3950 on launch
+
+    def set_interaction_locked(self, locked: bool):
+        """Lock mutable target controls while harvest is running/paused."""
+        self._interaction_locked = bool(locked)
+        enabled = not self._interaction_locked
+        self.btn_add.setEnabled(enabled)
+        self.btn_restore.setEnabled(enabled)
+        self.btn_check_servers.setEnabled(enabled)
+        self.search_edit.setEnabled(enabled)
+        self.search_clear_btn.setEnabled(enabled)
+        # Repaint row controls to apply lock state on rank/toggle/edit widgets.
+        self.refresh_targets()
 
     def _check_on_startup(self):
         """Check APIs and active Z3950 targets on launch."""
@@ -495,7 +512,7 @@ class TargetsTabV2(QWidget):
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 120)
+        self.table.setColumnWidth(0, 140)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(1, 90)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
@@ -637,6 +654,7 @@ class TargetsTabV2(QWidget):
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
             rank_combo.setFixedHeight(36)
+            rank_combo.setMinimumWidth(120)
             rank_combo.setStyleSheet("""
                 QComboBox {
                     background-color: #313244;
@@ -707,6 +725,7 @@ class TargetsTabV2(QWidget):
             )
             rank_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             rank_combo.installEventFilter(self)
+            rank_combo.setEnabled(not self._interaction_locked)
 
             self.table.setCellWidget(row, 0, rank_combo)
 
@@ -761,6 +780,7 @@ class TargetsTabV2(QWidget):
                 """)
                 active_btn.setText("✕")
             active_btn.clicked.connect(lambda checked, t=target: self._toggle_target_active(t))
+            active_btn.setEnabled(not self._interaction_locked)
             
             self.table.setCellWidget(row, 1, active_btn)
 
@@ -812,6 +832,7 @@ class TargetsTabV2(QWidget):
                 }
             """)
             edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
+            edit_btn.setEnabled(not self._interaction_locked)
             self.table.setCellWidget(row, 6, edit_btn)
 
             # Server status indicator
@@ -894,6 +915,8 @@ class TargetsTabV2(QWidget):
         return mapped_targets
 
     def _on_rank_changed(self, new_rank, target):
+        if self._interaction_locked:
+            return
         if not new_rank or new_rank == target.rank:
             return
 
@@ -917,6 +940,8 @@ class TargetsTabV2(QWidget):
         self.refresh_targets()
 
     def add_target(self):
+        if self._interaction_locked:
+            return
         all_targets = self.manager.get_all_targets()
         total = len(all_targets) + 1  # +1 to include the new slot
         dialog = TargetDialog(self, total_targets=total)
@@ -951,12 +976,16 @@ class TargetsTabV2(QWidget):
                 self.refresh_targets()
 
     def edit_target(self):
+        if self._interaction_locked:
+            return
         target = self._get_selected_target()
         if target:
             self._edit_specific_target(target)
 
     def _edit_specific_target(self, target):
         """Open edit dialog for a given target object."""
+        if self._interaction_locked:
+            return
         if target.target_type == "API":
             QMessageBox.information(self, "Info", "Built-in API targets cannot be edited.")
             return
@@ -1019,6 +1048,8 @@ class TargetsTabV2(QWidget):
 
     def _toggle_target_active(self, target):
         """Toggle target active status from the table button."""
+        if self._interaction_locked:
+            return
         target.selected = not target.selected
         self.manager.modify_target(target)
 
@@ -1080,6 +1111,8 @@ class TargetsTabV2(QWidget):
 
     def show_restore_dialog(self):
         """Show the restore history dialog."""
+        if self._interaction_locked:
+            return
         if not self.history:
             QMessageBox.information(self, "History", "No actions to restore in this session.")
             return
@@ -1109,5 +1142,3 @@ class TargetsTabV2(QWidget):
             self.manager.modify_target(snapshot)
             self.refresh_targets()
             QMessageBox.information(self, "Restored", f"Reverted changes to '{snapshot.name}'.")
-
-

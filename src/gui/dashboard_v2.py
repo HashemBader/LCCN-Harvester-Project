@@ -207,6 +207,8 @@ class DashboardTabV2(QWidget):
         super().__init__()
         self.db = DatabaseManager()
         self.db.init_db()
+        self._live_last_target = "-"
+        self._live_last_isbn = "-"
         # No result files until a harvest runs this session
         self.result_files = {
             "successful": None,
@@ -464,7 +466,25 @@ class DashboardTabV2(QWidget):
 
     def update_live_status(self, target, isbn, progress, msg):
         """Called by MainWindow during harvest."""
-        self.live_panel.update_status(target, isbn, progress, msg)
+        if target:
+            self._live_last_target = target
+        if isbn:
+            self._live_last_isbn = isbn
+        self.live_panel.update_status(self._live_last_target, self._live_last_isbn, progress, msg)
+
+    def apply_live_stats(self, stats: dict):
+        """Apply live harvest counters without waiting for DB polling."""
+        total = int(stats.get("total", 0) or 0)
+        found = int(stats.get("found", 0) or 0)
+        failed = int(stats.get("failed", 0) or 0)
+        cached = int(stats.get("cached", 0) or 0)
+        skipped = int(stats.get("skipped", 0) or 0)
+        processed = found + failed + cached + skipped
+
+        self.card_proc.set_data(processed, "Live processed this run")
+        self.card_found.set_data(found + cached, "Live found + cached")
+        self.card_failed.set_data(failed, "Live failed")
+        self.card_invalid.set_data(skipped, "Live skipped/retry")
 
     def set_profile_options(self, profiles, current_profile):
         self.profile_combo.blockSignals(True)
@@ -491,6 +511,7 @@ class DashboardTabV2(QWidget):
         self.lbl_run_status.setStyleSheet(
             "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
         )
+        self.live_panel.lbl_status_text.setText("Harvest is running...")
 
     def set_paused(self, is_paused: bool):
         if is_paused:
@@ -498,14 +519,19 @@ class DashboardTabV2(QWidget):
             self.lbl_run_status.setStyleSheet(
                 "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #eeba0b; border-radius: 6px;"
             )
+            self.live_panel.lbl_status_text.setText("Harvest paused.")
         else:
             self.lbl_run_status.setText("● RUNNING")
             self.lbl_run_status.setStyleSheet(
                 "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
             )
+            self.live_panel.lbl_status_text.setText("Harvest resumed...")
 
     def set_idle(self, success: bool | None = None):
         self._refresh_result_file_buttons()
+        self._live_last_target = "-"
+        self._live_last_isbn = "-"
+        self.live_panel.update_status("-", "-", 0, "Ready to start.")
         if success is True:
             self.lbl_run_status.setText("● COMPLETED")
             self.lbl_run_status.setStyleSheet(

@@ -370,6 +370,11 @@ class ModernMainWindow(QMainWindow):
         # Harvest Signals
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
+        self.harvest_tab.harvest_paused.connect(self._on_harvest_paused)
+        self.harvest_tab.harvest_paused.connect(self.dashboard_tab.set_paused)
+        self.harvest_tab.stats_updated.connect(self.dashboard_tab.apply_live_stats)
+        self.harvest_tab.result_files_ready.connect(self.dashboard_tab.set_result_files)
+        self.harvest_tab.harvest_reset.connect(self._on_harvest_reset)
         # Live Dashboard Updates
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
 
@@ -389,20 +394,14 @@ class ModernMainWindow(QMainWindow):
 
     def _on_harvest_progress(self, isbn, status, source, message):
         """Pass real-time harvest events to dashboard."""
-        # Calculate approximate progress if possible, or just pass 0 if unknown
-        # We can store total in harvest_tab and pass it, but for now let's pass dummy %
-        # or ask dashboard to use its own logic.
-        # Actually LiveActivityPanel takes (target, isbn, progress, msg).
-        
-        # We need progress %. HarvestTab has it but doesn't pass it in this signal.
-        # Let's peek at harvest_tab.progress_bar.value() or processed_count
-        
         try:
             total = self.harvest_tab.total_count
             current = self.harvest_tab.processed_count
-            pct = (current / total * 100) if total > 0 else 0
-        except:
-            pct = 0
+            calc_pct = (current / total * 100) if total > 0 else 0
+            bar_pct = float(self.harvest_tab.progress_bar.value())
+            pct = max(calc_pct, bar_pct)
+        except Exception:
+            pct = float(self.harvest_tab.progress_bar.value()) if hasattr(self.harvest_tab, "progress_bar") else 0
             
         self.dashboard_tab.update_live_status(
             target=source,
@@ -410,10 +409,6 @@ class ModernMainWindow(QMainWindow):
             progress=pct,
             msg=message
         )
-        
-        # Real-time results update
-        if status in ("found", "failed", "cached", "skipped"):
-            self.dashboard_tab.refresh_data()
 
     def _sync_tab_state(self):
         """Initial cross-tab synchronization after signals are connected."""
@@ -461,6 +456,9 @@ class ModernMainWindow(QMainWindow):
         elif index == 1:  # Targets
             # Reflect latest profile/target state when revisiting the tab.
             self.targets_tab.refresh_targets()
+        elif index == 3:  # Harvest
+            # Re-evaluate start readiness after navigation.
+            self.harvest_tab._check_start_conditions()
 
     # --- Logic ---
 
@@ -476,18 +474,32 @@ class ModernMainWindow(QMainWindow):
     def _on_harvest_started(self):
         self.status_pill.setText("Running")
         self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        self.targets_tab.set_interaction_locked(True)
         self.btn_harvest.click()
         self.dashboard_tab.set_running()
 
+    def _on_harvest_paused(self, is_paused: bool):
+        if is_paused:
+            self.status_pill.setText("Paused")
+            self.status_pill.setStyleSheet("background-color: #eed49f; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        else:
+            self.status_pill.setText("Running")
+            self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+
+    def _on_harvest_reset(self):
+        self.status_pill.setText("Idle")
+        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.set_idle(None)
 
     def _on_harvest_finished(self, success, stats):
+        self.targets_tab.set_interaction_locked(False)
         is_cancelled = isinstance(stats, dict) and stats.get("cancelled", False)
-        has_error = isinstance(stats, dict) and bool(stats.get("error"))
         if success:
-            pass
-        elif isinstance(stats, dict) and stats.get("cancelled", False):
-            # Quietly finish without an error toast for deliberate cancellations
-            pass
+            self.status_pill.setText("Completed")
+            self.status_pill.setStyleSheet("background-color: #a6da95; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        elif is_cancelled:
+            self.status_pill.setText("Idle")
+            self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
         else:
             self.status_pill.setText("Cancelled")
             self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
@@ -497,7 +509,7 @@ class ModernMainWindow(QMainWindow):
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
             # Skipping error notification per user request
             
-        self.dashboard_tab.set_idle(success)
+        self.dashboard_tab.set_idle(None if is_cancelled else success)
 
     def _toggle_theme(self):
         """Toggle between dark and light themes and apply immediately."""

@@ -74,7 +74,7 @@ class HarvestOrchestrator:
     - Optional progress callback hook
     """
 
-    DEFAULT_FLUSH_BATCH_SIZE = 50
+    DEFAULT_FLUSH_BATCH_SIZE = 1
 
     def __init__(
         self,
@@ -460,37 +460,37 @@ class HarvestOrchestrator:
                     att = (isbn, last_target, utc_now_iso(), last_error)
                 return ("failed", None, att)
 
-            # Use the class-level executor instead of creating a new one each run
-            for status, rec, att in self.executor.map(worker, isbns):
-                self._check_cancelled()
-                # main-thread batching writes
-                if rec is not None:
-                    pending_main.append(rec)
-                if att is not None:
-                    pending_attempted.append(att)
+            with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+                for status, rec, att in ex.map(worker, isbns):
+                    self._check_cancelled()
+                    # main-thread batching writes
+                    if rec is not None:
+                        pending_main.append(rec)
+                    if att is not None:
+                        pending_attempted.append(att)
 
-                if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
-                    flush()
+                    if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
+                        flush()
 
-                if status == "cached":
-                    cached_hits += 1
-                elif status == "skip_retry":
-                    skipped_recent_fail += 1
-                else:
-                    attempted += 1
-                    if status == "success":
-                        successes += 1
+                    if status == "cached":
+                        cached_hits += 1
+                    elif status == "skip_retry":
+                        skipped_recent_fail += 1
                     else:
-                        failures += 1
+                        attempted += 1
+                        if status == "success":
+                            successes += 1
+                        else:
+                            failures += 1
 
-                self._emit("stats", {
-                    "total": len(isbns),
-                    "cached": cached_hits,
-                    "skipped": skipped_recent_fail,
-                    "attempted": attempted,
-                    "successes": successes,
-                    "failures": failures,
-                })
+                    self._emit("stats", {
+                        "total": len(isbns),
+                        "cached": cached_hits,
+                        "skipped": skipped_recent_fail,
+                        "attempted": attempted,
+                        "successes": successes,
+                        "failures": failures,
+                    })
 
         # Flush any trailing buffered writes so short runs are persisted.
         flush()

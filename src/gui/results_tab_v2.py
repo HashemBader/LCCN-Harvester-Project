@@ -39,10 +39,11 @@ class ResultsTabV2(QWidget):
         title_block = QVBoxLayout()
         title = QLabel("Results Explorer")
         title.setProperty("class", "PageTitle")
-
+        title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {CATPPUCCIN_THEME['text']};")
+        
         subtitle = QLabel("Search, filter, and export your harvested data")
-        subtitle.setProperty("class", "CardHelper")
-
+        subtitle.setStyleSheet(f"font-size: 14px; color: {CATPPUCCIN_THEME['subtext0']};")
+        
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
         

@@ -19,7 +19,7 @@ from .ai_assistant_tab import AIAssistantTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
-from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+from .styles_v2 import V2_STYLESHEET
 from .shortcuts_dialog import ShortcutsDialog
 from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
@@ -27,7 +27,6 @@ from .icons import (
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
     SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
 )
-from .theme_manager import ThemeManager
 from config.profile_manager import ProfileManager
 
 class ModernMainWindow(QMainWindow):
@@ -67,9 +66,7 @@ class ModernMainWindow(QMainWindow):
         self.sidebar_collapsed = False
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         self._profile_manager = ProfileManager()
-        # Theme manager: persist and read preferred theme
-        self._theme_manager = ThemeManager()
-
+        
         # Core Services
         self.notification_manager = NotificationManager(self)
         self.notification_manager.setup_system_tray()
@@ -172,16 +169,6 @@ class ModernMainWindow(QMainWindow):
         self.btn_accessibility.setToolTip(f"Open accessibility statement ({mod_label}+Shift+A)")
         sidebar_layout.addWidget(self.btn_accessibility)
 
-        # Theme toggle button (bottom, like Accessibility)
-        self.btn_theme = QPushButton("Toggle Theme (BETA)")
-        self.btn_theme.setIcon(get_icon(SVG_SETTINGS, "#a5adcb"))
-        self.btn_theme.setObjectName("NavButton")
-        self.btn_theme.setProperty("class", "NavButton")
-        self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_theme.clicked.connect(self._toggle_theme)
-        self.btn_theme.setToolTip("Toggle application theme (dark / light)")
-        sidebar_layout.addWidget(self.btn_theme)
-
         main_layout.addWidget(self.sidebar)
 
         # 2. Right Content Area
@@ -213,14 +200,7 @@ class ModernMainWindow(QMainWindow):
         self.stack.addWidget(self.ai_assistant_tab) # 4
 
         content_layout.addWidget(self.stack)
-        
-        # Wrap content in a scroll area to prevent squishing on resize
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setWidget(content_container)
-        
-        main_layout.addWidget(scroll_area)
+        main_layout.addWidget(content_container)
 
         # --- Wire Up V2 Data Flow ---
         # HarvestTab needs access to Config and Targets to run
@@ -264,7 +244,6 @@ class ModernMainWindow(QMainWindow):
 
         self.btn_shortcuts.setAccessibleName("Show keyboard shortcuts")
         self.btn_accessibility.setAccessibleName("Show accessibility statement")
-        self.btn_theme.setAccessibleName("Toggle application theme")
         self.status_pill.setAccessibleName("Application status")
 
     def _setup_shortcuts(self):
@@ -353,12 +332,9 @@ class ModernMainWindow(QMainWindow):
             self.btn_shortcuts.setToolTip("Keyboard shortcuts")
             self.btn_accessibility.setText("")
             self.btn_accessibility.setToolTip("Accessibility statement")
-            self.btn_theme.setText("")
-            self.btn_theme.setToolTip("Toggle application theme (dark / light)")
         else:
             self.btn_shortcuts.setText("Shortcuts")
             self.btn_accessibility.setText("Accessibility Statement")
-            self.btn_theme.setText("Toggle Theme")
 
     def _on_nav_clicked(self, btn):
         index = btn.property("page_index")
@@ -370,11 +346,10 @@ class ModernMainWindow(QMainWindow):
         # Harvest Signals
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
-        self.harvest_tab.harvest_paused.connect(self._on_harvest_paused)
-        self.harvest_tab.harvest_paused.connect(self.dashboard_tab.set_paused)
-        self.harvest_tab.stats_updated.connect(self.dashboard_tab.apply_live_stats)
         self.harvest_tab.result_files_ready.connect(self.dashboard_tab.set_result_files)
         self.harvest_tab.harvest_reset.connect(self._on_harvest_reset)
+        self.harvest_tab.harvest_paused.connect(self._on_harvest_paused)
+        
         # Live Dashboard Updates
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
 
@@ -394,14 +369,20 @@ class ModernMainWindow(QMainWindow):
 
     def _on_harvest_progress(self, isbn, status, source, message):
         """Pass real-time harvest events to dashboard."""
+        # Calculate approximate progress if possible, or just pass 0 if unknown
+        # We can store total in harvest_tab and pass it, but for now let's pass dummy %
+        # or ask dashboard to use its own logic.
+        # Actually LiveActivityPanel takes (target, isbn, progress, msg).
+        
+        # We need progress %. HarvestTab has it but doesn't pass it in this signal.
+        # Let's peek at harvest_tab.progress_bar.value() or processed_count
+        
         try:
             total = self.harvest_tab.total_count
             current = self.harvest_tab.processed_count
-            calc_pct = (current / total * 100) if total > 0 else 0
-            bar_pct = float(self.harvest_tab.progress_bar.value())
-            pct = max(calc_pct, bar_pct)
-        except Exception:
-            pct = float(self.harvest_tab.progress_bar.value()) if hasattr(self.harvest_tab, "progress_bar") else 0
+            pct = (current / total * 100) if total > 0 else 0
+        except:
+            pct = 0
             
         self.dashboard_tab.update_live_status(
             target=source,
@@ -409,6 +390,10 @@ class ModernMainWindow(QMainWindow):
             progress=pct,
             msg=message
         )
+        
+        # Real-time results update
+        if status in ("found", "failed", "cached", "skipped"):
+            self.dashboard_tab.refresh_data()
 
     def _sync_tab_state(self):
         """Initial cross-tab synchronization after signals are connected."""
@@ -456,9 +441,6 @@ class ModernMainWindow(QMainWindow):
         elif index == 1:  # Targets
             # Reflect latest profile/target state when revisiting the tab.
             self.targets_tab.refresh_targets()
-        elif index == 3:  # Harvest
-            # Re-evaluate start readiness after navigation.
-            self.harvest_tab._check_start_conditions()
 
     # --- Logic ---
 
@@ -474,32 +456,22 @@ class ModernMainWindow(QMainWindow):
     def _on_harvest_started(self):
         self.status_pill.setText("Running")
         self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
-        self.targets_tab.set_interaction_locked(True)
         self.btn_harvest.click()
         self.dashboard_tab.set_running()
 
-    def _on_harvest_paused(self, is_paused: bool):
-        if is_paused:
-            self.status_pill.setText("Paused")
-            self.status_pill.setStyleSheet("background-color: #eed49f; color: #1e2030; border-radius: 15px; font-weight: bold;")
-        else:
-            self.status_pill.setText("Running")
-            self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
-
-    def _on_harvest_reset(self):
-        self.status_pill.setText("Idle")
-        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
-        self.dashboard_tab.set_idle(None)
 
     def _on_harvest_finished(self, success, stats):
-        self.targets_tab.set_interaction_locked(False)
         is_cancelled = isinstance(stats, dict) and stats.get("cancelled", False)
+        has_error = isinstance(stats, dict) and bool(stats.get("error"))
         if success:
             self.status_pill.setText("Completed")
-            self.status_pill.setStyleSheet("background-color: #a6da95; color: #1e2030; border-radius: 15px; font-weight: bold;")
+            self.status_pill.setStyleSheet("background-color: #a6da95; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
         elif is_cancelled:
-            self.status_pill.setText("Idle")
-            self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+            self.status_pill.setText("Cancelled")
+            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+        elif has_error:
+            self.status_pill.setText("Error")
+            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
         else:
             self.status_pill.setText("Cancelled")
             self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
@@ -507,22 +479,25 @@ class ModernMainWindow(QMainWindow):
         
         if isinstance(stats, dict) and not stats.get("cancelled", False) and not success:
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
-            # Skipping error notification per user request
+            self.notification_manager.notify_harvest_error(error_msg)
             
-        self.dashboard_tab.set_idle(None if is_cancelled else success)
+        self.dashboard_tab.set_idle(success)
 
-    def _toggle_theme(self):
-        """Toggle between dark and light themes and apply immediately."""
-        try:
-            current = self._theme_manager.get_theme()
-            new = "light" if current == "dark" else "dark"
-            self._apply_theme(new)
-        except Exception:
-            # best-effort only
-            try:
-                self._apply_theme("dark")
-            except Exception:
-                pass
+    def _on_harvest_paused(self, is_paused: bool):
+        """Sync sidebar and dashboard pills when harvest is paused or resumed."""
+        if is_paused:
+            self.status_pill.setText("Paused")
+            self.status_pill.setStyleSheet("background-color: #eeba0b; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        else:
+            self.status_pill.setText("Running")
+            self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.set_paused(is_paused)
+
+    def _on_harvest_reset(self):
+        """Called when user presses New Harvest — reset sidebar pill and dashboard status to Idle."""
+        self.status_pill.setText("Idle")
+        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.set_idle()
 
     def closeEvent(self, event):
         if self.harvest_tab.is_running:
@@ -533,101 +508,3 @@ class ModernMainWindow(QMainWindow):
                 return
             self.harvest_tab.stop_harvest()
         event.accept()
-
-    def _apply_theme(self, theme: str):
-        """Apply color theme (light first, then optional pyqtdarktheme for dark).
-
-        Strategy:
-        - Apply the light stylesheet first to create a consistent base.
-        - If dark is requested, attempt to use `pyqtdarktheme` (best-effort) to
-          obtain and apply a richer dark stylesheet. If that fails, fall back to
-          the internal dark palette via `generate_stylesheet(CATPPUCCIN_DARK)`.
-        - Persist the selection via ThemeManager.
-        """
-        try:
-            mode = theme if isinstance(theme, str) and theme in ("dark", "light") else self._theme_manager.get_theme()
-
-            # Apply light base first for a predictable starting state
-            try:
-                light_qss = generate_stylesheet(CATPPUCCIN_LIGHT)
-                self.setStyleSheet(light_qss)
-            except Exception:
-                # fallback to bundled stylesheet if generation fails
-                try:
-                    self.setStyleSheet(V2_STYLESHEET)
-                except Exception:
-                    pass
-
-            if mode == "dark":
-                # Best-effort: try to use pyqtdarktheme if installed
-                try:
-                    import pyqtdarktheme as _pdt
-                    stylesheet = None
-
-                    # Candidate functions that may produce a QSS string
-                    candidates = (
-                        "apply_dark_theme", "enable_dark_theme", "setup_theme",
-                        "get_stylesheet", "load_stylesheet", "get_qss", "get_style_sheet",
-                    )
-                    applied_by_module = False
-                    for cand in candidates:
-                        func = getattr(_pdt, cand, None)
-                        if callable(func):
-                            try:
-                                # Some APIs accept a widget/window reference
-                                try:
-                                    out = func(self)
-                                except TypeError:
-                                    out = func()
-                                # If function returns a stylesheet string, use it
-                                if isinstance(out, str) and out.strip():
-                                    stylesheet = out
-                                    break
-                                # If function returns None or True, assume it applied the theme directly
-                                if out is None or out is True:
-                                    stylesheet = None
-                                    applied_by_module = True
-                                    break
-                            except Exception:
-                                stylesheet = None
-                                applied_by_module = False
-
-                    # Try module-level stylesheet variables
-                    if not stylesheet:
-                        for var in ("STYLESHEET", "STYLE_SHEET", "stylesheet", "style_sheet"):
-                            val = getattr(_pdt, var, None)
-                            if isinstance(val, str) and val.strip():
-                                stylesheet = val
-                                break
-
-                    if stylesheet:
-                        self.setStyleSheet(stylesheet)
-                    elif applied_by_module:
-                        # Module applied theme in-place — don't override
-                        pass
-                    else:
-                        self.setStyleSheet(generate_stylesheet(CATPPUCCIN_DARK))
-                except Exception:
-                    # pyqtdarktheme absent or failed; use internal dark stylesheet
-                    try:
-                        self.setStyleSheet(generate_stylesheet(CATPPUCCIN_DARK))
-                    except Exception:
-                        try:
-                            self.setStyleSheet(V2_STYLESHEET)
-                        except Exception:
-                            pass
-            else:
-                # Light requested — already applied above
-                pass
-
-            # Persist selection (best-effort)
-            try:
-                self._theme_manager.set_theme(mode)
-            except Exception:
-                pass
-        except Exception:
-            # Very last-resort fallback
-            try:
-                self.setStyleSheet(V2_STYLESHEET)
-            except Exception:
-                pass

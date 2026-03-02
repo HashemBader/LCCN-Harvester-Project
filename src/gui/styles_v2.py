@@ -5,7 +5,7 @@ Polish: Borderless Cards, Soft Shadows, Unified Button System.
 """
 
 # Palette Dictionary (for Python access)
-CATPPUCCIN_THEME = {
+CATPPUCCIN_DARK = {
     "base": "#24273a",
     "surface0": "#363a4f",
     "surface1": "#494d64",
@@ -23,6 +23,76 @@ CATPPUCCIN_THEME = {
     "rosewater": "#f4dbd6",
     "lavender": "#b7bdf8",
 }
+
+CATPPUCCIN_LIGHT = {
+    "base": "#f7f7fb",
+    "surface0": "#ffffff",
+    "surface1": "#f0f2f8",
+    "surface2": "#e1e6ef",
+    "text": "#2e3440",
+    "subtext0": "#4b5063",
+    "subtext1": "#5b6176",
+    "overlay1": "#8a8fa6",
+    "blue": "#1e66f5",
+    "sapphire": "#209fb5",
+    "red": "#d20f39",
+    "green": "#40a02b",
+    "yellow": "#df8e1d",
+    "mauve": "#8839ef",
+    "rosewater": "#f2d5cf",
+    "lavender": "#7287fd",
+}
+
+# Backwards compat alias
+CATPPUCCIN_THEME = CATPPUCCIN_DARK
+
+
+def generate_stylesheet(theme: dict) -> str:
+    """Generate a minimal stylesheet string from a palette dict.
+
+    This covers primary selectors used by the app. Keep it compact so it
+    doesn't override every rule in the static V2_STYLESHEET.
+    """
+    t = theme
+    return f"""
+/* Global */
+QWidget {{ background-color: {t['base']}; color: {t['text']}; font-family: 'Segoe UI', 'Roboto', sans-serif; }}
+QLabel {{ background: transparent; color: {t['text']}; font-size: 14px; }}
+
+/* Sidebar */
+QFrame#Sidebar {{ background-color: {t['surface0']}; border-right: 1px solid {t['surface1']}; }}
+QLabel#SidebarTitle {{ color: {t['blue']}; font-size: 18px; font-weight: 800; padding: 20px 0; margin-bottom: 20px; qproperty-alignment: AlignCenter; }}
+
+/* Dashboard Card Elements */
+QLabel[class="CardTitle"], QLabel.CardTitle {{ color: {t['subtext1']}; font-size: 14px; font-weight: 700; }}
+QLabel[class="CardValue"], QLabel.CardValue {{ color: {t['text']}; font-size: 32px; font-weight: 800; }}
+QLabel[class="CardHelper"], QLabel.CardHelper {{ color: {t['subtext0']}; font-size: 11px; }}
+QLabel[class="ActivityLabel"], QLabel.ActivityLabel {{ color: {t['subtext0']}; font-size: 13px; font-weight: 600; }}
+QLabel[class="ActivityValue"], QLabel.ActivityValue {{ color: {t['text']}; font-size: 13px; font-family: Menlo, Monaco, 'Courier New', monospace; }}
+QLabel[class="SectionTitle"], QLabel.SectionTitle {{ color: {t['text']}; font-size: 18px; font-weight: bold; }}
+QLabel[class="DropIcon"], QLabel.DropIcon {{ font-size: 48px; border: none; background: transparent; }}
+QLabel[class="DropText"], QLabel.DropText {{ font-size: 14px; font-weight: bold; color: {t['yellow']}; border: none; background: transparent; }}
+QLabel[class="DropHint"], QLabel.DropHint {{ font-size: 11px; color: {t['subtext0']}; border: none; background: transparent; }}
+QLabel[class="HelperText"], QLabel.HelperText {{ font-size: 12px; color: {t['subtext0']}; background: transparent; border: none; }}
+
+/* Nav Buttons */
+QPushButton.NavButton {{ background-color: transparent; color: {t['subtext0']}; text-align: left; padding: 12px 20px; border: none; border-left: 3px solid transparent; font-weight: 600; font-size: 14px; margin-bottom: 2px; }}
+QPushButton.NavButton:hover {{ background-color: rgba(138, 173, 244, 0.1); color: {t['text']}; }}
+QPushButton.NavButton:checked {{ color: {t['blue']}; border-left: 3px solid {t['blue']}; }}
+
+/* Inputs */
+QLineEdit, QSpinBox, QComboBox {{ background-color: {t['surface1']}; border: 1px solid {t['surface2']}; border-radius: 8px; padding: 8px; color: {t['text']}; font-size: 14px; }}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 2px solid {t['blue']}; background-color: {t['surface2']}; }}
+
+/* Buttons */
+QPushButton {{ border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 14px; }}
+QPushButton.PrimaryButton {{ background-color: {t['blue']}; color: {t['base']}; border: none; }}
+QPushButton.SecondaryButton {{ background-color: {t['surface1']}; color: {t['text']}; border: 1px solid {t['surface2']}; }}
+QPushButton.DangerButton {{ background-color: {t['red']}; color: {t['base']}; border: none; }}
+
+/* Tooltips */
+QToolTip {{ background-color: {t['surface1']}; color: {t['text']}; border: 1px solid {t['blue']}; padding: 4px 8px; border-radius: 4px; font-size: 12px; }}
+"""
 
 V2_STYLESHEET = """
 /* --- Global Base --- */
@@ -139,6 +209,57 @@ QLabel[class="CardValue"], QLabel.CardValue {
     color: #ffffff;
     font-size: 32px; 
     font-weight: 800;
+}
+
+QLabel[class="CardHelper"], QLabel.CardHelper {
+    color: #a5adcb;
+    font-size: 11px;
+}
+
+QLabel[class="ActivityLabel"], QLabel.ActivityLabel {
+    color: #a5adcb;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+QLabel[class="ActivityValue"], QLabel.ActivityValue {
+    color: #ffffff;
+    font-family: Menlo, Monaco, 'Courier New', monospace;
+    font-size: 13px;
+}
+
+QLabel[class="SectionTitle"], QLabel.SectionTitle {
+    color: #cad3f5;
+    font-size: 18px;
+    font-weight: bold;
+}
+
+QLabel[class="DropIcon"], QLabel.DropIcon {
+    font-size: 48px;
+    border: none;
+    background: transparent;
+}
+
+QLabel[class="DropText"], QLabel.DropText {
+    font-size: 14px;
+    font-weight: bold;
+    color: #f4b860;
+    border: none;
+    background: transparent;
+}
+
+QLabel[class="DropHint"], QLabel.DropHint {
+    font-size: 11px;
+    color: #a7a199;
+    border: none;
+    background: transparent;
+}
+
+QLabel[class="HelperText"], QLabel.HelperText {
+    font-size: 12px;
+    color: #a7a59b;
+    background: transparent;
+    border: none;
 }
 
 /* --- Status Pills --- */

@@ -52,7 +52,7 @@ class DashboardCard(QFrame):
         
         # Helper Text
         self.lbl_helper = QLabel("Total records")
-        self.lbl_helper.setStyleSheet("color: #a5adcb; font-size: 11px;")
+        self.lbl_helper.setProperty("class", "CardHelper")
         layout.addWidget(self.lbl_helper)
 
     def set_data(self, value, helper_text=""):
@@ -106,15 +106,15 @@ class LiveActivityPanel(QFrame):
         
         # Activity Text
         self.lbl_status_text = QLabel("Ready to start.")
-        self.lbl_status_text.setStyleSheet("color: #cad3f5; font-size: 13px; margin-top: 5px;")
+        self.lbl_status_text.setProperty("class", "CardHelper")
         layout.addWidget(self.lbl_status_text)
         
         layout.addStretch()
 
     def _add_row(self, layout, row, label, widget):
         lbl = QLabel(label)
-        lbl.setStyleSheet("color: #a5adcb; font-weight: 600;")
-        widget.setStyleSheet("color: #ffffff; font-family: Menlo, Monaco, 'Courier New', monospace;")
+        lbl.setProperty("class", "ActivityLabel")
+        widget.setProperty("class", "ActivityValue")
         layout.addWidget(lbl, row, 0)
         layout.addWidget(widget, row, 1)
 

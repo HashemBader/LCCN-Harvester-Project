@@ -71,19 +71,19 @@ class ShortcutsDialog(QDialog):
         platform_row.addStretch()
         platform_name = "macOS" if self.platform == "mac" else "Windows/Linux"
         platform_label = QLabel(f"Auto-detected platform: {platform_name}")
-        platform_label.setStyleSheet("color: #a7a59b; font-size: 12px;")
+        platform_label.setProperty("class", "HelperText")
         platform_row.addWidget(platform_label)
         platform_row.addStretch()
         layout.addLayout(platform_row)
 
         edit_tip = QLabel("Most used: Cmd/Ctrl+A select all, Cmd/Ctrl+C copy, Cmd/Ctrl+V paste.")
-        edit_tip.setStyleSheet("QLabel { color: #c2d07f; font-size: 12px; padding-bottom: 8px; background: transparent; border: none; }")
+        edit_tip.setProperty("class", "HelperText")
         edit_tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(edit_tip)
 
         search_row = QHBoxLayout()
         search_label = QLabel("Search:")
-        search_label.setStyleSheet("color: #a7a59b; font-size: 12px;")
+        search_label.setProperty("class", "HelperText")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Type keys or action, e.g. harvest, Cmd+H, results")
         self.search_input.setStyleSheet(
@@ -160,7 +160,7 @@ class ShortcutsDialog(QDialog):
 
         if shown == 0:
             no_results = QLabel("No shortcuts match your search.")
-            no_results.setStyleSheet("QLabel { color: #a7a59b; font-size: 13px; padding: 10px; }")
+            no_results.setProperty("class", "HelperText")
             no_results.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.content_layout.addWidget(no_results)
 

@@ -33,12 +33,15 @@ from config.profile_manager import ProfileManager
 class ModernMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LCCN Harvester Pro")
+        self.setWindowTitle("LCCN Harvester")
         self.setGeometry(100, 100, 1380, 900)
         # Ensure window is resizable: clear accidental maximum constraints and enable min/max buttons
         try:
-            # sensible minimum so layout remains usable
-            self.setMinimumSize(400, 300)
+            # Minimum size derived from the widest fixed-width content:
+            # sidebar(240) + content-margins(60) + content(660) = 960 wide;
+            # dashboard stacked content (profile panel 74 + KPI cards ~120 +
+            # content split ~200 + headers/spacing ~100) + margins(60) = 660 tall.
+            self.setMinimumSize(1100, 660)
             # remove any accidental maximum constraint
             self.setMaximumSize(16777215, 16777215)
             # ensure title and min/max buttons are present
@@ -224,6 +227,7 @@ class ModernMainWindow(QMainWindow):
         self.harvest_tab.set_data_sources(
             config_getter=self.config_tab.get_config,
             targets_getter=self.targets_tab.get_targets,
+            profile_getter=self._profile_manager.get_active_profile,
         )
 
         self._connect_signals()
@@ -457,8 +461,6 @@ class ModernMainWindow(QMainWindow):
         elif index == 1:  # Targets
             # Reflect latest profile/target state when revisiting the tab.
             self.targets_tab.refresh_targets()
-        elif index == 3:  # Harvest
-            self.harvest_tab.on_targets_changed(self.targets_tab.get_targets())
 
     # --- Logic ---
 
@@ -479,16 +481,19 @@ class ModernMainWindow(QMainWindow):
 
 
     def _on_harvest_finished(self, success, stats):
-        self.status_pill.setText("Idle")
-        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
-        self.dashboard_tab.refresh_data()
-        
+        is_cancelled = isinstance(stats, dict) and stats.get("cancelled", False)
+        has_error = isinstance(stats, dict) and bool(stats.get("error"))
         if success:
             pass
         elif isinstance(stats, dict) and stats.get("cancelled", False):
             # Quietly finish without an error toast for deliberate cancellations
             pass
         else:
+            self.status_pill.setText("Cancelled")
+            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.refresh_data()
+        
+        if isinstance(stats, dict) and not stats.get("cancelled", False) and not success:
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
             # Skipping error notification per user request
             

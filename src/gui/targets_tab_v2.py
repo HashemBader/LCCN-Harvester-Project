@@ -38,6 +38,8 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QInputDialog,
     QSizePolicy,
+    QScrollArea,
+    QFrame,
 )
 
 from utils.targets_manager import TargetsManager, Target
@@ -375,7 +377,19 @@ class TargetsTabV2(QWidget):
         return super().eventFilter(obj, event)
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Wrap content in a scroll area so widgets never get compressed on resize
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scr_content = QWidget()
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+        layout = QVBoxLayout(_scr_content)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
@@ -541,6 +555,8 @@ class TargetsTabV2(QWidget):
 
         self.table.itemDoubleClicked.connect(lambda _item: self.edit_target())
 
+        # Ensure the table always shows a reasonable minimum height
+        self.table.setMinimumHeight(200)
         layout.addWidget(self.table)
 
     def mousePressEvent(self, event):

@@ -18,6 +18,8 @@ from typing import Any, Optional
 
 from src.api.base_api import ApiResult, BaseApiClient
 from src.api.http_utils import urlopen_with_ca
+from src.utils.call_number_validators import validate_lccn, validate_nlmcn
+
 
 
 class OpenLibraryApiClient(BaseApiClient):

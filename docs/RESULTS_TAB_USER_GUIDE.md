@@ -88,7 +88,7 @@ Click `Export Results...` to open the advanced export dialog.
 
 - Available only in Advanced Mode.
 - Button: `Quick Export TSV`.
-- Exports `main` table to `data/exports/quick_export_<timestamp>.tsv`.
+- Exports `main` table to `data/quick_export_<timestamp>.tsv`.
 
 ## File Format Notes
 

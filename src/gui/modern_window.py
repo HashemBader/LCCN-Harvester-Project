@@ -210,7 +210,14 @@ class ModernMainWindow(QMainWindow):
         self.stack.addWidget(self.ai_assistant_tab) # 4
 
         content_layout.addWidget(self.stack)
-        main_layout.addWidget(content_container)
+        
+        # Wrap content in a scroll area to prevent squishing on resize
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidget(content_container)
+        
+        main_layout.addWidget(scroll_area)
 
         # --- Wire Up V2 Data Flow ---
         # HarvestTab needs access to Config and Targets to run
@@ -359,10 +366,6 @@ class ModernMainWindow(QMainWindow):
         # Harvest Signals
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
         self.harvest_tab.harvest_finished.connect(self._on_harvest_finished)
-        self.harvest_tab.milestone_reached.connect(
-            lambda t, v: self.notification_manager.notify_milestone(t, v)
-        )
-        
         # Live Dashboard Updates
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
 
@@ -481,13 +484,13 @@ class ModernMainWindow(QMainWindow):
         self.dashboard_tab.refresh_data()
         
         if success:
-            self.notification_manager.notify_harvest_completed(stats)
+            pass
         elif isinstance(stats, dict) and stats.get("cancelled", False):
             # Quietly finish without an error toast for deliberate cancellations
             pass
         else:
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
-            self.notification_manager.notify_harvest_error(error_msg)
+            # Skipping error notification per user request
             
         self.dashboard_tab.set_idle(success)
 

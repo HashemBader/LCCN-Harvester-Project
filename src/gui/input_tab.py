@@ -52,7 +52,7 @@ class ClickableDropZone(QFrame):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
-                if file_path.endswith(('.tsv', '.txt', '.csv')):
+                if file_path:
                     event.acceptProposedAction()
                     self.setStyleSheet("""
                         QFrame {
@@ -71,7 +71,7 @@ class ClickableDropZone(QFrame):
     def dropEvent(self, event: QDropEvent):
         """Handle drop event."""
         files = [url.toLocalFile() for url in event.mimeData().urls()]
-        valid_files = [f for f in files if f.endswith(('.tsv', '.txt', '.csv'))]
+        valid_files = [f for f in files if f]
 
         if valid_files:
             file_path = valid_files[0]
@@ -96,7 +96,7 @@ class ClickableDropZone(QFrame):
             QMessageBox.warning(
                 self,
                 "Invalid File",
-                "Please drop a valid TSV, TXT, or CSV file."
+                "Please drop a valid file."
             )
             event.ignore()
             self.setStyleSheet(self.normal_style)

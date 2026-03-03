@@ -185,24 +185,25 @@ class NotificationManager(QObject):
         )
 
     def notify_milestone(self, milestone_type, value):
-        """Notify when a milestone is reached."""
-        messages = {
-            "100_processed": f"🎯 Milestone: {value} ISBNs processed!",
-            "500_processed": f"🚀 Milestone: {value} ISBNs processed!",
-            "1000_processed": f"⭐ Milestone: {value} ISBNs processed!",
-            "50_percent": f"📊 Progress: 50% complete ({value} ISBNs)",
-            "75_percent": f"📊 Progress: 75% complete ({value} ISBNs)",
-            "90_percent": f"📊 Progress: 90% complete - Almost done!",
-        }
+        """Notify when a milestone is reached. (Currently disabled by request)"""
+        pass
+        # messages = {
+        #     "100_processed": f"🎯 Milestone: {value} ISBNs processed!",
+        #     "500_processed": f"🚀 Milestone: {value} ISBNs processed!",
+        #     "1000_processed": f"⭐ Milestone: {value} ISBNs processed!",
+        #     "50_percent": f"📊 Progress: 50% complete ({value} ISBNs)",
+        #     "75_percent": f"📊 Progress: 75% complete ({value} ISBNs)",
+        #     "90_percent": f"📊 Progress: 90% complete - Almost done!",
+        # }
 
-        message = messages.get(milestone_type, f"Milestone: {value}")
+        # message = messages.get(milestone_type, f"Milestone: {value}")
 
-        self.show_notification(
-            "Progress Update",
-            message,
-            "info",
-            duration=3000
-        )
+        # self.show_notification(
+        #     "Progress Update",
+        #     message,
+        #     "info",
+        #     duration=3000
+        # )
 
     def notify_isbn_found(self, isbn, lccn):
         """Notify when an LCCN is found (optional, can be disabled for bulk)."""

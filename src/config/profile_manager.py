@@ -56,16 +56,43 @@ class ProfileManager:
         with open(self.default_profile_path, 'w') as f:
             json.dump(default_settings, f, indent=2)
 
+    def _profile_slug(self, name: str) -> str:
+        """Return the sanitized folder/filename slug for a profile name."""
+        return name.lower().replace(" ", "_").replace("/", "_")
+
+    def get_profile_dir(self, name: str) -> Path:
+        """Return the Path to the profile's dedicated config folder.
+
+        ``config/profiles/<slug>/``
+        """
+        return self.profiles_dir / self._profile_slug(name)
+
+    def get_profile_data_dir(self, name: str) -> Path:
+        """Return the Path to the profile's dedicated data/exports folder.
+
+        ``data/<slug>/``
+        """
+        return self.app_root / "data" / self._profile_slug(name)
+
     def get_targets_file(self, name: str) -> Path:
         """Return the Path to the targets TSV file for the given profile.
 
         "Default Settings" uses the shared ``data/targets.tsv``.
-        All other profiles use ``config/profiles/<slug>_targets.tsv``.
+        User profiles use ``config/profiles/<slug>/targets.tsv``.
+        Falls back to the legacy flat location if the new one doesn't exist yet.
         """
         if name == "Default Settings":
             return self.default_targets_path
-        filename = name.lower().replace(" ", "_").replace("/", "_")
-        return self.profiles_dir / f"{filename}_targets.tsv"
+        slug = self._profile_slug(name)
+        new_path = self.profiles_dir / slug / f"{slug}_targets.tsv"
+        if new_path.exists():
+            return new_path
+        # Legacy flat location (backward compat)
+        legacy_path = self.profiles_dir / f"{slug}_targets.tsv"
+        if legacy_path.exists():
+            return legacy_path
+        # Default to new location even if it doesn't exist yet
+        return new_path
 
     def _normalize_profile_name(self, name: str) -> str:
         """Normalize names for case-insensitive duplicate checks."""
@@ -76,8 +103,10 @@ class ProfileManager:
         profiles = ["Default Settings"]  # Built-in always first
         seen = {self._normalize_profile_name("Default Settings")}
 
-        # Add user-created profiles
-        for file in sorted(self.profiles_dir.glob("*.json")):
+        # Collect all candidate JSON files: new-style (subdir) first, then legacy flat
+        candidate_files = sorted(self.profiles_dir.glob("*/*.json")) + sorted(self.profiles_dir.glob("*.json"))
+
+        for file in candidate_files:
             try:
                 with open(file) as f:
                     data = json.load(f)
@@ -98,8 +127,20 @@ class ProfileManager:
         if name == "Default Settings":
             return self._load_json(self.default_profile_path)
 
-        # Search user profiles
         normalized_target = self._normalize_profile_name(name)
+
+        # Check new subdir location first
+        slug = self._profile_slug(name)
+        new_path = self.profiles_dir / slug / f"{slug}.json"
+        if new_path.exists():
+            try:
+                data = self._load_json(new_path)
+                if self._normalize_profile_name(data.get("profile_name", "")) == normalized_target:
+                    return data
+            except Exception:
+                pass
+
+        # Fall back to flat legacy files
         for file in self.profiles_dir.glob("*.json"):
             try:
                 data = self._load_json(file)
@@ -126,9 +167,13 @@ class ProfileManager:
 
     def save_profile(self, name: str, settings: Dict, description: str = ""):
         """Save settings as a named profile."""
-        # Sanitize filename
-        filename = name.lower().replace(" ", "_").replace("/", "_")
-        file_path = self.profiles_dir / f"{filename}.json"
+        slug = self._profile_slug(name)
+
+        # Ensure the profile's own config subdirectory exists
+        profile_dir = self.get_profile_dir(name)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = profile_dir / f"{slug}.json"
 
         # Load existing or create new
         if file_path.exists():
@@ -151,6 +196,10 @@ class ProfileManager:
         if not targets_file.exists() and self.default_targets_path.exists():
             shutil.copy2(self.default_targets_path, targets_file)
 
+        # Ensure the profile's data/exports directory exists
+        data_dir = self.get_profile_data_dir(name)
+        data_dir.mkdir(parents=True, exist_ok=True)
+
         return True
 
     def _create_profile_data(self, name: str, settings: Dict, description: str) -> Dict:
@@ -167,21 +216,35 @@ class ProfileManager:
         if name == "Default Settings":
             return False  # Cannot delete default
 
-        # Find and delete the profile file
-        for file in self.profiles_dir.glob("*.json"):
+        deleted = False
+
+        # Remove new-style profile subdirectory if it exists
+        profile_dir = self.get_profile_dir(name)
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir)
+            deleted = True
+
+        # Also clean up any legacy flat files for this profile
+        for file in list(self.profiles_dir.glob("*.json")):
             try:
                 data = self._load_json(file)
                 if data.get("profile_name") == name:
                     file.unlink()
-                    # Remove the associated targets TSV if present
-                    targets_file = self.get_targets_file(name)
-                    if targets_file.exists():
-                        targets_file.unlink()
-                    return True
+                    deleted = True
+                    break
             except Exception:
                 continue
 
-        return False
+        # Remove legacy flat targets TSV if present
+        slug = self._profile_slug(name)
+        legacy_targets = self.profiles_dir / f"{slug}_targets.tsv"
+        if legacy_targets.exists():
+            legacy_targets.unlink()
+
+        # Note: the data/exports directory (get_profile_data_dir) is intentionally
+        # preserved so previously exported files are not lost.
+
+        return deleted
 
     def rename_profile(self, old_name: str, new_name: str) -> bool:
         """Rename a profile."""
@@ -193,14 +256,40 @@ class ProfileManager:
         if not profile_data:
             return False
 
-        # Rename the targets TSV before deleting the old profile record
-        old_targets = self.get_targets_file(old_name)
-        new_targets = self.get_targets_file(new_name)
-        if old_targets.exists() and not new_targets.exists():
-            old_targets.rename(new_targets)
+        old_slug = self._profile_slug(old_name)
+        new_slug = self._profile_slug(new_name)
 
-        # Delete old profile (targets file already renamed, so skip implicit delete)
-        for file in self.profiles_dir.glob("*.json"):
+        # --- Config folder (new-style) ---
+        old_profile_dir = self.get_profile_dir(old_name)
+        new_profile_dir = self.get_profile_dir(new_name)
+
+        if old_profile_dir.exists():
+            if not new_profile_dir.exists():
+                old_profile_dir.rename(new_profile_dir)
+            else:
+                # Target dir already exists; copy contents and remove old
+                for item in old_profile_dir.iterdir():
+                    dest = new_profile_dir / item.name
+                    if not dest.exists():
+                        item.rename(dest)
+                shutil.rmtree(old_profile_dir)
+
+            # Rename the JSON file inside the new dir to match new slug
+            old_json = new_profile_dir / f"{old_slug}.json"
+            new_json = new_profile_dir / f"{new_slug}.json"
+            if old_json.exists() and not new_json.exists():
+                old_json.rename(new_json)
+        else:
+            # Legacy flat targets file: move to new location
+            old_targets = self.profiles_dir / f"{old_slug}_targets.tsv"
+            new_targets_dir = new_profile_dir
+            new_targets_dir.mkdir(parents=True, exist_ok=True)
+            new_targets_path = new_targets_dir / f"{new_slug}_targets.tsv"
+            if old_targets.exists() and not new_targets_path.exists():
+                old_targets.rename(new_targets_path)
+
+        # Remove old legacy flat JSON if present
+        for file in list(self.profiles_dir.glob("*.json")):
             try:
                 data = self._load_json(file)
                 if data.get("profile_name") == old_name:
@@ -209,11 +298,17 @@ class ProfileManager:
             except Exception:
                 continue
 
-        # Save with new name (save_profile won't overwrite new_targets because it now exists)
+        # --- Data/exports folder ---
+        old_data_dir = self.get_profile_data_dir(old_name)
+        new_data_dir = self.get_profile_data_dir(new_name)
+        if old_data_dir.exists() and not new_data_dir.exists():
+            old_data_dir.rename(new_data_dir)
+
+        # Save updated profile JSON with new name
+        new_profile_dir.mkdir(parents=True, exist_ok=True)
         profile_data["profile_name"] = new_name
-        filename = new_name.lower().replace(" ", "_").replace("/", "_")
-        file_path = self.profiles_dir / f"{filename}.json"
         profile_data["last_modified"] = datetime.now().isoformat()
+        file_path = new_profile_dir / f"{new_slug}.json"
         with open(file_path, 'w') as f:
             json.dump(profile_data, f, indent=2)
 

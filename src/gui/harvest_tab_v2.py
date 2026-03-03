@@ -33,6 +33,7 @@ from src.harvester.orchestrator import HarvestCancelled
 from src.database import DatabaseManager
 from datetime import datetime
 from src.utils import messages
+from src.config.profile_manager import ProfileManager
 
 def _extract_lc_classification(lccn: str) -> str:
     """Derive the LC class prefix (letters only) from an LCCN / call-number string."""
@@ -621,6 +622,8 @@ class HarvestTabV2(QWidget):
         banner_bottom = QHBoxLayout()
         self.lbl_banner_out = QLabel("Saved to: data/")
         self.lbl_banner_out.setStyleSheet("color: #a5adcb; font-size: 13px;")
+        self.lbl_banner_out.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_banner_out.setMinimumWidth(0)
         
         btn_banner_folder = QPushButton("Open Folder")
         btn_banner_folder.setProperty("class", "SecondaryButton")
@@ -630,16 +633,19 @@ class HarvestTabV2(QWidget):
         self.btn_banner_success = QPushButton("success.tsv")
         self.btn_banner_success.setProperty("class", "SecondaryButton")
         self.btn_banner_success.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_success.setMaximumWidth(240)
         self.btn_banner_success.clicked.connect(lambda: self._open_file_in_explorer(self._run_live_paths.get("successful", "")))
         
         self.btn_banner_failed = QPushButton("failed.tsv")
         self.btn_banner_failed.setProperty("class", "SecondaryButton")
         self.btn_banner_failed.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_failed.setMaximumWidth(240)
         self.btn_banner_failed.clicked.connect(lambda: self._open_file_in_explorer(self._run_live_paths.get("failed", "")))
         
         self.btn_banner_invalid = QPushButton("invalid.tsv")
         self.btn_banner_invalid.setProperty("class", "SecondaryButton")
         self.btn_banner_invalid.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_banner_invalid.setMaximumWidth(240)
         self.btn_banner_invalid.clicked.connect(lambda: self._open_file_in_explorer(self._run_live_paths.get("invalid", "")))
         
         banner_bottom.addWidget(self.lbl_banner_out)
@@ -869,6 +875,8 @@ class HarvestTabV2(QWidget):
         
         self.log_output = QLabel("Ready...")
         self.log_output.setStyleSheet("color: #cad3f5; font-size: 13px; font-weight: bold;")
+        self.log_output.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.log_output.setMinimumWidth(0)
         
         progress_layout = QHBoxLayout()
         self.lbl_counts = QLabel("0 / 0 processed")
@@ -1277,15 +1285,20 @@ class HarvestTabV2(QWidget):
             return
 
         # Compute timestamped output file names for this run
-        profile = "default"
+        profile_name = "Default Settings"
         if self._profile_getter:
             try:
-                profile = _safe_filename(self._profile_getter() or "default")
+                profile_name = self._profile_getter() or "Default Settings"
             except Exception:
                 pass
+        profile = _safe_filename(profile_name)
         date_str = datetime.now().strftime('%Y-%m-%d-%H')
         # Use format: profilename-success-YYYY-MM-DD-HH.tsv
-        live_dir = Path("data")
+        # Output goes to data/<profile_slug>/ for user profiles, data/ for Default Settings
+        if profile_name == "Default Settings":
+            live_dir = Path("data")
+        else:
+            live_dir = ProfileManager().get_profile_data_dir(profile_name)
         live_dir.mkdir(parents=True, exist_ok=True)
 
         self._run_live_paths = {
@@ -1529,7 +1542,7 @@ class HarvestTabV2(QWidget):
         self.btn_banner_success.setText(success_path.name)
         self.btn_banner_failed.setText(failed_path.name)
         self.btn_banner_invalid.setText(invalid_path.name)
-        self.lbl_banner_out.setText(f"Saved to: {success_path.parent}/")
+        self.lbl_banner_out.setText(f"Saved to: data/{success_path.parent.name}/")
 
     def _copy_preview(self):
         """Copy the preview contents to clipboard."""

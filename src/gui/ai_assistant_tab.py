@@ -5,7 +5,8 @@ AI-powered assistant for intelligent automation and predictions.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QTextEdit, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QComboBox
+    QListWidget, QListWidgetItem, QProgressBar, QComboBox,
+    QScrollArea, QFrame
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
@@ -147,7 +148,19 @@ class AIAssistantTab(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
+        # Wrap content in a scroll area so widgets never get compressed on resize
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scr_content = QWidget()
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+        layout = QVBoxLayout(_scr_content)
 
         # Title
         title_layout = QHBoxLayout()
@@ -297,7 +310,6 @@ class AIAssistantTab(QWidget):
 
         layout.addLayout(actions_layout)
 
-        self.setLayout(layout)
         self.current_recommendations = None
 
     def _predict_lccn(self):

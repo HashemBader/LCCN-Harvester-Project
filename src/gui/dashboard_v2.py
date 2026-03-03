@@ -3,7 +3,7 @@ Module: dashboard_v2.py
 Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 """
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QProgressBar, QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
     QGraphicsDropShadowEffect, QComboBox, QPushButton, QSizePolicy, QMessageBox
 )
@@ -61,39 +61,18 @@ class DashboardCard(QFrame):
             self.lbl_helper.setText(helper_text)
 
 class LiveActivityPanel(QFrame):
-    """
-    Shows current harvesting state: Target, ISBN, Progress.
-    """
+    """Shows a minimal live progress indicator during harvesting."""
+
     def __init__(self):
         super().__init__()
         self.setProperty("class", "Card")
-        self.setObjectName("LivePanel") # Enable targeted vibrant styling
+        self.setObjectName("LivePanel")
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        
-        # Header
-        header = QLabel("LIVE ACTIVITY")
-        header.setProperty("class", "CardTitle")
-        layout.addWidget(header)
-        
-        # Grid content
-        grid = QGridLayout()
-        grid.setSpacing(10)
-        
-        self.lbl_target = QLabel("-")
-        self.lbl_isbn = QLabel("-")
-        self.lbl_stage = QLabel("Idle")
-        
-        self._add_row(grid, 0, "Current Target", self.lbl_target)
-        self._add_row(grid, 1, "Processing ISBN", self.lbl_isbn)
-        
-        layout.addLayout(grid)
-        layout.addSpacing(10)
-        
-        # Progress Bar
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setStyleSheet("""
             QProgressBar {
@@ -102,27 +81,12 @@ class LiveActivityPanel(QFrame):
             QProgressBar::chunk { background-color: #8aadf4; border-radius: 6px; }
         """)
         self.progress_bar.setTextVisible(False)
+        self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
-        
-        # Activity Text
-        self.lbl_status_text = QLabel("Ready to start.")
-        self.lbl_status_text.setStyleSheet("color: #cad3f5; font-size: 13px; margin-top: 5px;")
-        layout.addWidget(self.lbl_status_text)
-        
-        layout.addStretch()
-
-    def _add_row(self, layout, row, label, widget):
-        lbl = QLabel(label)
-        lbl.setStyleSheet("color: #a5adcb; font-weight: 600;")
-        widget.setStyleSheet("color: #ffffff; font-family: Menlo, Monaco, 'Courier New', monospace;")
-        layout.addWidget(lbl, row, 0)
-        layout.addWidget(widget, row, 1)
 
     def update_status(self, target, isbn, progress_pct, message):
-        self.lbl_target.setText(target or "-")
-        self.lbl_isbn.setText(isbn or "-")
+        # Keep live panel intentionally minimal: progress bar only.
         self.progress_bar.setValue(int(progress_pct))
-        self.lbl_status_text.setText(message)
 
 class RecentResultsPanel(QFrame):
     """
@@ -369,6 +333,13 @@ class DashboardTabV2(QWidget):
         layout.addWidget(self.btn_open_successful)
         layout.addWidget(self.btn_open_invalid)
         layout.addWidget(self.btn_open_failed)
+
+        self.btn_reset_stats = QPushButton("Reset Dashboard Stats")
+        self.btn_reset_stats.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reset_stats.setMinimumHeight(42)
+        self.btn_reset_stats.setProperty("class", "DangerButton")
+        self.btn_reset_stats.clicked.connect(self._reset_dashboard_stats)
+        layout.addWidget(self.btn_reset_stats)
         return panel
 
     def _create_result_open_button(self, text, key):
@@ -421,6 +392,29 @@ class DashboardTabV2(QWidget):
             return
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
             QMessageBox.warning(self, "Open Failed", f"Could not open {path}.")
+
+    def _reset_dashboard_stats(self):
+        """Reset dashboard counters by clearing persisted harvest results."""
+        if "RUNNING" in self.lbl_run_status.text():
+            QMessageBox.information(self, "Harvest Running", "Stop the current harvest before resetting dashboard stats.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Reset Dashboard Stats",
+            "This clears all saved harvest results and resets dashboard numbers to zero. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self.db.clear_all_results()
+            self.refresh_data()
+            self.live_panel.update_status("-", "-", 0, "Dashboard stats reset.")
+            self.set_idle(None)
+        except Exception as e:
+            QMessageBox.warning(self, "Reset Failed", f"Could not reset dashboard stats: {e}")
 
     def refresh_data(self):
         """Fetch latest stats from DB and update cards."""

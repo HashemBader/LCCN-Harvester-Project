@@ -257,8 +257,10 @@ QLabel[class="HelperText"], QLabel.HelperText {{
 QLabel[class="StatusPill"], QLabel.StatusPill {{
     background-color: {t['bg']};
     color: {t['text_muted']};
-    border-radius: 15px;
+    border-radius: 12px;
     padding: 6px 14px;
+    min-height: 12px;
+    max-height: 12px;
     font-weight: bold;
     font-size: 11px;
     text-transform: uppercase;
@@ -547,8 +549,8 @@ QFrame#DashboardProfilePanel:hover {{
 }}
 
 QLabel#DashboardProfileIcon {{
-    background-color: {t['primary']}1A;
-    border: 1px solid {t['primary']}38;
+    background: transparent;
+    border: none;
     border-radius: 9px;
     padding: 0;
 }}

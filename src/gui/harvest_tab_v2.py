@@ -857,7 +857,7 @@ class HarvestTabV2(QWidget):
         status_grid = QGridLayout()
 
         self.lbl_run_status = QLabel("Idle")
-        self.lbl_run_status.setProperty("class", "ActivityValue")
+        self.lbl_run_status.setProperty("class", "StatusPill")
         self.lbl_run_progress = QLabel("0 / 0")
         self.lbl_run_progress.setProperty("class", "ActivityValue")
         self.lbl_run_elapsed = QLabel("00:00:00")
@@ -1459,9 +1459,9 @@ class HarvestTabV2(QWidget):
             self.run_timer.stop()
             self.lbl_banner_title.setText("CANCELLING...")
             self.lbl_run_status.setText("Cancelling...")
-            self.lbl_run_status.setStyleSheet(
-                "color: #ed8796; font-size: 14px; font-weight: bold;"
-            )
+            self.lbl_run_status.setProperty("state", "error")
+            self.lbl_run_status.style().unpolish(self.lbl_run_status)
+            self.lbl_run_status.style().polish(self.lbl_run_status)
             self.log_output.setText(
                 "Cancelling harvest (waiting for current thread)..."
             )

@@ -560,14 +560,16 @@ class ModernMainWindow(QMainWindow):
 
             if mode == "light":
                 qss = generate_stylesheet(CATPPUCCIN_LIGHT)
-                self.btn_theme.setIcon(get_icon(SVG_TOGGLE_OFF, CATPPUCCIN_LIGHT['text_muted']))
-                if not self.sidebar_collapsed:
-                    self.btn_theme.setText("Theme: Light")
+                if hasattr(self, 'btn_theme'):
+                    self.btn_theme.setIcon(get_icon(SVG_TOGGLE_OFF, CATPPUCCIN_LIGHT['text_muted']))
+                    if not self.sidebar_collapsed:
+                        self.btn_theme.setText("Theme: Light")
             else:
                 qss = generate_stylesheet(CATPPUCCIN_DARK)
-                self.btn_theme.setIcon(get_icon(SVG_TOGGLE_ON, CATPPUCCIN_DARK['primary']))
-                if not self.sidebar_collapsed:
-                    self.btn_theme.setText("Theme: Dark")
+                if hasattr(self, 'btn_theme'):
+                    self.btn_theme.setIcon(get_icon(SVG_TOGGLE_ON, CATPPUCCIN_DARK['primary']))
+                    if not self.sidebar_collapsed:
+                        self.btn_theme.setText("Theme: Dark")
                 
             from PyQt6.QtWidgets import QApplication
             app = QApplication.instance()

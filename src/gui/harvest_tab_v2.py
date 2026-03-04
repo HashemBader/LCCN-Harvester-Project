@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
-from PyQt6.QtGui import QShortcut, QKeySequence, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QShortcut, QKeySequence
 from pathlib import Path
 from enum import Enum, auto
 from itertools import islice

@@ -19,7 +19,7 @@ from .ai_assistant_tab import AIAssistantTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
-from .styles_v2 import V2_STYLESHEET
+from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .shortcuts_dialog import ShortcutsDialog
 from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
@@ -29,6 +29,7 @@ from .icons import (
     SVG_TOGGLE_ON, SVG_TOGGLE_OFF
 )
 from config.profile_manager import ProfileManager
+from .theme_manager import ThemeManager
 
 class ModernMainWindow(QMainWindow):
     def __init__(self):
@@ -67,19 +68,21 @@ class ModernMainWindow(QMainWindow):
         self.sidebar_collapsed = False
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         self._profile_manager = ProfileManager()
+        self._theme_manager = ThemeManager()
         
         # Core Services
         self.notification_manager = NotificationManager(self)
         self.notification_manager.setup_system_tray()
 
+        self._setup_layout()
+        self._apply_advanced_mode()
+
         # Apply User's Saved Theme
         try:
             self._apply_theme(self._theme_manager.get_theme())
-        except Exception:
+        except Exception as e:
+            print("Theme generation fallback tripped:", e)
             self.setStyleSheet(V2_STYLESHEET)
-
-        self._setup_layout()
-        self._apply_advanced_mode()
 
     def _setup_layout(self):
         """Build the Sidebar + Content Layout."""

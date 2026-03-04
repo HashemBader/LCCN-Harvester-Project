@@ -52,7 +52,7 @@ class DashboardCard(QFrame):
         
         # Helper Text
         self.lbl_helper = QLabel("Total records")
-        self.lbl_helper.setStyleSheet("color: #a5adcb; font-size: 11px;")
+        self.lbl_helper.setProperty("class", "CardHelper")
         layout.addWidget(self.lbl_helper)
 
     def set_data(self, value, helper_text=""):
@@ -74,12 +74,7 @@ class LiveActivityPanel(QFrame):
         layout.setContentsMargins(20, 20, 20, 20)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                background-color: #181926; border-radius: 6px; height: 8px; text-align: center;
-            }
-            QProgressBar::chunk { background-color: #8aadf4; border-radius: 6px; }
-        """)
+        self.progress_bar.setProperty("class", "TerminalProgressBar")
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
@@ -134,9 +129,9 @@ class RecentResultsPanel(QFrame):
             status = r['status']
             item_status = QTableWidgetItem(status)
             if status == "Found":
-                item_status.setForeground(QColor("#a6da95")) # Green
+                item_status.setForeground(QColor("#4CAF50")) # Safe accessible green
             else:
-                item_status.setForeground(QColor("#ed8796")) # Red
+                item_status.setForeground(QColor("#E53935")) # Safe accessible red
             self.table.setItem(row_idx, 1, item_status)
             
             # Detail (Truncated with Tooltip)
@@ -207,10 +202,11 @@ class DashboardTabV2(QWidget):
         header_layout = QHBoxLayout()
         
         self.lbl_run_status = QLabel("● IDLE")
-        self.lbl_run_status.setStyleSheet("color: #a5adcb; font-weight: bold; padding: 5px 10px; background: #363a4f; border-radius: 6px;")
+        self.lbl_run_status.setProperty("class", "StatusPill")
+        self.lbl_run_status.setProperty("state", "idle")
         
         self.lbl_last_run = QLabel("Last Run: Never")
-        self.lbl_last_run.setStyleSheet("color: #a5adcb; margin-left: 10px;")
+        self.lbl_last_run.setProperty("class", "HelperText")
         
         header_layout.addWidget(self.lbl_run_status)
         header_layout.addWidget(self.lbl_last_run)
@@ -324,7 +320,7 @@ class DashboardTabV2(QWidget):
         layout.addWidget(title)
 
         subtitle = QLabel("Live TSV files are created fresh for each harvest run.")
-        subtitle.setStyleSheet("color: #a5adcb; font-size: 12px;")
+        subtitle.setProperty("class", "HelperText")
         layout.addWidget(subtitle)
 
         self.btn_open_successful = self._create_result_open_button("Open successful.tsv", "successful")
@@ -344,16 +340,9 @@ class DashboardTabV2(QWidget):
 
     def _create_result_open_button(self, text, key):
         btn = QPushButton(text)
+        btn.setProperty("class", "SecondaryButton")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setMinimumHeight(42)
-        btn.setStyleSheet(
-            "QPushButton {"
-            " background-color: #2b3042; color: #eef1fb; border: 1px solid #51576d;"
-            " border-radius: 10px; padding: 10px 14px; font-weight: 700; text-align: left;"
-            "}"
-            "QPushButton:hover { background-color: #363d54; border-color: #8aadf4; }"
-            "QPushButton:disabled { color: #7f849c; background-color: #232634; border-color: #3b4058; }"
-        )
         btn.setEnabled(False)
         btn.clicked.connect(lambda: self._open_result_file(key))
         return btn
@@ -482,37 +471,32 @@ class DashboardTabV2(QWidget):
     def set_running(self):
         self._refresh_result_file_buttons()
         self.lbl_run_status.setText("● RUNNING")
-        self.lbl_run_status.setStyleSheet(
-            "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
-        )
+        self.lbl_run_status.setProperty("state", "running")
+        self._refresh_status_style()
 
     def set_paused(self, is_paused: bool):
         if is_paused:
             self.lbl_run_status.setText("● PAUSED")
-            self.lbl_run_status.setStyleSheet(
-                "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #eeba0b; border-radius: 6px;"
-            )
+            self.lbl_run_status.setProperty("state", "paused")
         else:
             self.lbl_run_status.setText("● RUNNING")
-            self.lbl_run_status.setStyleSheet(
-                "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #8aadf4; border-radius: 6px;"
-            )
+            self.lbl_run_status.setProperty("state", "running")
+        self._refresh_status_style()
 
     def set_idle(self, success: bool | None = None):
         self._refresh_result_file_buttons()
         if success is True:
             self.lbl_run_status.setText("● COMPLETED")
-            self.lbl_run_status.setStyleSheet(
-                "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #a6da95; border-radius: 6px;"
-            )
+            self.lbl_run_status.setProperty("state", "success")
         elif success is False:
             self.lbl_run_status.setText("● Cancelled")
-            self.lbl_run_status.setStyleSheet(
-                "color: #1e2030; font-weight: bold; padding: 5px 10px; background: #ed8796; border-radius: 6px;"
-            )
+            self.lbl_run_status.setProperty("state", "error")
         else:
             self.lbl_run_status.setText("● IDLE")
-            self.lbl_run_status.setStyleSheet(
-                "color: #a5adcb; font-weight: bold; padding: 5px 10px; background: #363a4f; border-radius: 6px;"
-            )
+            self.lbl_run_status.setProperty("state", "idle")
+        self._refresh_status_style()
+        
+    def _refresh_status_style(self):
+        self.lbl_run_status.style().unpolish(self.lbl_run_status)
+        self.lbl_run_status.style().polish(self.lbl_run_status)
     

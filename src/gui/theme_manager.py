@@ -32,7 +32,7 @@ class ThemeManager:
     def _create_default_settings(self) -> dict:
         """Create default settings."""
         return {
-            "theme": "dark",  # "dark" or "light"
+            "theme": "light",  # "dark" or "light"
             "last_profile": "Default Settings"
         }
 
@@ -46,8 +46,8 @@ class ThemeManager:
 
     def get_theme(self) -> Literal["dark", "light"]:
         """Get current theme mode."""
-        theme = self.settings.get("theme", "dark")
-        return theme if theme in ("dark", "light") else "dark"
+        theme = self.settings.get("theme", "light")
+        return theme if theme in ("dark", "light") else "light"
 
     def set_theme(self, theme: str):
         """Set and persist theme mode."""

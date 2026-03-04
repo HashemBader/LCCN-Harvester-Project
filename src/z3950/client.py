@@ -14,7 +14,7 @@ class Z3950Client:
     A client for Z39.50 servers using the PyZ3950 (zoom) library.
     """
 
-    def __init__(self, host: str, port: int, database: str, syntax: str = 'USMARC', encoding: str = 'utf-8'):
+    def __init__(self, host: str, port: int, database: str, syntax: str = 'USMARC', encoding: str = 'utf-8', timeout: int = 5):
         """
         Initialize the Z39.50 client.
 
@@ -30,6 +30,7 @@ class Z3950Client:
         self.database = database
         self.syntax = syntax
         self.encoding = encoding
+        self.timeout = timeout
         self.conn = None
         self.logger = logging.getLogger(__name__)
 
@@ -45,13 +46,20 @@ class Z3950Client:
             from PyZ3950 import zoom  # type: ignore
             
             self.logger.info(f"Connecting to {self.host}:{self.port}/{self.database}")
-            self.conn = zoom.Connection(
-                self.host,
-                self.port,
-                databaseName=self.database,
-                preferredRecordSyntax=self.syntax,
-                charset=self.encoding
-            )
+            
+            import socket
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(self.timeout)
+            try:
+                self.conn = zoom.Connection(
+                    self.host,
+                    self.port,
+                    databaseName=self.database,
+                    preferredRecordSyntax=self.syntax,
+                    charset=self.encoding
+                )
+            finally:
+                socket.setdefaulttimeout(old_timeout)
         except Exception as e:
             self.logger.error(f"Failed to connect to {self.host}:{self.port} - {e}")
             raise ConnectionError(f"Could not connect to Z39.50 server: {e}")

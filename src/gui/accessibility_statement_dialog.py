@@ -7,6 +7,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextBrowser, QPushButton, QHBoxLayout
 from PyQt6.QtCore import Qt
 
+from gui.theme_manager import ThemeManager
+from gui.styles_v2 import generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+
 
 class AccessibilityStatementDialog(QDialog):
     """Simple read-only dialog for the in-app accessibility statement."""
@@ -16,43 +19,39 @@ class AccessibilityStatementDialog(QDialog):
         self.setWindowTitle("Accessibility Statement")
         self.setMinimumSize(760, 560)
         self._setup_ui()
+        self._apply_theme()
+        
+    def _apply_theme(self):
+        theme_mgr = ThemeManager()
+        mode = theme_mgr.get_theme()
+        palette = CATPPUCCIN_DARK if mode == "dark" else CATPPUCCIN_LIGHT
+        self.setStyleSheet(generate_stylesheet(palette))
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
         header = QLabel("Accessibility Statement")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.setStyleSheet(
-            "QLabel { color: #c2d07f; font-size: 22px; font-weight: bold; "
-            "padding: 8px; background: transparent; }"
-        )
+        header.setObjectName("DialogHeader")
         layout.addWidget(header)
 
         sub = QLabel("This information helps users understand keyboard use and accessibility coverage.")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet("QLabel { color: #a7a59b; font-size: 12px; background: transparent; }")
+        sub.setProperty("class", "HelperText")
         layout.addWidget(sub)
 
         viewer = QTextBrowser()
         viewer.setReadOnly(True)
         viewer.setOpenExternalLinks(True)
-        viewer.setStyleSheet(
-            "QTextBrowser { background: #171716; color: #e8e6df; border: 1px solid #2d2e2b; "
-            "border-radius: 8px; padding: 10px; }"
-        )
+        viewer.setProperty("class", "TerminalViewport")
         viewer.setMarkdown(self._load_statement())
         layout.addWidget(viewer, stretch=1)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         close_btn = QPushButton("Close")
+        close_btn.setProperty("class", "PrimaryButton")
         close_btn.clicked.connect(self.accept)
-        close_btn.setStyleSheet(
-            "QPushButton { background: #c2d07f; color: #1a1a18; font-size: 13px; font-weight: bold; "
-            "padding: 8px 24px; border: none; border-radius: 4px; min-width: 100px; }"
-            "QPushButton:hover { background: #d2df8e; }"
-            "QPushButton:pressed { background: #b7c66e; }"
-        )
         btn_row.addWidget(close_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)

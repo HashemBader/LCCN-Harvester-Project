@@ -9,6 +9,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 import sys
 
+from gui.theme_manager import ThemeManager
+from gui.styles_v2 import generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+
 
 class ShortcutItem(QFrame):
     """A single shortcut display item."""
@@ -16,25 +19,17 @@ class ShortcutItem(QFrame):
     def __init__(self, keys, description, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            "QFrame { background: #1f201d; border: 1px solid #2d2e2b; border-radius: 6px; padding: 8px; margin: 4px; }"
-            "QFrame:hover { background: #242521; border: 1px solid #c2d07f; }"
-        )
+        self.setProperty("class", "ShortcutItem")
 
         layout = QHBoxLayout()
 
         keys_label = QLabel(keys)
-        keys_label.setStyleSheet(
-            "QLabel { background: #242521; color: #c2d07f; font-size: 12px; font-weight: bold; "
-            "padding: 6px 12px; border-radius: 4px; border: none; min-width: 120px; }"
-        )
+        keys_label.setObjectName("ShortcutKeys")
         keys_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(keys_label)
 
         desc_label = QLabel(description)
-        desc_label.setStyleSheet(
-            "QLabel { color: #e8e6df; font-size: 13px; padding-left: 10px; border: none; background: transparent; }"
-        )
+        desc_label.setObjectName("ShortcutDesc")
         layout.addWidget(desc_label, stretch=1)
 
         self.setLayout(layout)
@@ -49,21 +44,24 @@ class ShortcutsDialog(QDialog):
         self.setMinimumSize(640, 520)
         self.platform = "mac" if sys.platform == "darwin" else "win_linux"
         self._setup_ui()
+        self._apply_theme()
+        
+    def _apply_theme(self):
+        theme_mgr = ThemeManager()
+        mode = theme_mgr.get_theme()
+        palette = CATPPUCCIN_DARK if mode == "dark" else CATPPUCCIN_LIGHT
+        self.setStyleSheet(generate_stylesheet(palette))
 
     def _setup_ui(self):
         layout = QVBoxLayout()
 
         header = QLabel("⌨️ Keyboard Shortcuts")
-        header.setStyleSheet(
-            "QLabel { color: #c2d07f; font-size: 24px; font-weight: bold; padding: 10px; background: transparent; border: none; }"
-        )
+        header.setObjectName("DialogHeader")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(header)
 
         subtitle = QLabel("Quick reference for all available keyboard shortcuts")
-        subtitle.setStyleSheet(
-            "QLabel { color: #a7a59b; font-size: 12px; padding-bottom: 10px; background: transparent; border: none; }"
-        )
+        subtitle.setObjectName("DialogSubtitle")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
@@ -86,10 +84,7 @@ class ShortcutsDialog(QDialog):
         search_label.setStyleSheet("color: #a7a59b; font-size: 12px;")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Type keys or action, e.g. harvest, Cmd+H, results")
-        self.search_input.setStyleSheet(
-            "QLineEdit { background: #242521; color: #e8e6df; font-size: 12px; "
-            "border: 1px solid #2d2e2b; border-radius: 6px; padding: 6px 10px; }"
-        )
+
         self.search_input.textChanged.connect(self._render_shortcuts)
         search_row.addWidget(search_label)
         search_row.addWidget(self.search_input, stretch=1)
@@ -97,7 +92,7 @@ class ShortcutsDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #171716; }")
+        scroll.setProperty("class", "TransparentScroll")
 
         content_widget = QWidget()
         self.content_layout = QVBoxLayout()
@@ -110,12 +105,7 @@ class ShortcutsDialog(QDialog):
         close_layout.addStretch()
 
         close_btn = QPushButton("Close")
-        close_btn.setStyleSheet(
-            "QPushButton { background: #c2d07f; color: #1a1a18; font-size: 13px; font-weight: bold; "
-            "padding: 8px 24px; border: none; border-radius: 4px; min-width: 100px; }"
-            "QPushButton:hover { background: #d2df8e; }"
-            "QPushButton:pressed { background: #b7c66e; }"
-        )
+        close_btn.setProperty("class", "PrimaryButton")
         close_btn.clicked.connect(self.accept)
         close_layout.addWidget(close_btn)
 
@@ -147,10 +137,7 @@ class ShortcutsDialog(QDialog):
                 continue
 
             category_label = QLabel(category)
-            category_label.setStyleSheet(
-                "QLabel { color: #c2d07f; font-size: 16px; font-weight: bold; padding: 8px; background: transparent; "
-                "border: none; border-bottom: 2px solid #c2d07f; margin-top: 10px; }"
-            )
+            category_label.setObjectName("CategoryHeader")
             self.content_layout.addWidget(category_label)
             shown += 1
 

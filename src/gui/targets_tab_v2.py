@@ -14,7 +14,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PyQt6.QtCore import Qt, QDateTime, pyqtSignal, QEvent, QSize
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QColor
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -58,8 +58,7 @@ class TargetDialog(QDialog):
         self.connection_status = None  # Store connection test result
         self.remove_requested = False
         self._setup_ui()
-        self._apply_styles()
-
+        
     def _setup_ui(self):
         layout = QVBoxLayout()
         form_layout = QFormLayout()
@@ -113,68 +112,6 @@ class TargetDialog(QDialog):
 
         self.setLayout(layout)
 
-    def _apply_styles(self):
-        self.setStyleSheet(
-            """
-            QDialog {
-                background-color: #1e1e2e;
-                color: #cdd6f4;
-            }
-            QLabel {
-                color: #cdd6f4;
-                font-weight: bold;
-            }
-            QLineEdit, QSpinBox {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-                padding: 6px;
-                color: #ffffff;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 20px;
-                background-color: #313244;
-                border: none;
-                border-left: 1px solid #45475a;
-            }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                background-color: #45475a;
-            }
-            QSpinBox::up-arrow {
-                width: 12px;
-                height: 12px;
-                image: url(src/gui/icons/plus.svg);
-                border: none;
-            }
-            QSpinBox::down-arrow {
-                width: 12px;
-                height: 12px;
-                image: url(src/gui/icons/minus.svg);
-                border: none;
-            }
-            QLineEdit:focus, QSpinBox:focus {
-                border: 1px solid #89b4fa;
-            }
-            QPushButton {
-                background-color: #313244;
-                color: white;
-                border: 1px solid #45475a;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45475a;
-            }
-            QPushButton#DangerButton {
-                background-color: #ed8796;
-                color: #1e1e2e;
-                border: 1px solid #d97082;
-            }
-            QPushButton#DangerButton:hover {
-                background-color: #d97082;
-            }
-        """
-        )
 
     def test_connection(self):
         """Manually test connection and show result."""
@@ -261,8 +198,7 @@ class RestoreDialog(QDialog):
         self.resize(500, 400)
         self.history = history
         self._setup_ui()
-        self._apply_styles()
-
+        
     def _setup_ui(self):
         layout = QVBoxLayout()
 
@@ -292,16 +228,6 @@ class RestoreDialog(QDialog):
 
         self.setLayout(layout)
 
-    def _apply_styles(self):
-        self.setStyleSheet(
-            """
-            QDialog { background-color: #1e1e2e; color: #cdd6f4; }
-            QListWidget { background-color: #313244; color: #ffffff; border: 1px solid #45475a; border-radius: 4px; }
-            QLabel { color: #cdd6f4; font-weight: bold; }
-            QPushButton { background-color: #313244; color: white; border: 1px solid #45475a; padding: 6px 12px; border-radius: 4px; }
-            QPushButton:hover { background-color: #45475a; }
-        """
-        )
 
     def get_selected_index(self):
         if len(self.list_widget.selectedItems()) > 0:
@@ -396,7 +322,8 @@ class TargetsTabV2(QWidget):
         # Header
         header_layout = QHBoxLayout()
         title = QLabel("Target Management")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #cdd6f4;")
+        title.setProperty("class", "CardTitle")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
         layout.addLayout(header_layout)
@@ -406,10 +333,7 @@ class TargetsTabV2(QWidget):
             "Built-in APIs: Library of Congress API, Harvard Library API, OpenLibrary API"
         )
         built_in_label.setWordWrap(True)
-        built_in_label.setStyleSheet(
-            "color: #a6adc8; background-color: #1e1e2e; border-left: 3px solid #89b4fa; "
-            "padding: 10px; border-radius: 6px; font-size: 11px;"
-        )
+        built_in_label.setProperty("class", "Banner")
         layout.addWidget(built_in_label)
 
         # Action buttons row
@@ -431,34 +355,7 @@ class TargetsTabV2(QWidget):
         self.btn_check_servers.clicked.connect(self.check_all_servers)
 
         self.search_container = QWidget()
-        self.search_container.setStyleSheet(
-            """
-            QWidget {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-            }
-            QLineEdit {
-                background-color: transparent;
-                border: none;
-                color: #cdd6f4;
-                padding: 4px 8px;
-                min-width: 180px;
-            }
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 2px;
-                color: #cdd6f4;
-                font-weight: bold;
-                font-size: 16px;
-            }
-            QToolButton:hover {
-                background-color: #45475a;
-                color: #ffffff;
-            }
-        """
-        )
+        self.search_container.setProperty("class", "SearchContainer")
         search_layout = QHBoxLayout(self.search_container)
         search_layout.setContentsMargins(0, 0, 2, 0)
         search_layout.setSpacing(0)
@@ -511,47 +408,7 @@ class TargetsTabV2(QWidget):
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setAlternatingRowColors(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setStyleSheet(
-            """
-            QTableWidget {
-                background-color: #1e1e2e;
-                border: 2px solid #313244;
-                border-radius: 8px;
-                color: #cdd6f4;
-                outline: none;
-                selection-background-color: #89b4fa;
-                selection-color: #11111b;
-            }
-            QTableWidget::item {
-                padding: 12px 8px;
-                border-bottom: 1px solid #313244;
-                outline: none;
-                border: none;
-            }
-            QTableWidget::item:hover {
-                background-color: #313244;
-            }
-            QTableWidget::item:selected {
-                background-color: #89b4fa;
-                color: #11111b;
-            }
-            QTableWidget::item:selected:hover {
-                background-color: #74c7ec;
-                color: #11111b;
-            }
-            QHeaderView::section {
-                background-color: #181825;
-                color: #b4befe;
-                padding: 12px;
-                border: none;
-                border-bottom: 2px solid #313244;
-                font-weight: bold;
-                text-transform: uppercase;
-                font-size: 11px;
-                letter-spacing: 0.5px;
-            }
-        """
-        )
+        pass # Table inherits global aesthetic
 
         self.table.itemDoubleClicked.connect(lambda _item: self.edit_target())
 
@@ -637,62 +494,7 @@ class TargetsTabV2(QWidget):
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
             rank_combo.setFixedHeight(36)
-            rank_combo.setStyleSheet("""
-                QComboBox {
-                    background-color: #313244;
-                    border: 2px solid #45475a;
-                    border-radius: 8px;
-                    padding: 6px 30px 6px 16px;
-                    color: #cdd6f4;
-                    font-size: 14px;
-                    font-weight: 600;
-                }
-                QComboBox:hover {
-                    background-color: #3a3d4f;
-                    border-color: #89b4fa;
-                }
-                QComboBox:focus {
-                    border-color: #89b4fa;
-                    background-color: #3a3d4f;
-                }
-                QComboBox::drop-down {
-                    subcontrol-origin: padding;
-                    subcontrol-position: right center;
-                    width: 24px;
-                    border: none;
-                    border-top-right-radius: 8px;
-                    border-bottom-right-radius: 8px;
-                }
-                QComboBox::drop-down:hover {
-                    background-color: #45475a;
-                }
-                QComboBox::down-arrow {
-                    width: 0;
-                    height: 0;
-                    border-left: 5px solid transparent;
-                    border-right: 5px solid transparent;
-                    border-top: 6px solid #cdd6f4;
-                    margin-right: 6px;
-                }
-                QComboBox QAbstractItemView {
-                    background-color: #313244;
-                    color: #cdd6f4;
-                    border: 2px solid #45475a;
-                    border-radius: 8px;
-                    padding: 4px;
-                    selection-background-color: #89b4fa;
-                    selection-color: #11111b;
-                    outline: none;
-                }
-                QComboBox QAbstractItemView::item {
-                    padding: 8px 12px;
-                    border-radius: 4px;
-                }
-                QComboBox QAbstractItemView::item:hover {
-                    background-color: #89b4fa;
-                    color: #11111b;
-                }
-            """)
+            pass # rank combo inherits global styled combo box
             for i in range(1, len(targets) + 1):
                 rank_combo.addItem(str(i), i)
             # Set current rank using userData (robust)
@@ -708,62 +510,42 @@ class TargetsTabV2(QWidget):
             rank_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             rank_combo.installEventFilter(self)
 
-            self.table.setCellWidget(row, 0, rank_combo)
+            rank_container = QWidget()
+            rank_layout = QHBoxLayout(rank_container)
+            rank_layout.setContentsMargins(0, 0, 0, 0)
+            rank_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            rank_layout.addWidget(rank_combo)
+            self.table.setCellWidget(row, 0, rank_container)
 
-            # Active status indicator
+            # Active toggle (Pill button with checkmark as shown in screenshot)
             active_btn = QPushButton()
-            active_btn.setFixedHeight(36)
-            active_btn.setMinimumWidth(50)
-            active_btn.setMaximumWidth(90)
-            active_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             active_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            active_btn.setObjectName("ActiveToggle")
+            active_btn.setFixedSize(64, 28)
+            
             if target.selected:
-                active_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #a6da95;
-                        border: 2px solid #8bd57e;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 18px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                    QPushButton:hover {
-                        background-color: #8bd57e;
-                        border-color: #6fb76a;
-                    }
-                    QPushButton:pressed {
-                        background-color: #6fb76a;
-                    }
-                """)
-                active_btn.setText("✓")
+                active_btn.setText("")
+                active_btn.setIcon(QIcon("src/gui/assets/check.svg"))
+                active_btn.setIconSize(QSize(16, 16))
+                active_btn.setProperty("state", "active")
             else:
-                active_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #ed8796;
-                        border: 2px solid #d97082;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 18px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                    QPushButton:hover {
-                        background-color: #d97082;
-                        border-color: #c55d6e;
-                    }
-                    QPushButton:pressed {
-                        background-color: #c55d6e;
-                    }
-                """)
-                active_btn.setText("✕")
+                active_btn.setText("")
+                active_btn.setIcon(QIcon("src/gui/assets/x.svg"))
+                active_btn.setIconSize(QSize(16, 16))
+                active_btn.setProperty("state", "inactive")
+                
             active_btn.clicked.connect(lambda checked, t=target: self._toggle_target_active(t))
             
-            self.table.setCellWidget(row, 1, active_btn)
+            cb_container = QWidget()
+            cb_layout = QHBoxLayout(cb_container)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cb_layout.addWidget(active_btn)
+            
+            self.table.setCellWidget(row, 1, cb_container)
 
+            # --- Target Model Items ---
             name_item = QTableWidgetItem(target.name)
             name_item.setData(Qt.ItemDataRole.UserRole, target)
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -792,79 +574,27 @@ class TargetsTabV2(QWidget):
             _pencil_icon_path = str(Path(__file__).parent / "icons" / "pencil.svg")
             edit_btn.setIcon(QIcon(_pencil_icon_path))
             edit_btn.setIconSize(QSize(18, 18))
-            edit_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #313244;
-                    border: 2px solid #45475a;
-                    border-radius: 8px;
-                    font-size: 16px;
-                    color: #cdd6f4;
-                    text-align: center;
-                    padding: 0px;
-                }
-                QPushButton:hover {
-                    background-color: #89b4fa;
-                    border-color: #74c7ec;
-                    color: #1e1e2e;
-                }
-                QPushButton:pressed {
-                    background-color: #74c7ec;
-                }
-            """)
-            edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
+            edit_btn.setProperty("class", "IconButton")
+            edit_btn.clicked.connect(lambda checked, t=target: self.edit_target(t))
             self.table.setCellWidget(row, 6, edit_btn)
 
             # Server status indicator
             server_btn = QPushButton()
             server_btn.setFixedHeight(36)
-            server_btn.setMinimumWidth(60)
-            server_btn.setMaximumWidth(100)
-            server_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             server_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            server_btn.setEnabled(False)  # Not clickable, just status display
+            server_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+            server_btn.setProperty("class", "StatusIndicator")
 
             is_online = self.server_status.get(target.target_id, None)
+            
             if is_online is None:
-                server_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #ed8796;
-                        border: 2px solid #d97082;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 11px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                """)
-                server_btn.setText("OFFLINE")
+                server_btn.setProperty("state", "unknown")
+                server_btn.setText("UNKNOWN")
             elif is_online:
-                server_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #a6da95;
-                        border: 2px solid #8bd57e;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 11px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                """)
+                server_btn.setProperty("state", "online")
                 server_btn.setText("ONLINE")
             else:
-                server_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #ed8796;
-                        border: 2px solid #d97082;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 11px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                """)
+                server_btn.setProperty("state", "offline")
                 server_btn.setText("OFFLINE")
             
             self.table.setCellWidget(row, 7, server_btn)
@@ -1051,16 +781,15 @@ class TargetsTabV2(QWidget):
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 2)  # Name column is now at index 2
+        item = self.table.item(row, 2)  # Name column reverted to index 2
         if item:
             return item.data(Qt.ItemDataRole.UserRole)
         return None
-
     def filter_targets(self, text):
         """Filter rows based on search text (Target Name only)."""
         text = text.lower()
         for row in range(self.table.rowCount()):
-            name_item = self.table.item(row, 2)  # Name column is now at index 2
+            name_item = self.table.item(row, 2)  # Name column reverted to index 2
             name = name_item.text().lower() if name_item else ""
             visible = text in name
             self.table.setRowHidden(row, not visible)

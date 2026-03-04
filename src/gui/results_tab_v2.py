@@ -16,7 +16,6 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import DatabaseManager
-from .styles_v2 import CATPPUCCIN_THEME
 
 class ResultsTabV2(QWidget):
     def __init__(self):
@@ -139,12 +138,12 @@ class ResultsTabV2(QWidget):
         footer_layout.setContentsMargins(15, 10, 15, 10)
         
         self.stats_label = QLabel("No data loaded")
-        self.stats_label.setStyleSheet(f"color: {CATPPUCCIN_THEME['overlay1']};")
+        self.stats_label.setProperty("class", "HelperText")
         
         self.btn_refresh = QPushButton("Refresh Table")
         self.btn_refresh.setFlat(True)
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_refresh.setStyleSheet(f"color: {CATPPUCCIN_THEME['sapphire']}; text-decoration: underline;")
+        self.btn_refresh.setProperty("class", "LinkButton")
         self.btn_refresh.clicked.connect(self._load_all_results)
         
         footer_layout.addWidget(self.stats_label)
@@ -159,7 +158,7 @@ class ResultsTabV2(QWidget):
         line = QFrame()
         line.setFrameShape(QFrame.Shape.VLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet(f"color: {CATPPUCCIN_THEME['surface1']};")
+        line.setProperty("class", "Divider")
         return line
 
     # =========================================================================

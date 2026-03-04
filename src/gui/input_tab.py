@@ -28,18 +28,8 @@ class ClickableDropZone(QFrame):
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.normal_style = """
-            QFrame {
-                border: 3px dashed #f4b860;
-                border-radius: 12px;
-                background-color: #20262d;
-            }
-            QFrame:hover {
-                background-color: #232a32;
-                border-color: #5fb3a1;
-            }
-        """
-        self.setStyleSheet(self.normal_style)
+        self.setProperty("class", "DragZone")
+        self.setProperty("state", "ready")
 
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press to trigger click signal."""
@@ -52,43 +42,30 @@ class ClickableDropZone(QFrame):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
-                if file_path.endswith(('.tsv', '.txt', '.csv')):
+                if file_path:
                     event.acceptProposedAction()
-                    self.setStyleSheet("""
-                        QFrame {
-                            border: 3px dashed #7bc96f;
-                            border-radius: 12px;
-                            background-color: #1f2a22;
-                        }
-                    """)
+                    self._update_state("active")
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
-        """Handle drag leave event."""
-        self.setStyleSheet(self.normal_style)
+        self._update_state("ready")
 
     def dropEvent(self, event: QDropEvent):
         """Handle drop event."""
         files = [url.toLocalFile() for url in event.mimeData().urls()]
-        valid_files = [f for f in files if f.endswith(('.tsv', '.txt', '.csv'))]
+        valid_files = [f for f in files if f]
 
         if valid_files:
             file_path = valid_files[0]
             self.fileDropped.emit(file_path)
 
             # Animate success
-            self.setStyleSheet("""
-                QFrame {
-                    border: 3px solid #7bc96f;
-                    border-radius: 12px;
-                    background-color: #243329;
-                }
-            """)
+            self._update_state("success")
 
             # Reset after delay
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(500, lambda: self.setStyleSheet(self.normal_style))
+            QTimer.singleShot(500, lambda: self._update_state("ready"))
 
             event.acceptProposedAction()
         else:
@@ -96,10 +73,15 @@ class ClickableDropZone(QFrame):
             QMessageBox.warning(
                 self,
                 "Invalid File",
-                "Please drop a valid TSV, TXT, or CSV file."
+                "Please drop a valid file."
             )
             event.ignore()
-            self.setStyleSheet(self.normal_style)
+            self._update_state("ready")
+            
+    def _update_state(self, state: str):
+        self.setProperty("state", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class InputTab(QWidget):
@@ -154,11 +136,11 @@ class InputTab(QWidget):
 
         drop_text = QLabel("Drag & Drop ISBN File Here\nor click anywhere to browse")
         drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_text.setStyleSheet("font-size: 14px; color: #f4b860; font-weight: bold; border: none; background: transparent;")
+        drop_text.setStyleSheet("font-size: 14px; font-weight: bold; border: none; background: transparent;")
 
         drop_hint = QLabel("Supports: .tsv, .txt, .csv files")
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_hint.setStyleSheet("font-size: 11px; color: #a7a199; border: none; background: transparent;")
+        drop_hint.setStyleSheet("font-size: 11px; border: none; background: transparent;")
 
         drop_layout.addWidget(drop_icon)
         drop_layout.addWidget(drop_text)

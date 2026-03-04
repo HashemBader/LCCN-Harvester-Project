@@ -19,15 +19,17 @@ from .ai_assistant_tab import AIAssistantTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
-from .styles_v2 import V2_STYLESHEET
+from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .shortcuts_dialog import ShortcutsDialog
 from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
     get_icon, get_pixmap, 
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
-    SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT
+    SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT,
+    SVG_TOGGLE_ON, SVG_TOGGLE_OFF
 )
 from config.profile_manager import ProfileManager
+from .theme_manager import ThemeManager
 
 class ModernMainWindow(QMainWindow):
     def __init__(self):
@@ -66,15 +68,21 @@ class ModernMainWindow(QMainWindow):
         self.sidebar_collapsed = False
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         self._profile_manager = ProfileManager()
+        self._theme_manager = ThemeManager()
         
         # Core Services
         self.notification_manager = NotificationManager(self)
         self.notification_manager.setup_system_tray()
 
-        # Apply Global V2 Theme
-        self.setStyleSheet(V2_STYLESHEET)
         self._setup_layout()
         self._apply_advanced_mode()
+
+        # Apply User's Saved Theme
+        try:
+            self._apply_theme(self._theme_manager.get_theme())
+        except Exception as e:
+            print("Theme generation fallback tripped:", e)
+            self.setStyleSheet(V2_STYLESHEET)
 
     def _setup_layout(self):
         """Build the Sidebar + Content Layout."""
@@ -142,7 +150,7 @@ class ModernMainWindow(QMainWindow):
         self.status_pill.setProperty("class", "StatusPill") # Helper for some qt styles
         self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_pill.setFixedSize(100, 30)
-        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        self.status_pill.setProperty("state", "idle")
         
         status_frame = QWidget()
         status_layout = QHBoxLayout(status_frame)
@@ -168,6 +176,16 @@ class ModernMainWindow(QMainWindow):
         self.btn_accessibility.clicked.connect(self._show_accessibility_statement)
         self.btn_accessibility.setToolTip(f"Open accessibility statement ({mod_label}+Shift+A)")
         sidebar_layout.addWidget(self.btn_accessibility)
+
+        # Theme toggle button (bottom, like Accessibility)
+        self.btn_theme = QPushButton("Toggle Theme")
+        self.btn_theme.setIcon(get_icon(SVG_SETTINGS, "#a5adcb")) # Will be replaced dynamically in _apply_theme
+        self.btn_theme.setObjectName("NavButton")
+        self.btn_theme.setProperty("class", "NavButton")
+        self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_theme.clicked.connect(self._toggle_theme)
+        self.btn_theme.setToolTip("Toggle application theme (dark / light)")
+        sidebar_layout.addWidget(self.btn_theme)
 
         main_layout.addWidget(self.sidebar)
 
@@ -221,6 +239,7 @@ class ModernMainWindow(QMainWindow):
 
     def _create_nav_btn(self, text, svg_icon, index):
         btn = QPushButton(text)
+        btn.setObjectName("NavButton")
         btn.setProperty("class", "NavButton")
         btn.setCheckable(True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -335,6 +354,12 @@ class ModernMainWindow(QMainWindow):
         else:
             self.btn_shortcuts.setText("Shortcuts")
             self.btn_accessibility.setText("Accessibility Statement")
+            # Dynamic text for Theme based on current mode
+            try:
+                current_mode = self._theme_manager.get_theme()
+                self.btn_theme.setText("Theme: Light" if current_mode == "light" else "Theme: Dark")
+            except:
+                self.btn_theme.setText("Toggle Theme")
 
     def _on_nav_clicked(self, btn):
         index = btn.property("page_index")
@@ -455,7 +480,9 @@ class ModernMainWindow(QMainWindow):
 
     def _on_harvest_started(self):
         self.status_pill.setText("Running")
-        self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+        self.status_pill.setProperty("state", "running")
+        self.status_pill.style().unpolish(self.status_pill)
+        self.status_pill.style().polish(self.status_pill)
         self.btn_harvest.click()
         self.dashboard_tab.set_running()
 
@@ -465,16 +492,19 @@ class ModernMainWindow(QMainWindow):
         has_error = isinstance(stats, dict) and bool(stats.get("error"))
         if success:
             self.status_pill.setText("Completed")
-            self.status_pill.setStyleSheet("background-color: #a6da95; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+            self.status_pill.setProperty("state", "success")
         elif is_cancelled:
             self.status_pill.setText("Cancelled")
-            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+            self.status_pill.setProperty("state", "error")
         elif has_error:
             self.status_pill.setText("Error")
-            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+            self.status_pill.setProperty("state", "error")
         else:
-            self.status_pill.setText("Cancelled")
-            self.status_pill.setStyleSheet("background-color: #ed8796; color: #1e1e2e; border-radius: 15px; font-weight: bold;")
+            self.status_pill.setText("Failed")
+            self.status_pill.setProperty("state", "error")
+            
+        self.status_pill.style().unpolish(self.status_pill)
+        self.status_pill.style().polish(self.status_pill)
         self.dashboard_tab.refresh_data()
         
         if isinstance(stats, dict) and not stats.get("cancelled", False) and not success:
@@ -508,3 +538,57 @@ class ModernMainWindow(QMainWindow):
                 return
             self.harvest_tab.stop_harvest()
         event.accept()
+    def _toggle_theme(self):
+        """Toggle between dark and light themes and apply immediately."""
+        try:
+            current = self._theme_manager.get_theme()
+            new = "light" if current == "dark" else "dark"
+            self._apply_theme(new)
+        except Exception:
+            # best-effort only
+            try:
+                self._apply_theme("dark")
+            except Exception:
+                pass
+
+    def _apply_theme(self, theme: str):
+        """Apply color theme (light or dark) dynamically generated from styles_v2.
+
+        Strategy:
+        - Generate the complete application stylesheet based on the active mode.
+        - Persist the selection via ThemeManager.
+        """
+        try:
+            mode = theme if isinstance(theme, str) and theme in ("dark", "light") else self._theme_manager.get_theme()
+
+            if mode == "light":
+                qss = generate_stylesheet(CATPPUCCIN_LIGHT)
+                if hasattr(self, 'btn_theme'):
+                    self.btn_theme.setIcon(get_icon(SVG_TOGGLE_OFF, CATPPUCCIN_LIGHT['text_muted']))
+                    if not self.sidebar_collapsed:
+                        self.btn_theme.setText("Theme: Light")
+            else:
+                qss = generate_stylesheet(CATPPUCCIN_DARK)
+                if hasattr(self, 'btn_theme'):
+                    self.btn_theme.setIcon(get_icon(SVG_TOGGLE_ON, CATPPUCCIN_DARK['primary']))
+                    if not self.sidebar_collapsed:
+                        self.btn_theme.setText("Theme: Dark")
+                
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app:
+                app.setStyleSheet(qss)
+            else:
+                self.setStyleSheet(qss)
+
+            # Persist selection
+            try:
+                self._theme_manager.set_theme(mode)
+            except Exception:
+                pass
+        except Exception:
+            # Very last-resort fallback
+            try:
+                self.setStyleSheet(V2_STYLESHEET)
+            except Exception:
+                pass

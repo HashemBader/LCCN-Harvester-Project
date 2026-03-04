@@ -35,15 +35,15 @@ class CreateProfileDialog(QDialog):
         layout.setSpacing(14)
 
         title = QLabel("Create New Profile")
-        title.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {CATPPUCCIN_THEME['text']};")
+        title.setStyleSheet(f"font-size: 18px; font-weight: 700; ")
         layout.addWidget(title)
 
         subtitle = QLabel("Choose a profile name and starting settings.")
-        subtitle.setStyleSheet(f"color: {CATPPUCCIN_THEME['text_muted']}; font-size: 12px;")
+        subtitle.setStyleSheet(f" font-size: 12px;")
         layout.addWidget(subtitle)
 
         name_label = QLabel("Profile Name")
-        name_label.setStyleSheet(f"font-weight: 600; color: {CATPPUCCIN_THEME['text']};")
+        name_label.setStyleSheet(f"font-weight: 600; ")
         layout.addWidget(name_label)
 
         self.name_edit = QLineEdit()
@@ -58,12 +58,12 @@ class CreateProfileDialog(QDialog):
         settings_layout.setSpacing(12)
 
         settings_title = QLabel("Starting Settings")
-        settings_title.setStyleSheet(f"font-weight: 700; color: {CATPPUCCIN_THEME['text']};")
+        settings_title.setStyleSheet(f"font-weight: 700; ")
         settings_layout.addWidget(settings_title)
 
         retry_row = QHBoxLayout()
         retry_label = QLabel("Retry Interval")
-        retry_label.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        retry_label.setStyleSheet("")
         self.retry_spin = QSpinBox()
         self.retry_spin.setRange(0, 365)
         self.retry_spin.setSuffix(" days")
@@ -76,7 +76,7 @@ class CreateProfileDialog(QDialog):
 
         mode_row = QHBoxLayout()
         mode_label = QLabel("Call Number Mode")
-        mode_label.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        mode_label.setStyleSheet("")
         self.mode_combo = QComboBox()
         self.mode_combo.setFixedWidth(180)
         self.mode_combo.addItem("LCCN only", "lccn")
@@ -168,10 +168,10 @@ class ConfigTabV2(QWidget):
         title_block = QVBoxLayout()
         title = QLabel("Configuration")
         title.setProperty("class", "PageTitle")
-        title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {CATPPUCCIN_THEME['text']};")
+        title.setStyleSheet(f"font-size: 24px; font-weight: bold; ")
         
         subtitle = QLabel("Manage profiles and global settings")
-        subtitle.setStyleSheet(f"font-size: 14px; color: {CATPPUCCIN_THEME['text_muted']};")
+        subtitle.setStyleSheet(f"font-size: 14px; ")
         
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
@@ -197,7 +197,7 @@ class ConfigTabV2(QWidget):
         # Selector
         info_layout = QVBoxLayout()
         lbl = QLabel("&Active Profile")
-        lbl.setStyleSheet(f"font-weight: bold; color: {CATPPUCCIN_THEME['text']};")
+        lbl.setStyleSheet(f"font-weight: bold; ")
         
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(300)
@@ -212,7 +212,7 @@ class ConfigTabV2(QWidget):
         info_layout.addWidget(self.profile_combo)
         
         profile_helper = QLabel("Profile controls targets + settings")
-        profile_helper.setStyleSheet(f"color: {CATPPUCCIN_THEME['text_muted']}; font-size: 12px;")
+        profile_helper.setStyleSheet(f" font-size: 12px;")
         info_layout.addWidget(profile_helper)
         
         profile_layout.addLayout(info_layout)
@@ -262,7 +262,7 @@ class ConfigTabV2(QWidget):
         settings_layout.setContentsMargins(25, 25, 25, 25)
         
         settings_title = QLabel("Global Settings")
-        settings_title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {CATPPUCCIN_THEME['text']}; margin-bottom: 10px;")
+        settings_title.setStyleSheet(f"font-size: 18px; font-weight: bold;  margin-bottom: 10px;")
         settings_layout.addWidget(settings_title)
 
         # Form Grid
@@ -272,9 +272,9 @@ class ConfigTabV2(QWidget):
         # Retry Days
         retry_row = QHBoxLayout()
         retry_lbl = QLabel("&Retry Interval (Days)")
-        retry_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        retry_lbl.setStyleSheet("")
         retry_desc = QLabel("Skip ISBNs that failed recently")
-        retry_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['text_muted']}; font-size: 12px;")
+        retry_desc.setStyleSheet(f" font-size: 12px;")
         
         desc_layout = QVBoxLayout()
         desc_layout.addWidget(retry_lbl)
@@ -301,9 +301,9 @@ class ConfigTabV2(QWidget):
         # Call Number Mode
         mode_row = QHBoxLayout()
         mode_lbl = QLabel("Call Number &Mode")
-        mode_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
+        mode_lbl.setStyleSheet("")
         mode_desc = QLabel("Choose which call number type to accept")
-        mode_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['text_muted']}; font-size: 12px;")
+        mode_desc.setStyleSheet(f" font-size: 12px;")
 
         mode_desc_layout = QVBoxLayout()
         mode_desc_layout.addWidget(mode_lbl)
@@ -335,7 +335,7 @@ class ConfigTabV2(QWidget):
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet(f"background-color: {CATPPUCCIN_THEME['border']}; max-height: 1px;")
+        line.setStyleSheet(f"background- max-height: 1px;")
         return line
 
     def _comparable_settings(self, settings):

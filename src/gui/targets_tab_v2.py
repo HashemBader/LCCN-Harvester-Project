@@ -322,7 +322,8 @@ class TargetsTabV2(QWidget):
         # Header
         header_layout = QHBoxLayout()
         title = QLabel("Target Management")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #cdd6f4;")
+        title.setProperty("class", "CardTitle")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
         layout.addLayout(header_layout)

@@ -52,7 +52,7 @@ class DashboardCard(QFrame):
         
         # Helper Text
         self.lbl_helper = QLabel("Total records")
-        self.lbl_helper.setStyleSheet("color: #a5adcb; font-size: 11px;")
+        self.lbl_helper.setProperty("class", "CardHelper")
         layout.addWidget(self.lbl_helper)
 
     def set_data(self, value, helper_text=""):

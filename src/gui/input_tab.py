@@ -136,11 +136,11 @@ class InputTab(QWidget):
 
         drop_text = QLabel("Drag & Drop ISBN File Here\nor click anywhere to browse")
         drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_text.setStyleSheet("font-size: 14px; color: #f4b860; font-weight: bold; border: none; background: transparent;")
+        drop_text.setStyleSheet("font-size: 14px; font-weight: bold; border: none; background: transparent;")
 
         drop_hint = QLabel("Supports: .tsv, .txt, .csv files")
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_hint.setStyleSheet("font-size: 11px; color: #a7a199; border: none; background: transparent;")
+        drop_hint.setStyleSheet("font-size: 11px; border: none; background: transparent;")
 
         drop_layout.addWidget(drop_icon)
         drop_layout.addWidget(drop_text)

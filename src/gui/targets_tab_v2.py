@@ -4,7 +4,6 @@ Purpose: A modern, dark-themed Target Management tab.
          Integrates with TargetsManager for persistence.
 """
 
-from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import sys
@@ -13,7 +12,7 @@ import urllib.request
 # Add src to path for utils/z3950 imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from PyQt6.QtCore import Qt, QDateTime, pyqtSignal, QEvent, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QIcon, QColor
 from PyQt6.QtWidgets import (
     QWidget,
@@ -33,8 +32,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QCheckBox,
     QComboBox,
-    QListWidget,
-    QListWidgetItem,
     QToolButton,
     QInputDialog,
     QSizePolicy,
@@ -45,6 +42,7 @@ from PyQt6.QtWidgets import (
 from utils.targets_manager import TargetsManager, Target
 from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
+from gui.theme_manager import ThemeManager
 
 
 class TargetDialog(QDialog):
@@ -58,7 +56,8 @@ class TargetDialog(QDialog):
         self.connection_status = None  # Store connection test result
         self.remove_requested = False
         self._setup_ui()
-        
+        self._apply_styles()
+
     def _setup_ui(self):
         layout = QVBoxLayout()
         form_layout = QFormLayout()
@@ -187,52 +186,133 @@ class TargetDialog(QDialog):
         self.remove_requested = True
         self.reject()
 
-
-
-class RestoreDialog(QDialog):
-    """Dialog to show edit/delete history and restore items."""
-
-    def __init__(self, history, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Restore History")
-        self.resize(500, 400)
-        self.history = history
-        self._setup_ui()
-        
-    def _setup_ui(self):
-        layout = QVBoxLayout()
-
-        lbl = QLabel("Select an action to undo:")
-        layout.addWidget(lbl)
-
-        self.list_widget = QListWidget()
-        for idx, item in enumerate(self.history):
-            action = item["type"]
-            target_name = item["snapshot"].name if item["snapshot"] else "Unknown"
-            time_str = item["timestamp"].toString("HH:mm:ss")
-            text = f"[{time_str}] {action}: {target_name}"
-
-            list_item = QListWidgetItem(text)
-            list_item.setData(Qt.ItemDataRole.UserRole, idx)
-            self.list_widget.addItem(list_item)
-
-        layout.addWidget(self.list_widget)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Restore")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self.setLayout(layout)
-
-
-    def get_selected_index(self):
-        if len(self.list_widget.selectedItems()) > 0:
-            return self.list_widget.selectedItems()[0].data(Qt.ItemDataRole.UserRole)
-        return None
+    def _apply_styles(self):
+        """Apply theme-aware styles for both dark and light modes."""
+        mode = ThemeManager().get_theme()
+        if mode == "dark":
+            self.setStyleSheet(
+                """
+                QDialog {
+                    background-color: #1e1e2e;
+                    color: #cdd6f4;
+                }
+                QLabel {
+                    color: #cdd6f4;
+                    font-weight: bold;
+                }
+                QLineEdit, QSpinBox {
+                    background-color: #313244;
+                    border: 1px solid #45475a;
+                    border-radius: 4px;
+                    padding: 6px;
+                    color: #ffffff;
+                }
+                QSpinBox::up-button, QSpinBox::down-button {
+                    width: 20px;
+                    background-color: #313244;
+                    border: none;
+                    border-left: 1px solid #45475a;
+                }
+                QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                    background-color: #45475a;
+                }
+                QSpinBox::up-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/plus.svg);
+                    border: none;
+                }
+                QSpinBox::down-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/minus.svg);
+                    border: none;
+                }
+                QLineEdit:focus, QSpinBox:focus {
+                    border: 1px solid #89b4fa;
+                }
+                QPushButton {
+                    background-color: #313244;
+                    color: white;
+                    border: 1px solid #45475a;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #45475a;
+                }
+                QPushButton#DangerButton {
+                    background-color: #ed8796;
+                    color: #1e1e2e;
+                    border: 1px solid #d97082;
+                }
+                QPushButton#DangerButton:hover {
+                    background-color: #d97082;
+                }
+            """
+            )
+        else:
+            self.setStyleSheet(
+                """
+                QDialog {
+                    background-color: #ffffff;
+                    color: #0f172a;
+                }
+                QLabel {
+                    color: #0f172a;
+                    font-weight: bold;
+                }
+                QLineEdit, QSpinBox {
+                    background-color: #f3f4f6;
+                    border: 1px solid #cbd5e1;
+                    border-radius: 4px;
+                    padding: 6px;
+                    color: #0f172a;
+                }
+                QSpinBox::up-button, QSpinBox::down-button {
+                    width: 20px;
+                    background-color: #f3f4f6;
+                    border: none;
+                    border-left: 1px solid #cbd5e1;
+                }
+                QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                    background-color: #e2e8f0;
+                }
+                QSpinBox::up-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/plus.svg);
+                    border: none;
+                }
+                QSpinBox::down-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/minus.svg);
+                    border: none;
+                }
+                QLineEdit:focus, QSpinBox:focus {
+                    border: 1px solid #3b82f6;
+                }
+                QPushButton {
+                    background-color: #f1f5f9;
+                    color: #0f172a;
+                    border: 1px solid #cbd5e1;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #e2e8f0;
+                }
+                QPushButton#DangerButton {
+                    background-color: #dc2626;
+                    color: #ffffff;
+                    border: 1px solid #b91c1c;
+                }
+                QPushButton#DangerButton:hover {
+                    background-color: #b91c1c;
+                }
+            """
+            )
 
 
 class TargetsTabV2(QWidget):
@@ -248,7 +328,6 @@ class TargetsTabV2(QWidget):
         active_profile = self._profile_manager.get_active_profile()
         targets_file = self._profile_manager.get_targets_file(active_profile)
         self.manager = TargetsManager(targets_file=targets_file)
-        self.history = []
         self.server_status = {}  # Cache for server status checks
         self._setup_ui()
         self._check_on_startup()  # Check APIs + active Z3950 on launch
@@ -293,7 +372,6 @@ class TargetsTabV2(QWidget):
         targets_file = self._profile_manager.get_targets_file(profile_name)
         self.manager = TargetsManager(targets_file=targets_file)
         self.server_status.clear()
-        self.history.clear()
         self._check_on_startup()
 
     def eventFilter(self, obj, event):
@@ -344,11 +422,6 @@ class TargetsTabV2(QWidget):
         self.btn_add.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_add.clicked.connect(self.add_target)
 
-        self.btn_restore = QPushButton("Restore History")
-        self.btn_restore.setObjectName("SecondaryButton")
-        self.btn_restore.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_restore.clicked.connect(self.show_restore_dialog)
-
         self.btn_check_servers = QPushButton("Check Servers")
         self.btn_check_servers.setObjectName("SecondaryButton")
         self.btn_check_servers.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -377,7 +450,6 @@ class TargetsTabV2(QWidget):
         search_layout.addWidget(self.search_clear_btn)
 
         btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_restore)
         btn_layout.addWidget(self.btn_check_servers)
         btn_layout.addStretch()
         btn_layout.addWidget(self.search_container)
@@ -399,28 +471,22 @@ class TargetsTabV2(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(6, 60)
         self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(7, 100)
+        self.table.setColumnWidth(7, 110)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(52)
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setAlternatingRowColors(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        pass # Table inherits global aesthetic
+        # Table inherits global stylesheet
 
         self.table.itemDoubleClicked.connect(lambda _item: self.edit_target())
 
         # Ensure the table always shows a reasonable minimum height
         self.table.setMinimumHeight(200)
         layout.addWidget(self.table)
-
-    def mousePressEvent(self, event):
-        """Clear table selection when clicking outside the table."""
-        if not self.table.geometry().contains(event.pos()):
-            self.table.clearSelection()
-        super().mousePressEvent(event)
 
     def _emit_targets_changed(self):
         self.targets_changed.emit(self.get_targets())
@@ -494,7 +560,7 @@ class TargetsTabV2(QWidget):
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
             rank_combo.setFixedHeight(36)
-            pass # rank combo inherits global styled combo box
+            pass  # rank combo inherits global styled combo box
             for i in range(1, len(targets) + 1):
                 rank_combo.addItem(str(i), i)
             # Set current rank using userData (robust)
@@ -510,40 +576,26 @@ class TargetsTabV2(QWidget):
             rank_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             rank_combo.installEventFilter(self)
 
-            rank_container = QWidget()
-            rank_layout = QHBoxLayout(rank_container)
-            rank_layout.setContentsMargins(0, 0, 0, 0)
-            rank_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            rank_layout.addWidget(rank_combo)
-            self.table.setCellWidget(row, 0, rank_container)
+            self.table.setCellWidget(row, 0, rank_combo)
 
-            # Active toggle (Pill button with checkmark as shown in screenshot)
+            # Active toggle
             active_btn = QPushButton()
+            active_btn.setFixedHeight(36)
+            active_btn.setMinimumWidth(50)
+            active_btn.setMaximumWidth(90)
+            active_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             active_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             active_btn.setObjectName("ActiveToggle")
-            active_btn.setFixedSize(64, 28)
-            
             if target.selected:
-                active_btn.setText("")
-                active_btn.setIcon(QIcon("src/gui/assets/check.svg"))
-                active_btn.setIconSize(QSize(16, 16))
                 active_btn.setProperty("state", "active")
+                active_btn.setText("✔")
             else:
-                active_btn.setText("")
-                active_btn.setIcon(QIcon("src/gui/assets/x.svg"))
-                active_btn.setIconSize(QSize(16, 16))
                 active_btn.setProperty("state", "inactive")
-                
+                active_btn.setText("✘")
             active_btn.clicked.connect(lambda checked, t=target: self._toggle_target_active(t))
-            
-            cb_container = QWidget()
-            cb_layout = QHBoxLayout(cb_container)
-            cb_layout.setContentsMargins(0, 0, 0, 0)
-            cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cb_layout.addWidget(active_btn)
-            
-            self.table.setCellWidget(row, 1, cb_container)
+
+            self.table.setCellWidget(row, 1, active_btn)
 
             # --- Target Model Items ---
             name_item = QTableWidgetItem(target.name)
@@ -575,7 +627,7 @@ class TargetsTabV2(QWidget):
             edit_btn.setIcon(QIcon(_pencil_icon_path))
             edit_btn.setIconSize(QSize(18, 18))
             edit_btn.setProperty("class", "IconButton")
-            edit_btn.clicked.connect(lambda checked, t=target: self.edit_target(t))
+            edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
             self.table.setCellWidget(row, 6, edit_btn)
 
             # Server status indicator
@@ -596,8 +648,14 @@ class TargetsTabV2(QWidget):
             else:
                 server_btn.setProperty("state", "offline")
                 server_btn.setText("OFFLINE")
-            
-            self.table.setCellWidget(row, 7, server_btn)
+
+            server_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            server_container = QWidget()
+            server_layout = QHBoxLayout(server_container)
+            server_layout.setContentsMargins(4, 0, 4, 0)
+            server_layout.setSpacing(0)
+            server_layout.addWidget(server_btn)
+            self.table.setCellWidget(row, 7, server_container)
 
         self.table.blockSignals(False)
         self._emit_targets_changed()
@@ -702,7 +760,6 @@ class TargetsTabV2(QWidget):
             return
 
         if result == QDialog.DialogCode.Accepted:
-            self._track_history("EDIT", target)
             data = dialog.get_data()
 
             target.name = data["name"]
@@ -743,7 +800,6 @@ class TargetsTabV2(QWidget):
         )
 
         if confirm == QMessageBox.StandardButton.Yes:
-            self._track_history("DELETE", target)
             self.manager.delete_target(target.target_id)
             self.refresh_targets()
 
@@ -794,49 +850,6 @@ class TargetsTabV2(QWidget):
             visible = text in name
             self.table.setRowHidden(row, not visible)
 
-    def _track_history(self, action_type, target):
-        """Save a snapshot of the target state."""
-        snapshot = deepcopy(target)
-        self.history.append(
-            {
-                "type": action_type,
-                "snapshot": snapshot,
-                "timestamp": QDateTime.currentDateTime(),
-            }
-        )
-        if len(self.history) > 50:
-            self.history.pop(0)
 
-    def show_restore_dialog(self):
-        """Show the restore history dialog."""
-        if not self.history:
-            QMessageBox.information(self, "History", "No actions to restore in this session.")
-            return
-
-        dialog = RestoreDialog(self.history, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            idx = dialog.get_selected_index()
-            if idx is not None:
-                item = self.history.pop(idx)
-                self._restore_item(item)
-
-    def _restore_item(self, item):
-        """Restore the target based on action type."""
-        action = item["type"]
-        snapshot = item["snapshot"]
-
-        if action == "DELETE":
-            all_targets = self.manager.get_all_targets()
-            next_rank = max((t.rank for t in all_targets), default=0) + 1
-
-            snapshot.rank = next_rank
-            self.manager.add_target(snapshot)
-            self.refresh_targets()
-            QMessageBox.information(self, "Restored", f"Restored '{snapshot.name}' to end of list.")
-
-        elif action == "EDIT":
-            self.manager.modify_target(snapshot)
-            self.refresh_targets()
-            QMessageBox.information(self, "Restored", f"Reverted changes to '{snapshot.name}'.")
 
 

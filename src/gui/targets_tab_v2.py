@@ -43,6 +43,7 @@ from utils.targets_manager import TargetsManager, Target
 from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
 from gui.theme_manager import ThemeManager
+from gui.icons import get_icon
 
 
 class TargetDialog(QDialog):
@@ -322,6 +323,8 @@ class TargetsTabV2(QWidget):
     """
 
     targets_changed = pyqtSignal(list)
+    navigate_to_settings = pyqtSignal()
+    profile_selected = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -398,25 +401,9 @@ class TargetsTabV2(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
-        # Header
-        header_layout = QHBoxLayout()
-        title = QLabel("Target Management")
-        title.setProperty("class", "CardTitle")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
-
-        # Info banner
-        built_in_label = QLabel(
-            "Built-in APIs: Library of Congress API, Harvard Library API, OpenLibrary API"
-        )
-        built_in_label.setWordWrap(True)
-        built_in_label.setProperty("class", "Banner")
-        layout.addWidget(built_in_label)
-
-        # Action buttons row
+        # Action buttons row (includes profile selector)
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
         self.btn_add = QPushButton("Add New Target")
         self.btn_add.setObjectName("PrimaryButton")
@@ -427,6 +414,16 @@ class TargetsTabV2(QWidget):
         self.btn_check_servers.setObjectName("SecondaryButton")
         self.btn_check_servers.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_check_servers.clicked.connect(self.check_all_servers)
+
+        profile_label = QLabel("Profile:")
+        profile_label.setObjectName("FormLabel")
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(150)
+        self.profile_combo.setMaximumWidth(220)
+        self.profile_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_combo.installEventFilter(self)
+        self.profile_combo.currentTextChanged.connect(self._on_profile_combo_changed)
 
         self.search_container = QWidget()
         self.search_container.setProperty("class", "SearchContainer")
@@ -452,6 +449,9 @@ class TargetsTabV2(QWidget):
 
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_check_servers)
+        btn_layout.addSpacing(16)
+        btn_layout.addWidget(profile_label)
+        btn_layout.addWidget(self.profile_combo)
         btn_layout.addStretch()
         btn_layout.addWidget(self.search_container)
 
@@ -488,6 +488,22 @@ class TargetsTabV2(QWidget):
         # Ensure the table always shows a reasonable minimum height
         self.table.setMinimumHeight(200)
         layout.addWidget(self.table)
+
+    def set_profile_options(self, profiles: list, current: str):
+        """Populate the profile combo box without triggering a profile switch."""
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        for p in profiles:
+            self.profile_combo.addItem(p)
+        idx = self.profile_combo.findText(current)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
+
+    def _on_profile_combo_changed(self, name: str):
+        """Emit profile_selected when the user picks a different profile."""
+        if name:
+            self.profile_selected.emit(name)
 
     def _emit_targets_changed(self):
         self.targets_changed.emit(self.get_targets())
@@ -561,7 +577,7 @@ class TargetsTabV2(QWidget):
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
             rank_combo.setFixedHeight(36)
-            pass  # rank combo inherits global styled combo box
+            rank_combo.setObjectName("RankCombo")
             for i in range(1, len(targets) + 1):
                 rank_combo.addItem(str(i), i)
             # Set current rank using userData (robust)

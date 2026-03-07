@@ -58,7 +58,12 @@ def test_imports():
     except ImportError as e:
         print(f"❌ ConfigTabV2 import failed: {e}")
         return False
-
+    try:
+        from src.gui.targets_config_tab import TargetsConfigTab
+        print("\u2705 TargetsConfigTab imported successfully")
+    except ImportError as e:
+        print(f"\u274c TargetsConfigTab import failed: {e}")
+        return False
     try:
         from src.gui.dashboard_v2 import DashboardTabV2
         print("✅ DashboardTabV2 imported successfully")
@@ -164,11 +169,9 @@ def test_gui_instantiation():
         # Check tabs exist
         tabs = [
             ("Dashboard", window.dashboard_tab),
-            ("Input", window.input_tab),
             ("Targets", window.targets_tab),
             ("Config", window.config_tab),
             ("Harvest", window.harvest_tab),
-            ("Results", window.results_tab),
             ("AI Assistant", window.ai_assistant_tab),
         ]
 

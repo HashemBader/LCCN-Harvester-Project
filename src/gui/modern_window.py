@@ -11,8 +11,7 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPropertyAnimation, QEasingCurve
 import sys
 
 # Import Tabs
-from .targets_tab_v2 import TargetsTabV2
-from .config_tab_v2 import ConfigTabV2
+from .targets_config_tab import TargetsConfigTab
 from .harvest_tab_v2 import HarvestTabV2
 from .dashboard_v2 import DashboardTabV2
 from .ai_assistant_tab import AIAssistantTab
@@ -131,14 +130,12 @@ class ModernMainWindow(QMainWindow):
 
         # Navigation Buttons (Icon + Text)
         self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
-        self.btn_targets = self._create_nav_btn("Targets", SVG_TARGETS, 1)
-        self.btn_config = self._create_nav_btn("Settings", SVG_SETTINGS, 2)
-        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 3)
-        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 4)
+        self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
+        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
+        self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 3)
 
         sidebar_layout.addWidget(self.btn_dashboard)
-        sidebar_layout.addWidget(self.btn_targets)
-        sidebar_layout.addWidget(self.btn_config)
+        sidebar_layout.addWidget(self.btn_configure)
         sidebar_layout.addWidget(self.btn_harvest)
         sidebar_layout.addWidget(self.btn_ai)
 
@@ -206,16 +203,17 @@ class ModernMainWindow(QMainWindow):
         
         # Instantiate Pages (Using V2 tabs)
         self.dashboard_tab = DashboardTabV2()
-        self.targets_tab = TargetsTabV2()
-        self.config_tab = ConfigTabV2()
+        self.targets_config_tab = TargetsConfigTab()
+        # Backward-compatibility aliases so all existing signal wiring still works
+        self.targets_tab = self.targets_config_tab.targets_tab
+        self.config_tab = self.targets_config_tab.config_tab
         self.harvest_tab = HarvestTabV2()
         self.ai_assistant_tab = AIAssistantTab()
 
-        self.stack.addWidget(self.dashboard_tab) # 0
-        self.stack.addWidget(self.targets_tab)   # 1
-        self.stack.addWidget(self.config_tab)    # 2
-        self.stack.addWidget(self.harvest_tab)   # 3
-        self.stack.addWidget(self.ai_assistant_tab) # 4
+        self.stack.addWidget(self.dashboard_tab)         # 0
+        self.stack.addWidget(self.targets_config_tab)    # 1
+        self.stack.addWidget(self.harvest_tab)           # 2
+        self.stack.addWidget(self.ai_assistant_tab)      # 3
 
         content_layout.addWidget(self.stack)
         main_layout.addWidget(content_container)
@@ -232,6 +230,7 @@ class ModernMainWindow(QMainWindow):
         self._setup_accessibility()
         self._setup_shortcuts()
         self._refresh_dashboard_profile_controls()
+        self._refresh_targets_profile_controls()
         self._sync_tab_state()
         
         # Select default
@@ -270,10 +269,9 @@ class ModernMainWindow(QMainWindow):
         QShortcut(QKeySequence(f"{mod}+B"), self, activated=self._toggle_sidebar)
         QShortcut(QKeySequence(f"{mod}+Q"), self, activated=self.close)
         QShortcut(QKeySequence(f"{mod}+1"), self, activated=lambda: self.btn_dashboard.click())
-        QShortcut(QKeySequence(f"{mod}+2"), self, activated=lambda: self.btn_targets.click())
-        QShortcut(QKeySequence(f"{mod}+3"), self, activated=lambda: self.btn_config.click())
-        QShortcut(QKeySequence(f"{mod}+4"), self, activated=lambda: self.btn_harvest.click())
-        QShortcut(QKeySequence(f"{mod}+5"), self, activated=lambda: self.btn_ai.click())
+        QShortcut(QKeySequence(f"{mod}+2"), self, activated=lambda: self.btn_configure.click())
+        QShortcut(QKeySequence(f"{mod}+3"), self, activated=lambda: self.btn_harvest.click())
+        QShortcut(QKeySequence(f"{mod}+4"), self, activated=lambda: self.btn_ai.click())
 
         QShortcut(QKeySequence(f"{mod}+Shift+D"), self, activated=lambda: self.btn_dashboard.click())
         QShortcut(QKeySequence(f"{mod}+Shift+H"), self, activated=lambda: self.btn_harvest.click())
@@ -379,11 +377,15 @@ class ModernMainWindow(QMainWindow):
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
 
         # Target Updates
-        self.targets_tab.targets_changed.connect(self._on_targets_changed)
+        self.targets_config_tab.targets_changed.connect(self._on_targets_changed)
 
         # Reload targets when the active profile changes
-        self.config_tab.profile_changed.connect(self.targets_tab.load_profile_targets)
-        self.config_tab.profile_changed.connect(self._on_profile_changed)
+        self.targets_config_tab.profile_changed.connect(self.targets_tab.load_profile_targets)
+        self.targets_config_tab.profile_changed.connect(self._on_profile_changed)
+
+        # Targets tab profile selector
+        # (cross-navigation between Targets/Settings is handled internally by TargetsConfigTab)
+        self.targets_config_tab.profile_selected.connect(self._on_targets_profile_selected)
 
         # Dashboard profile dock controls
         self.dashboard_tab.profile_selected.connect(self._on_dashboard_profile_selected)
@@ -434,6 +436,7 @@ class ModernMainWindow(QMainWindow):
     def _on_targets_changed(self, targets):
         """Fan out target changes to dependent tabs."""
         self.harvest_tab.on_targets_changed(targets)
+        self.config_tab.refresh_targets_preview(targets)
         # Dashboard stats come from DB, but refreshing keeps UI current after navigation/actions.
         self.dashboard_tab.refresh_data()
 
@@ -448,24 +451,38 @@ class ModernMainWindow(QMainWindow):
         self.config_tab.select_profile(name)
         # If user cancels due to unsaved changes, resync displayed selection.
         self._refresh_dashboard_profile_controls()
+        self._refresh_targets_profile_controls()
+
+    def _refresh_targets_profile_controls(self):
+        profiles = self.config_tab.list_profile_names()
+        current = self._profile_manager.get_active_profile()
+        self.targets_tab.set_profile_options(profiles, current)
+
+    def _on_targets_profile_selected(self, name):
+        if not name:
+            return
+        self.config_tab.select_profile(name)
+        self._refresh_dashboard_profile_controls()
+        self._refresh_targets_profile_controls()
 
     def _open_profile_settings(self):
-        self.btn_config.click()
+        self.btn_configure.click()
         if hasattr(self.config_tab, "btn_new"):
             self.config_tab.btn_new.setFocus()
 
     def _on_profile_changed(self, profile_name):
         self._profile_manager.set_active_profile(profile_name)
         self._refresh_dashboard_profile_controls()
+        self._refresh_targets_profile_controls()
         self.dashboard_tab.refresh_data()
 
     def _on_page_changed(self, index):
         """Refresh dependent tabs on navigation to keep views current."""
         if index == 0:  # Dashboard
             self.dashboard_tab.refresh_data()
-        elif index == 1:  # Targets
-            # Reflect latest profile/target state when revisiting the tab.
+        elif index == 1:  # Configure (Targets + Settings)
             self.targets_tab.refresh_targets()
+            self.config_tab.refresh_targets_preview()
 
     # --- Logic ---
 
@@ -473,8 +490,8 @@ class ModernMainWindow(QMainWindow):
         # AI Button now always visible, so we don't toggle it here
         # self.btn_ai.setVisible(self.advanced_mode) <--- REMOVED
         
-        for tab in [self.dashboard_tab, self.targets_tab, 
-                   self.config_tab, self.harvest_tab, self.ai_assistant_tab]:
+        for tab in [self.dashboard_tab, self.targets_config_tab,
+                   self.harvest_tab, self.ai_assistant_tab]:
             if hasattr(tab, 'set_advanced_mode'):
                 tab.set_advanced_mode(self.advanced_mode)
 

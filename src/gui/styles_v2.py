@@ -345,6 +345,11 @@ QComboBox::down-arrow:on, QComboBox::down-arrow:hover, QComboBox::down-arrow:foc
     image: url("{get_svg_file(chevron_down, t['focus'], 'chevron_down')}");
 }}
 
+/* Rank column combo — tighter vertical padding so the number isn't clipped */
+QComboBox#RankCombo {{
+    padding: 4px 32px 4px 8px;
+}}
+
 /* Clean up QSpinBox arrows to avoid dark system patches */
 QSpinBox::up-button, QSpinBox::down-button {{
     background: transparent;
@@ -821,7 +826,7 @@ QPushButton#ActiveToggle[state="active"] {{
     border-radius: 6px;
 }}
 QPushButton#ActiveToggle[state="active"]:hover {{
-    background-color: {t['success']}E6;
+    background-color: {t['focus']};
 }}
 QPushButton#ActiveToggle[state="inactive"] {{
     background-color: {t['danger']};
@@ -829,7 +834,7 @@ QPushButton#ActiveToggle[state="inactive"] {{
     border-radius: 6px;
 }}
 QPushButton#ActiveToggle[state="inactive"]:hover {{
-    background-color: {t['danger']}E6;
+    background-color: {t['focus']};
 }}
 
 QPushButton[class="StatusIndicator"][state="online"] {{

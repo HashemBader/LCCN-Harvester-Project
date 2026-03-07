@@ -55,19 +55,20 @@ class TestSidebarTabsExist:
         assert main_window.btn_dashboard.text() == "Dashboard"
         assert main_window.btn_dashboard.isVisible()
 
-    def test_targets_tab_exists(self, main_window):
-        """Test Targets tab is created and accessible."""
-        assert hasattr(main_window, 'btn_targets')
-        assert main_window.btn_targets is not None
-        assert main_window.btn_targets.text() == "Targets"
-        assert main_window.btn_targets.isVisible()
+    def test_configure_tab_exists(self, main_window):
+        """Test Configure tab (merged Targets + Settings) is created and accessible."""
+        assert hasattr(main_window, 'btn_configure')
+        assert main_window.btn_configure is not None
+        assert main_window.btn_configure.text() == "Configure"
+        assert main_window.btn_configure.isVisible()
 
-    def test_settings_tab_exists(self, main_window):
-        """Test Settings tab is created and accessible."""
-        assert hasattr(main_window, 'btn_config')
-        assert main_window.btn_config is not None
-        assert main_window.btn_config.text() == "Settings"
-        assert main_window.btn_config.isVisible()
+    def test_configure_tab_has_subtabs(self, main_window):
+        """Test Configure tab contains both Targets and Settings panes in the splitter."""
+        tc = main_window.targets_config_tab
+        assert hasattr(tc, 'targets_tab'), 'targets_tab pane missing'
+        assert hasattr(tc, 'config_tab'), 'config_tab pane missing'
+        assert tc.targets_tab is not None
+        assert tc.config_tab is not None
 
     def test_harvest_tab_exists(self, main_window):
         """Test Harvest tab is created and accessible."""
@@ -75,13 +76,6 @@ class TestSidebarTabsExist:
         assert main_window.btn_harvest is not None
         assert main_window.btn_harvest.text() == "Harvest"
         assert main_window.btn_harvest.isVisible()
-
-    def test_results_tab_exists(self, main_window):
-        """Test Results tab is created and accessible."""
-        assert hasattr(main_window, 'btn_results')
-        assert main_window.btn_results is not None
-        assert main_window.btn_results.text() == "Results"
-        assert main_window.btn_results.isVisible()
 
     def test_ai_agent_tab_exists(self, main_window):
         """Test AI Agent tab is created and accessible."""
@@ -117,34 +111,27 @@ class TestTabSwitching:
         assert main_window.stack.currentIndex() == 0
         assert main_window.page_title.text() == "Dashboard"
 
-    def test_switch_to_targets(self, main_window):
-        """Test switching to Targets tab."""
-        main_window.btn_targets.click()
+    def test_switch_to_configure(self, main_window):
+        """Test switching to Configure tab (merged Targets + Settings)."""
+        main_window.btn_configure.click()
         assert main_window.stack.currentIndex() == 1
-        assert main_window.page_title.text() == "Targets"
+        assert main_window.page_title.text() == "Configure"
 
-    def test_switch_to_settings(self, main_window):
-        """Test switching to Settings tab."""
-        main_window.btn_config.click()
-        assert main_window.stack.currentIndex() == 2
-        assert main_window.page_title.text() == "Settings"
+    def test_configure_inner_tab_switch_to_targets(self, main_window):
+        """Test that the targets pane is visible inside the Configure tab."""
+        main_window.btn_configure.click()
+        assert main_window.targets_config_tab.targets_tab.isVisible()
 
     def test_switch_to_harvest(self, main_window):
         """Test switching to Harvest tab."""
         main_window.btn_harvest.click()
-        assert main_window.stack.currentIndex() == 3
+        assert main_window.stack.currentIndex() == 2
         assert main_window.page_title.text() == "Harvest"
-
-    def test_switch_to_results(self, main_window):
-        """Test switching to Results tab."""
-        main_window.btn_results.click()
-        assert main_window.stack.currentIndex() == 4
-        assert main_window.page_title.text() == "Results"
 
     def test_switch_to_ai(self, main_window):
         """Test switching to AI Agent tab."""
         main_window.btn_ai.click()
-        assert main_window.stack.currentIndex() == 5
+        assert main_window.stack.currentIndex() == 3
         assert main_window.page_title.text() == "AI Agent"
 
 
@@ -277,21 +264,13 @@ class TestTabAccessibility:
         """Test Dashboard button has accessible name."""
         assert main_window.btn_dashboard.accessibleName() == "Open Dashboard page"
 
-    def test_targets_accessible_name(self, main_window):
-        """Test Targets button has accessible name."""
-        assert main_window.btn_targets.accessibleName() == "Open Targets page"
-
-    def test_settings_accessible_name(self, main_window):
-        """Test Settings button has accessible name."""
-        assert main_window.btn_config.accessibleName() == "Open Settings page"
+    def test_configure_accessible_name(self, main_window):
+        """Test Configure button has accessible name."""
+        assert main_window.btn_configure.accessibleName() == "Open Configure page"
 
     def test_harvest_accessible_name(self, main_window):
         """Test Harvest button has accessible name."""
         assert main_window.btn_harvest.accessibleName() == "Open Harvest page"
-
-    def test_results_accessible_name(self, main_window):
-        """Test Results button has accessible name."""
-        assert main_window.btn_results.accessibleName() == "Open Results page"
 
     def test_ai_agent_accessible_name(self, main_window):
         """Test AI Agent button has accessible name."""
@@ -301,10 +280,8 @@ class TestTabAccessibility:
         """Test that all tab buttons have tooltip text."""
         buttons = [
             main_window.btn_dashboard,
-            main_window.btn_targets,
-            main_window.btn_config,
+            main_window.btn_configure,
             main_window.btn_harvest,
-            main_window.btn_results,
             main_window.btn_ai,
         ]
         for btn in buttons:

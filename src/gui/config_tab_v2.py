@@ -14,7 +14,7 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.profile_manager import ProfileManager
-from .icons import get_pixmap, SVG_SETTINGS
+from .icons import get_pixmap, SVG_SETTINGS, SVG_HARVEST
 from .styles_v2 import CATPPUCCIN_THEME
 
 
@@ -143,6 +143,7 @@ class ConfigTabV2(QWidget):
         self.has_unsaved_changes = False
         self._setup_ui()
         self._load_profile(self.current_profile_name)
+        self.refresh_targets_preview()
 
     def _setup_ui(self):
         # Wrap content in a scroll area so widgets never get compressed on resize
@@ -154,6 +155,7 @@ class ConfigTabV2(QWidget):
         _scroll.setFrameShape(QFrame.Shape.NoFrame)
         _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         _scr_content = QWidget()
         _scroll.setWidget(_scr_content)
         _outer.addWidget(_scroll)
@@ -162,42 +164,26 @@ class ConfigTabV2(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
 
         # =========================================================================
-        # 1. Header
-        # =========================================================================
-        header_layout = QHBoxLayout()
-        title_block = QVBoxLayout()
-        title = QLabel("Configuration")
-        title.setProperty("class", "PageTitle")
-        title.setStyleSheet(f"font-size: 24px; font-weight: bold; ")
-        
-        subtitle = QLabel("Manage profiles and global settings")
-        subtitle.setStyleSheet(f"font-size: 14px; ")
-        
-        title_block.addWidget(title)
-        title_block.addWidget(subtitle)
-        
-        header_layout.addLayout(title_block)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
-
-        # =========================================================================
         # 2. Profile Section (Card)
         # =========================================================================
         profile_frame = QFrame()
         profile_frame.setProperty("class", "Card")
         profile_layout = QHBoxLayout(profile_frame)
         profile_layout.setSpacing(20)
-        profile_layout.setContentsMargins(20, 20, 20, 20)
+        profile_layout.setContentsMargins(20, 12, 20, 12)
         
         # Icon
         icon_lbl = QLabel()
         icon_lbl.setPixmap(get_pixmap(SVG_SETTINGS, CATPPUCCIN_THEME['primary']))
         profile_layout.addWidget(icon_lbl)
+
+        # Title
+        profile_title = QLabel("Profile Settings")
+        profile_title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        profile_layout.addWidget(profile_title)
         
         # Selector
         info_layout = QVBoxLayout()
-        lbl = QLabel("&Active Profile")
-        lbl.setStyleSheet(f"font-weight: bold; ")
         
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(300)
@@ -206,14 +192,8 @@ class ConfigTabV2(QWidget):
         self.profile_combo.setAccessibleDescription("Choose which saved profile is active.")
         self._refresh_profile_list()
         self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
-        lbl.setBuddy(self.profile_combo)
         
-        info_layout.addWidget(lbl)
         info_layout.addWidget(self.profile_combo)
-        
-        profile_helper = QLabel("Profile controls targets + settings")
-        profile_helper.setStyleSheet(f" font-size: 12px;")
-        info_layout.addWidget(profile_helper)
         
         profile_layout.addLayout(info_layout)
         
@@ -258,28 +238,26 @@ class ConfigTabV2(QWidget):
         settings_frame = QFrame()
         settings_frame.setProperty("class", "Card")
         settings_layout = QVBoxLayout(settings_frame)
-        settings_layout.setSpacing(20)
-        settings_layout.setContentsMargins(25, 25, 25, 25)
-        
-        settings_title = QLabel("Global Settings")
-        settings_title.setStyleSheet(f"font-size: 18px; font-weight: bold;  margin-bottom: 10px;")
-        settings_layout.addWidget(settings_title)
+        settings_layout.setSpacing(0)
+        settings_layout.setContentsMargins(25, 14, 25, 14)
 
-        # Form Grid
-        form_layout = QVBoxLayout()
-        form_layout.setSpacing(15)
+        # Title + controls on one row
+        form_layout = QHBoxLayout()
+        form_layout.setSpacing(24)
+
+        harvest_icon_lbl = QLabel()
+        harvest_icon_lbl.setPixmap(get_pixmap(SVG_HARVEST, CATPPUCCIN_THEME['primary']))
+        form_layout.addWidget(harvest_icon_lbl)
+
+        harvest_title = QLabel("Harvest Settings")
+        harvest_title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        form_layout.addWidget(harvest_title)
+        form_layout.addSpacing(16)
 
         # Retry Days
-        retry_row = QHBoxLayout()
-        retry_lbl = QLabel("&Retry Interval (Days)")
+        retry_lbl = QLabel("&Retry Interval")
         retry_lbl.setStyleSheet("")
-        retry_desc = QLabel("Skip ISBNs that failed recently")
-        retry_desc.setStyleSheet(f" font-size: 12px;")
-        
-        desc_layout = QVBoxLayout()
-        desc_layout.addWidget(retry_lbl)
-        desc_layout.addWidget(retry_desc)
-        
+
         self.spin_retry = QSpinBox()
         self.spin_retry.setRange(0, 365)
         self.spin_retry.setValue(7)
@@ -289,28 +267,18 @@ class ConfigTabV2(QWidget):
         self.spin_retry.setToolTip("Days to wait before retrying recently failed ISBNs")
         self.spin_retry.valueChanged.connect(self._on_setting_changed)
         retry_lbl.setBuddy(self.spin_retry)
-        # Style spinbox? Maybe later. For now let stylesheet handle generic QSpinBox if any
-        
-        retry_row.addLayout(desc_layout)
-        retry_row.addStretch()
-        retry_row.addWidget(self.spin_retry)
-        
-        form_layout.addLayout(retry_row)
-        form_layout.addWidget(self._create_divider())
-        
+
+        retry_pair = QHBoxLayout()
+        retry_pair.setSpacing(8)
+        retry_pair.addWidget(retry_lbl)
+        retry_pair.addWidget(self.spin_retry)
+
         # Call Number Mode
-        mode_row = QHBoxLayout()
         mode_lbl = QLabel("Call Number &Mode")
         mode_lbl.setStyleSheet("")
-        mode_desc = QLabel("Choose which call number type to accept")
-        mode_desc.setStyleSheet(f" font-size: 12px;")
-
-        mode_desc_layout = QVBoxLayout()
-        mode_desc_layout.addWidget(mode_lbl)
-        mode_desc_layout.addWidget(mode_desc)
 
         self.call_number_combo = QComboBox()
-        self.call_number_combo.setFixedWidth(300)
+        self.call_number_combo.setFixedWidth(180)
         self.call_number_combo.setAccessibleName("Call number mode")
         self.call_number_combo.setAccessibleDescription("Choose whether to collect LCCN only, NLMCN only, or both.")
         self.call_number_combo.setToolTip("Select which call-number type is accepted during harvest")
@@ -320,16 +288,23 @@ class ConfigTabV2(QWidget):
         self.call_number_combo.currentTextChanged.connect(self._on_setting_changed)
         mode_lbl.setBuddy(self.call_number_combo)
 
-        mode_row.addLayout(mode_desc_layout)
-        mode_row.addStretch()
-        mode_row.addWidget(self.call_number_combo)
+        mode_pair = QHBoxLayout()
+        mode_pair.setSpacing(8)
+        mode_pair.addWidget(mode_lbl)
+        mode_pair.addWidget(self.call_number_combo)
 
-        form_layout.addLayout(mode_row)
+        form_layout.addLayout(retry_pair)
+        form_layout.addLayout(mode_pair)
+        form_layout.addStretch()
         
         settings_layout.addLayout(form_layout)
         layout.addWidget(settings_frame)
-        
+
         layout.addStretch()
+
+    def refresh_targets_preview(self, targets=None):
+        """No-op stub — targets are now shown in the live TargetsTabV2 below."""
+        pass
 
     def _create_divider(self):
         line = QFrame()

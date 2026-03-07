@@ -43,7 +43,6 @@ from utils.targets_manager import TargetsManager, Target
 from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
 from gui.theme_manager import ThemeManager
-from gui.icons import get_icon
 
 
 class TargetDialog(QDialog):
@@ -323,7 +322,6 @@ class TargetsTabV2(QWidget):
     """
 
     targets_changed = pyqtSignal(list)
-    navigate_to_settings = pyqtSignal()
     profile_selected = pyqtSignal(str)
 
     def __init__(self):

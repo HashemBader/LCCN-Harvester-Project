@@ -42,7 +42,7 @@ class TargetsConfigTab(QWidget):
         return self.targets_tab.get_targets()
 
     def refresh_targets_preview(self, targets=None):
-        pass
+        self.config_tab.refresh_targets_preview(targets)
 
     def load_profile_targets(self, profile_name):
         self.targets_tab.load_profile_targets(profile_name)

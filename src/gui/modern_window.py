@@ -417,6 +417,7 @@ class ModernMainWindow(QMainWindow):
             progress=pct,
             msg=message
         )
+        self.dashboard_tab.record_harvest_event(isbn, status, message)
         
         # Real-time results update
         if status in ("found", "failed", "cached", "skipped"):
@@ -523,6 +524,7 @@ class ModernMainWindow(QMainWindow):
         self.status_pill.style().unpolish(self.status_pill)
         self.status_pill.style().polish(self.status_pill)
         self.dashboard_tab.refresh_data()
+        self.dashboard_tab.apply_run_stats(stats if isinstance(stats, dict) else {})
         
         if isinstance(stats, dict) and not stats.get("cancelled", False) and not success:
             error_msg = stats.get("error", "Harvest stopped or failed") if isinstance(stats, dict) else "Harvest stopped or failed"
@@ -544,6 +546,7 @@ class ModernMainWindow(QMainWindow):
         """Called when user presses New Harvest — reset sidebar pill and dashboard status to Idle."""
         self.status_pill.setText("Idle")
         self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        self.dashboard_tab.reset_dashboard_stats()
         self.dashboard_tab.set_idle()
 
     def closeEvent(self, event):

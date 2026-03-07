@@ -90,6 +90,7 @@ class HarvestWorkerV2(QThread):
         self._pause_requested = False
         self._live_results_lock = threading.Lock()
         self._live_result_handles = {}
+        self._live_problem_rows_written = set()
         # Paths for the live output files (computed before thread starts)
         self.live_paths = live_paths or {}
         # Session-only result accumulators (never read from DB)
@@ -127,7 +128,9 @@ class HarvestWorkerV2(QThread):
 
             if total == 0:
                 self.status_message.emit(messages.HarvestMessages.no_valid_isbns)
-                self.harvest_complete.emit(False, {"total": 0, "found": 0, "failed": 0})
+                self.harvest_complete.emit(
+                    False, {"total": 0, "found": 0, "failed": 0, "invalid": invalid_count}
+                )
                 return
 
             # Track stats for GUI updates
@@ -302,6 +305,7 @@ class HarvestWorkerV2(QThread):
                 "failed": summary.failures,
                 "cached": summary.cached_hits,
                 "skipped": summary.skipped_recent_fail,
+                "invalid": invalid_count,
             }
 
             self.status_message.emit(
@@ -316,8 +320,9 @@ class HarvestWorkerV2(QThread):
             stats = (
                 self.stats.copy()
                 if hasattr(self, "stats")
-                else {"total": 0, "found": 0, "failed": 0}
+                else {"total": 0, "found": 0, "failed": 0, "invalid": 0}
             )
+            stats["invalid"] = len(getattr(self, "_session_invalid", []) or [])
             stats["cancelled"] = True
             self.harvest_complete.emit(False, stats)
         except Exception as e:
@@ -326,7 +331,7 @@ class HarvestWorkerV2(QThread):
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
             self.status_message.emit(error_msg)
             self.harvest_complete.emit(
-                False, {"total": 0, "found": 0, "failed": 0, "error": str(e)}
+                False, {"total": 0, "found": 0, "failed": 0, "invalid": 0, "error": str(e)}
             )
         finally:
             self._close_live_result_files()
@@ -352,8 +357,10 @@ class HarvestWorkerV2(QThread):
             ],
             "invalid": ["ISBN"],
             "failed": ["ISBN", "Next Try"],
+            "problems": ["Target", "Problem"],
         }
         self._close_live_result_files()
+        self._live_problem_rows_written = set()
         for key, header in headers.items():
             path = Path(self.live_paths.get(key, f"data/{key}.tsv"))
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -430,6 +437,61 @@ class HarvestWorkerV2(QThread):
                 self._compute_next_try_value(isbn, retry_days),
             ],
         )
+        self._append_live_problem_rows(
+            source,
+            reason,
+            not_found_targets=not_found_targets,
+            z3950_unsupported_targets=z3950_unsupported_targets,
+            offline_targets=offline_targets,
+            other_errors=other_errors,
+        )
+
+    def _append_live_problem_rows(
+        self,
+        source,
+        reason,
+        *,
+        not_found_targets=None,
+        z3950_unsupported_targets=None,
+        offline_targets=None,
+        other_errors=None,
+    ):
+        if source == "RetryRule":
+            return
+
+        for target_name in z3950_unsupported_targets or []:
+            self._append_live_problem(target_name, "Z39.50 support not available")
+
+        for target_name in offline_targets or []:
+            self._append_live_problem(target_name, "Target offline or unreachable")
+
+        for item in other_errors or []:
+            target_name, problem = self._split_problem_item(item)
+            self._append_live_problem(target_name, problem)
+
+        if (
+            not not_found_targets
+            and not (z3950_unsupported_targets or [])
+            and not (offline_targets or [])
+            and not (other_errors or [])
+            and source
+            and reason
+            and "not found" not in reason.lower()
+        ):
+            self._append_live_problem(source, reason)
+
+    def _split_problem_item(self, item):
+        text = str(item or "").strip()
+        if ": " in text:
+            return text.split(": ", 1)
+        return ("Unknown", text or "Unknown error")
+
+    def _append_live_problem(self, target, problem):
+        row = (target or "Unknown", problem or "Unknown error")
+        if row in self._live_problem_rows_written:
+            return
+        self._live_problem_rows_written.add(row)
+        self._append_live_row("problems", list(row))
 
     def _read_and_validate_isbns(self):
         """Read and validate ISBNs using the centralized parser."""
@@ -1391,13 +1453,15 @@ class HarvestTabV2(QWidget):
                 pass
         date_str = datetime.now().strftime("%Y-%m-%d-%H")
         # Use format: profilename-success-YYYY-MM-DD-HH.tsv
-        live_dir = Path("data")
+        live_dir = Path("data") / profile
         live_dir.mkdir(parents=True, exist_ok=True)
 
         self._run_live_paths = {
             "successful": str(live_dir / f"{profile}-success-{date_str}.tsv"),
             "failed": str(live_dir / f"{profile}-failed-{date_str}.tsv"),
+            "problems": str(live_dir / f"{profile}-problems-{date_str}.tsv"),
             "invalid": str(live_dir / f"{profile}-invalid-{date_str}.tsv"),
+            "profile_dir": str(live_dir),
         }
 
         # Notify dashboard of new live file paths

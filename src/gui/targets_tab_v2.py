@@ -189,6 +189,7 @@ class TargetDialog(QDialog):
     def _apply_styles(self):
         """Apply theme-aware styles for both dark and light modes."""
         mode = ThemeManager().get_theme()
+        icons_dir = (Path(__file__).parent / "icons").as_posix()
         if mode == "dark":
             self.setStyleSheet(
                 """
@@ -249,7 +250,7 @@ class TargetDialog(QDialog):
                 QPushButton#DangerButton:hover {
                     background-color: #d97082;
                 }
-            """
+            """.replace("url(src/gui/icons/", f"url({icons_dir}/")
             )
         else:
             self.setStyleSheet(
@@ -311,7 +312,7 @@ class TargetDialog(QDialog):
                 QPushButton#DangerButton:hover {
                     background-color: #b91c1c;
                 }
-            """
+            """.replace("url(src/gui/icons/", f"url({icons_dir}/")
             )
 
 
@@ -482,7 +483,7 @@ class TargetsTabV2(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         # Table inherits global stylesheet
 
-        self.table.itemDoubleClicked.connect(lambda _item: self.edit_target())
+        self.table.itemDoubleClicked.connect(lambda item: self._edit_target_from_item(item))
 
         # Ensure the table always shows a reasonable minimum height
         self.table.setMinimumHeight(200)
@@ -832,6 +833,15 @@ class TargetsTabV2(QWidget):
                 )
 
         self.refresh_targets()
+
+    def _edit_target_from_item(self, item):
+        """Edit the target corresponding to the double-clicked table item."""
+        row = item.row()
+        name_item = self.table.item(row, 2)  # Name column
+        if name_item:
+            target = name_item.data(Qt.ItemDataRole.UserRole)
+            if target:
+                self._edit_specific_target(target)
 
     def _get_selected_target(self):
         row = self.table.currentRow()

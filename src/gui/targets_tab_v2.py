@@ -748,8 +748,11 @@ class TargetsTabV2(QWidget):
                 if connection_status is not None:
                     self.server_status[added_target.target_id] = connection_status
 
-                # Apply chosen rank via reorder
-                self._on_rank_changed(chosen_rank, added_target)
+                # Apply chosen rank via reorder; if rank didn't change, refresh directly
+                if chosen_rank != added_target.rank:
+                    self._on_rank_changed(chosen_rank, added_target)
+                else:
+                    self.refresh_targets()
             else:
                 self.refresh_targets()
 

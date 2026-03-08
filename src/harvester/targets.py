@@ -86,7 +86,7 @@ class Z3950Target:
                     return TargetResult(
                         success=False,
                         source=self.name,
-                        error="Record found but no 050/060 call number"
+                        error=messages.NetworkMessages.record_no_lccn
                     )
 
         except Exception as e:

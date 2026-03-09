@@ -13,8 +13,8 @@ class ProfileManager:
     """Manage configuration profiles."""
 
     def __init__(self):
-        # Use relative paths - portable for USB stick
-        self.app_root = Path(__file__).parent.parent.parent
+        from config.app_paths import get_app_root
+        self.app_root = get_app_root()
         self.profiles_dir = self.app_root / "config" / "profiles"
         self.profiles_dir.mkdir(parents=True, exist_ok=True)
 

@@ -199,7 +199,7 @@ class HarvestOrchestrator:
         *,
         dry_run: bool,
         pending_main: list[MainRecord],
-        pending_attempted: list[tuple[str, Optional[str], Optional[str], Optional[str]]],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> str:
 
         """
@@ -225,22 +225,26 @@ class HarvestOrchestrator:
             )
             return "cached"
 
-        # 2) retry-skip check
-        if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
-            isbn, retry_days=self.retry_days
-        ):
-            self._emit("skip_retry", {"isbn": isbn, "retry_days": self.retry_days})
-            return "skip_retry"
-
-        # 3) try targets in order
+        # 2) try targets in order with target/type-specific retry checks
         last_error: Optional[str] = None
         last_target: Optional[str] = None
         not_found_targets: list[str] = []
         other_errors: list[tuple[str, str]] = []
+        skipped_retry_targets: list[str] = []
 
         for target in self.targets:
             self._check_cancelled()
             last_target = getattr(target, "name", target.__class__.__name__)
+
+            if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
+                isbn,
+                last_target,
+                self.call_number_mode,
+                retry_days=self.retry_days,
+            ):
+                skipped_retry_targets.append(last_target)
+                continue
+
             self._emit("target_start", {"isbn": isbn, "target": last_target})
 
             result = self._filter_result_by_mode(target.lookup(isbn))
@@ -276,8 +280,22 @@ class HarvestOrchestrator:
                 not_found_targets.append(last_target)
             elif err:
                 other_errors.append((last_target, err))
+            if not dry_run:
+                pending_attempted.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
 
-        # 4) all targets failed
+        if skipped_retry_targets and not not_found_targets and not other_errors:
+            self._emit(
+                "skip_retry",
+                {
+                    "isbn": isbn,
+                    "retry_days": self.retry_days,
+                    "targets": skipped_retry_targets,
+                    "attempt_type": self.call_number_mode,
+                },
+            )
+            return "skip_retry"
+
+        # 3) all tried targets failed
         if not_found_targets and not other_errors:
             last_error = "Not found in: " + ", ".join(not_found_targets)
         elif not_found_targets and other_errors:
@@ -298,9 +316,6 @@ class HarvestOrchestrator:
             other_errors=other_errors,
         ))
 
-        if not dry_run:
-            pending_attempted.append((isbn, last_target, utc_now_iso(), last_error))
-
         return "failed"
     def run(self, isbns: list[str], *, dry_run: bool) -> HarvestSummary:
         cached_hits = 0
@@ -311,7 +326,7 @@ class HarvestOrchestrator:
 
         # --- Sprint 5: batching buffers ---
         pending_main: list[MainRecord] = []
-        pending_attempted: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
 
         def flush() -> None:
             """Flush buffered DB writes in a single transaction."""
@@ -394,18 +409,26 @@ class HarvestOrchestrator:
                     })
                     return ("cached", None, None)
 
-                if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(isbn, retry_days=self.retry_days):
-                    self._emit("skip_retry", {"isbn": isbn, "retry_days": self.retry_days})
-                    return ("skip_retry", None, None)
-
                 last_error = None
                 last_target = None
                 not_found_targets: list[str] = []
                 other_errors: list[tuple[str, str]] = []
+                skipped_retry_targets: list[str] = []
+                attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
 
                 for target in self.targets:
                     self._check_cancelled()
                     last_target = getattr(target, "name", target.__class__.__name__)
+
+                    if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
+                        isbn,
+                        last_target,
+                        self.call_number_mode,
+                        retry_days=self.retry_days,
+                    ):
+                        skipped_retry_targets.append(last_target)
+                        continue
+
                     self._emit("target_start", {"isbn": isbn, "target": last_target})
 
                     result = self._filter_result_by_mode(target.lookup(isbn))
@@ -434,6 +457,20 @@ class HarvestOrchestrator:
                         not_found_targets.append(last_target)
                     elif err:
                         other_errors.append((last_target, err))
+                    if not dry_run:
+                        attempted_rows.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
+
+                if skipped_retry_targets and not not_found_targets and not other_errors:
+                    self._emit(
+                        "skip_retry",
+                        {
+                            "isbn": isbn,
+                            "retry_days": self.retry_days,
+                            "targets": skipped_retry_targets,
+                            "attempt_type": self.call_number_mode,
+                        },
+                    )
+                    return ("skip_retry", None, None)
 
                 if not_found_targets and not other_errors:
                     last_error = "Not found in: " + ", ".join(not_found_targets)
@@ -455,10 +492,7 @@ class HarvestOrchestrator:
                     other_errors=other_errors,
                 ))
 
-                att = None
-                if not dry_run:
-                    att = (isbn, last_target, utc_now_iso(), last_error)
-                return ("failed", None, att)
+                return ("failed", None, attempted_rows)
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
                 for status, rec, att in ex.map(worker, isbns):
@@ -466,8 +500,8 @@ class HarvestOrchestrator:
                     # main-thread batching writes
                     if rec is not None:
                         pending_main.append(rec)
-                    if att is not None:
-                        pending_attempted.append(att)
+                    if att:
+                        pending_attempted.extend(att)
 
                     if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
                         flush()

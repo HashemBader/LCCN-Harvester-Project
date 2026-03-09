@@ -255,34 +255,36 @@ QLabel[class="HelperText"], QLabel.HelperText {{
 
 /* --- Status Pills --- */
 QLabel[class="StatusPill"], QLabel.StatusPill {{
-    background-color: {t['bg']};
+    background-color: transparent;
     color: {t['text_muted']};
-    border-radius: 12px;
-    padding: 6px 14px;
-    min-height: 12px;
-    max-height: 12px;
+    border-radius: 0;
+    padding: 0;
+    min-height: 0;
+    max-height: 16777215;
     font-weight: bold;
     font-size: 11px;
     text-transform: uppercase;
-    border: 1px solid {t['border']};
+    border: none;
 }}
 
 QLabel[class="StatusPill"][state="running"], QLabel.StatusPill[state="running"] {{
-    background-color: {t['primary']};
-    color: #ffffff;
-    border-color: {t['primary']};
+    color: {t['primary']};
+}}
+
+QLabel[class="StatusPill"][state="paused"], QLabel.StatusPill[state="paused"] {{
+    color: {t['warning']};
 }}
 
 QLabel[class="StatusPill"][state="error"], QLabel.StatusPill[state="error"] {{
-    background-color: {t['danger']};
-    color: #ffffff;
-    border-color: {t['danger']};
+    color: {t['danger']};
 }}
 
 QLabel[class="StatusPill"][state="success"], QLabel.StatusPill[state="success"] {{
-    background-color: {t['success']};
-    color: #ffffff;
-    border-color: {t['success']};
+    color: {t['success']};
+}}
+
+QLabel[class="StatusPill"][state="idle"], QLabel.StatusPill[state="idle"] {{
+    color: {t['text_muted']};
 }}
 
 /* --- Controls: Inputs --- */

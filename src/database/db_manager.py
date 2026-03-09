@@ -47,6 +47,7 @@ class MainRecord:
 class AttemptedRecord:
     isbn: str
     last_target: Optional[str] = None
+    attempt_type: str = "both"
     last_attempted: Optional[str] = None  # ISO string
     fail_count: int = 1
     last_error: Optional[str] = None
@@ -144,6 +145,55 @@ class DatabaseManager:
 
         with self.connect() as conn:
             conn.executescript(schema_sql)
+            self._migrate_attempted_schema_if_needed(conn)
+
+    def _migrate_attempted_schema_if_needed(self, conn: sqlite3.Connection) -> None:
+        """
+        Ensure attempted table uses target/type-specific primary key:
+          PRIMARY KEY (isbn, last_target, attempt_type)
+        """
+        cols = conn.execute("PRAGMA table_info(attempted)").fetchall()
+        if not cols:
+            return
+
+        col_names = {row["name"] for row in cols}
+        pk_cols = [row["name"] for row in cols if int(row["pk"]) > 0]
+        desired_pk = ["isbn", "last_target", "attempt_type"]
+
+        if "attempt_type" in col_names and pk_cols == desired_pk:
+            return
+
+        conn.execute("ALTER TABLE attempted RENAME TO attempted_legacy")
+        conn.execute(
+            """
+            CREATE TABLE attempted (
+                isbn              TEXT NOT NULL,
+                last_target       TEXT NOT NULL,
+                attempt_type      TEXT NOT NULL DEFAULT 'both',
+                last_attempted    TEXT NOT NULL,
+                fail_count        INTEGER NOT NULL DEFAULT 1,
+                last_error        TEXT,
+                PRIMARY KEY (isbn, last_target, attempt_type)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
+            SELECT
+                isbn,
+                COALESCE(last_target, ''),
+                'both',
+                last_attempted,
+                fail_count,
+                last_error
+            FROM attempted_legacy
+            """
+        )
+        conn.execute("DROP TABLE attempted_legacy")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_last_attempted ON attempted(last_attempted)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_last_target ON attempted(last_target)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_isbn ON attempted(isbn)")
 
     @contextmanager
     def transaction(self):
@@ -260,9 +310,21 @@ class DatabaseManager:
     # ATTEMPTED TABLE HELPERS
     # -------------------------
     def get_attempted(self, isbn: str) -> Optional[AttemptedRecord]:
+        """
+        Return the most recent attempted row for this ISBN (any target/type).
+        Kept for compatibility with existing UI code that only needs a quick
+        existence check.  Prefer ``get_attempted_for`` or
+        ``get_all_attempted_for`` when target/type specificity matters.
+        """
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT isbn, last_target, last_attempted, fail_count, last_error FROM attempted WHERE isbn = ?",
+                """
+                SELECT isbn, last_target, attempt_type, last_attempted, fail_count, last_error
+                FROM attempted
+                WHERE isbn = ?
+                ORDER BY last_attempted DESC
+                LIMIT 1
+                """,
                 (isbn,),
             ).fetchone()
 
@@ -272,14 +334,67 @@ class DatabaseManager:
         return AttemptedRecord(
             isbn=row["isbn"],
             last_target=row["last_target"],
+            attempt_type=row["attempt_type"] or "both",
             last_attempted=row["last_attempted"],
             fail_count=int(row["fail_count"]),
             last_error=row["last_error"],
         )
 
-    def should_skip_retry(self, isbn: str, retry_days: int) -> bool:
-        """Return True if this ISBN was attempted within the last `retry_days` days."""
-        att = self.get_attempted(isbn)
+    def get_all_attempted_for(self, isbn: str) -> list[AttemptedRecord]:
+        """Return every attempted row for *isbn* across all targets and types.
+
+        Use this (rather than the coarse ``get_attempted``) when you need to
+        inspect or assert per-target / per-type retry state.
+        Results are ordered by ``last_attempted`` descending (most recent first).
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT isbn, last_target, attempt_type, last_attempted, fail_count, last_error
+                FROM attempted
+                WHERE isbn = ?
+                ORDER BY last_attempted DESC
+                """,
+                (isbn,),
+            ).fetchall()
+
+        return [
+            AttemptedRecord(
+                isbn=row["isbn"],
+                last_target=row["last_target"],
+                attempt_type=row["attempt_type"] or "both",
+                last_attempted=row["last_attempted"],
+                fail_count=int(row["fail_count"]),
+                last_error=row["last_error"],
+            )
+            for row in rows
+        ]
+
+    def get_attempted_for(self, isbn: str, last_target: str, attempt_type: str) -> Optional[AttemptedRecord]:
+        """Return attempted row for a specific ISBN+target+type key."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT isbn, last_target, attempt_type, last_attempted, fail_count, last_error
+                FROM attempted
+                WHERE isbn = ? AND last_target = ? AND attempt_type = ?
+                """,
+                (isbn, last_target, attempt_type),
+            ).fetchone()
+        if not row:
+            return None
+        return AttemptedRecord(
+            isbn=row["isbn"],
+            last_target=row["last_target"],
+            attempt_type=row["attempt_type"] or "both",
+            last_attempted=row["last_attempted"],
+            fail_count=int(row["fail_count"]),
+            last_error=row["last_error"],
+        )
+
+    def should_skip_retry(self, isbn: str, last_target: str, attempt_type: str, retry_days: int) -> bool:
+        """Return True if this ISBN+target+type key was attempted within retry window."""
+        att = self.get_attempted_for(isbn, last_target, attempt_type)
         if att is None or not att.last_attempted:
             return False
 
@@ -292,6 +407,7 @@ class DatabaseManager:
         *,
         isbn: str,
         last_target: Optional[str],
+        attempt_type: str = "both",
         last_error: Optional[str] = None,
         attempted_time: Optional[str] = None,
     ) -> None:
@@ -300,6 +416,7 @@ class DatabaseManager:
                 conn,
                 isbn=isbn,
                 last_target=last_target,
+                attempt_type=attempt_type,
                 last_error=last_error,
                 attempted_time=attempted_time,
             )
@@ -307,27 +424,36 @@ class DatabaseManager:
     def upsert_attempted_many(
         self,
         conn: sqlite3.Connection,
-        rows: Sequence[tuple[str, Optional[str], Optional[str], Optional[str]]],
+        rows: Sequence[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> None:
         """
         Batch upsert attempted rows within an existing transaction connection.
 
         rows items are:
-          (isbn, last_target, attempted_time, last_error)
+          (isbn, last_target, attempt_type, attempted_time, last_error)
         """
         if not rows:
             return
 
         fixed_rows = []
-        for isbn, last_target, attempted_time, last_error in rows:
-            fixed_rows.append((isbn, last_target, attempted_time or utc_now_iso(), last_error))
+        for isbn, last_target, attempt_type, attempted_time, last_error in rows:
+            fixed_rows.append(
+                (
+                    isbn,
+                    last_target or "",
+                    attempt_type or "both",
+                    attempted_time or utc_now_iso(),
+                    last_error,
+                )
+            )
 
         conn.executemany(
             """
-            INSERT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error)
-            VALUES (?, ?, ?, 1, ?)
-            ON CONFLICT(isbn) DO UPDATE SET
+            INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET
                 last_target = excluded.last_target,
+                attempt_type = excluded.attempt_type,
                 last_attempted = excluded.last_attempted,
                 fail_count = attempted.fail_count + 1,
                 last_error = excluded.last_error
@@ -341,6 +467,7 @@ class DatabaseManager:
         *,
         isbn: str,
         last_target: Optional[str],
+        attempt_type: str,
         last_error: Optional[str],
         attempted_time: Optional[str],
     ) -> None:
@@ -348,15 +475,16 @@ class DatabaseManager:
 
         conn.execute(
             """
-            INSERT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error)
-            VALUES (?, ?, ?, 1, ?)
-            ON CONFLICT(isbn) DO UPDATE SET
+            INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET
                 last_target = excluded.last_target,
+                attempt_type = excluded.attempt_type,
                 last_attempted = excluded.last_attempted,
                 fail_count = attempted.fail_count + 1,
                 last_error = excluded.last_error
             """,
-            (isbn, last_target, attempted_time, last_error),
+            (isbn, last_target or "", attempt_type or "both", attempted_time, last_error),
         )
 
     def clear_attempted(self, isbn: str) -> None:

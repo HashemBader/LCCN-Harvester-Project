@@ -522,11 +522,11 @@ class HarvestWorkerV2(QThread):
                     # Upsert into attempted with 'Invalid' error
                     # We use a placeholder target 'Validation'
                     conn.execute(
-                        "INSERT OR ABORT INTO attempted (isbn, last_target, last_attempted, fail_count, last_error) "
-                        "VALUES (?, ?, ?, 1, 'Invalid ISBN') "
-                        "ON CONFLICT(isbn) DO UPDATE SET "
+                        "INSERT OR ABORT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error) "
+                        "VALUES (?, ?, ?, ?, 1, 'Invalid ISBN') "
+                        "ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET "
                         "last_attempted=excluded.last_attempted, fail_count=fail_count+1, last_error='Invalid ISBN'",
-                        (raw_isbn[:20], "Validation", datetime.now().isoformat()),
+                        (raw_isbn[:20], "Validation", "validation", datetime.now().isoformat()),
                     )
         except Exception:
             pass
@@ -1568,7 +1568,12 @@ class HarvestTabV2(QWidget):
                 # Focus this dialog on previous not-found runs, per user expectation.
                 if "not found" not in err:
                     continue
-                if db.should_skip_retry(isbn, retry_days=retry_days):
+                if db.should_skip_retry(
+                    isbn,
+                    att.last_target or "",
+                    att.attempt_type or "both",
+                    retry_days=retry_days,
+                ):
                     recent.append((isbn, att))
         except Exception as e:
             self.log_output.setText(f"Warning: could not check retry window ({e})")

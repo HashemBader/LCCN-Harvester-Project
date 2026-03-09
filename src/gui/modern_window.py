@@ -15,12 +15,11 @@ from .targets_config_tab import TargetsConfigTab
 from .harvest_tab_v2 import HarvestTabV2
 from .dashboard_v2 import DashboardTabV2
 from .ai_assistant_tab import AIAssistantTab
+from .help_tab import HelpTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
 from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
-from .shortcuts_dialog import ShortcutsDialog
-from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .icons import (
     get_icon, get_pixmap, 
     SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
@@ -65,6 +64,8 @@ class ModernMainWindow(QMainWindow):
         # Data
         self.advanced_mode = False
         self.sidebar_collapsed = False
+        # In Qt/macOS key sequences: Ctrl maps to Command, Meta maps to physical Control.
+        # Use Meta on macOS so shortcuts are truly Control+... as requested.
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         self._profile_manager = ProfileManager()
         self._theme_manager = ThemeManager()
@@ -133,11 +134,13 @@ class ModernMainWindow(QMainWindow):
         self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
         self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
         self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 3)
+        self.btn_help = self._create_nav_btn("Help", SVG_SETTINGS, 4)
 
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_configure)
         sidebar_layout.addWidget(self.btn_harvest)
         sidebar_layout.addWidget(self.btn_ai)
+        sidebar_layout.addWidget(self.btn_help)
 
         sidebar_layout.addStretch() # Spacer
 
@@ -146,33 +149,12 @@ class ModernMainWindow(QMainWindow):
         self.status_pill.setObjectName("StatusPill") # Matches styles_v2
         self.status_pill.setProperty("class", "StatusPill") # Helper for some qt styles
         self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_pill.setFixedSize(100, 30)
         self.status_pill.setProperty("state", "idle")
         
         status_frame = QWidget()
         status_layout = QHBoxLayout(status_frame)
         status_layout.addWidget(self.status_pill)
         sidebar_layout.addWidget(status_frame)
-
-        # Shortcuts Button (Bottom)
-        mod_label = "Cmd" if self._shortcut_modifier == "Meta" else "Ctrl"
-        self.btn_shortcuts = QPushButton("Shortcuts")
-        self.btn_shortcuts.setIcon(get_icon(SVG_SETTINGS, "#a5adcb"))
-        self.btn_shortcuts.setObjectName("NavButton")
-        self.btn_shortcuts.setProperty("class", "NavButton")
-        self.btn_shortcuts.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_shortcuts.clicked.connect(self._show_shortcuts)
-        self.btn_shortcuts.setToolTip(f"Open keyboard shortcuts ({mod_label}+/)")
-        sidebar_layout.addWidget(self.btn_shortcuts)
-
-        self.btn_accessibility = QPushButton("Accessibility Statement")
-        self.btn_accessibility.setIcon(get_icon(SVG_SETTINGS, "#a5adcb"))
-        self.btn_accessibility.setObjectName("NavButton")
-        self.btn_accessibility.setProperty("class", "NavButton")
-        self.btn_accessibility.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_accessibility.clicked.connect(self._show_accessibility_statement)
-        self.btn_accessibility.setToolTip(f"Open accessibility statement ({mod_label}+Shift+A)")
-        sidebar_layout.addWidget(self.btn_accessibility)
 
         # Theme toggle button (bottom, like Accessibility)
         self.btn_theme = QPushButton("Toggle Theme")
@@ -209,11 +191,13 @@ class ModernMainWindow(QMainWindow):
         self.config_tab = self.targets_config_tab.config_tab
         self.harvest_tab = HarvestTabV2()
         self.ai_assistant_tab = AIAssistantTab()
+        self.help_tab = HelpTab(shortcut_modifier=self._shortcut_modifier)
 
         self.stack.addWidget(self.dashboard_tab)         # 0
         self.stack.addWidget(self.targets_config_tab)    # 1
         self.stack.addWidget(self.harvest_tab)           # 2
         self.stack.addWidget(self.ai_assistant_tab)      # 3
+        self.stack.addWidget(self.help_tab)              # 4
 
         content_layout.addWidget(self.stack)
         main_layout.addWidget(content_container)
@@ -260,29 +244,36 @@ class ModernMainWindow(QMainWindow):
             btn.setAccessibleName(f"Open {label} page")
             btn.setToolTip(f"Open {label}")
 
-        self.btn_shortcuts.setAccessibleName("Show keyboard shortcuts")
-        self.btn_accessibility.setAccessibleName("Show accessibility statement")
         self.status_pill.setAccessibleName("Application status")
 
     def _setup_shortcuts(self):
         mod = self._shortcut_modifier
-        QShortcut(QKeySequence(f"{mod}+B"), self, activated=self._toggle_sidebar)
-        QShortcut(QKeySequence(f"{mod}+Q"), self, activated=self.close)
-        QShortcut(QKeySequence(f"{mod}+1"), self, activated=lambda: self.btn_dashboard.click())
-        QShortcut(QKeySequence(f"{mod}+2"), self, activated=lambda: self.btn_configure.click())
-        QShortcut(QKeySequence(f"{mod}+3"), self, activated=lambda: self.btn_harvest.click())
-        QShortcut(QKeySequence(f"{mod}+4"), self, activated=lambda: self.btn_ai.click())
+        self._shortcuts = []
 
-        QShortcut(QKeySequence(f"{mod}+Shift+D"), self, activated=lambda: self.btn_dashboard.click())
-        QShortcut(QKeySequence(f"{mod}+Shift+H"), self, activated=lambda: self.btn_harvest.click())
+        def add_shortcut(sequence: str, callback):
+            sc = QShortcut(QKeySequence(sequence), self)
+            sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            sc.activated.connect(callback)
+            self._shortcuts.append(sc)
 
-        QShortcut(QKeySequence(f"{mod}+H"), self, activated=self._shortcut_start_harvest)
-        QShortcut(QKeySequence("Esc"), self, activated=self._shortcut_stop_harvest)
-        QShortcut(QKeySequence(f"{mod}+."), self, activated=self._shortcut_stop_harvest)
-        QShortcut(QKeySequence(f"{mod}+R"), self, activated=self._shortcut_refresh_dashboard)
-        QShortcut(QKeySequence(f"{mod}+/"), self, activated=self._show_shortcuts)
-        QShortcut(QKeySequence(f"{mod}+Shift+A"), self, activated=self._show_accessibility_statement)
-        QShortcut(QKeySequence("F1"), self, activated=self._show_shortcuts)
+        def add_mod_shortcut(key: str, callback):
+            add_shortcut(f"{mod}+{key}", callback)
+
+        add_mod_shortcut("B", self._toggle_sidebar)
+        add_mod_shortcut("Q", self.close)
+        add_mod_shortcut("1", lambda: self.btn_dashboard.click())
+        add_mod_shortcut("2", lambda: self.btn_configure.click())
+        add_mod_shortcut("3", lambda: self.btn_harvest.click())
+        add_mod_shortcut("4", lambda: self.btn_ai.click())
+        add_mod_shortcut("5", lambda: self.btn_help.click())
+
+        add_mod_shortcut("Shift+D", lambda: self.btn_dashboard.click())
+        add_mod_shortcut("Shift+H", lambda: self.btn_harvest.click())
+
+        add_mod_shortcut("H", self._shortcut_start_harvest)
+        add_shortcut("Esc", self._shortcut_stop_harvest)
+        add_mod_shortcut(".", self._shortcut_stop_harvest)
+        add_mod_shortcut("R", self._shortcut_refresh_dashboard)
 
     def _shortcut_start_harvest(self):
         if self.harvest_tab.is_running:
@@ -298,13 +289,8 @@ class ModernMainWindow(QMainWindow):
     def _shortcut_refresh_dashboard(self):
         self.dashboard_tab.refresh_data()
 
-    def _show_shortcuts(self):
-        dialog = ShortcutsDialog(self)
-        dialog.exec()
-
-    def _show_accessibility_statement(self):
-        dialog = AccessibilityStatementDialog(self)
-        dialog.exec()
+    def _open_help_tab(self):
+        self.btn_help.click()
 
     def _toggle_sidebar(self):
         self.sidebar_collapsed = not self.sidebar_collapsed
@@ -344,14 +330,7 @@ class ModernMainWindow(QMainWindow):
                 btn.setText("  " + btn.property("full_text"))
                 btn.setToolTip("")
 
-        if self.sidebar_collapsed:
-            self.btn_shortcuts.setText("")
-            self.btn_shortcuts.setToolTip("Keyboard shortcuts")
-            self.btn_accessibility.setText("")
-            self.btn_accessibility.setToolTip("Accessibility statement")
-        else:
-            self.btn_shortcuts.setText("Shortcuts")
-            self.btn_accessibility.setText("Accessibility Statement")
+        if not self.sidebar_collapsed:
             # Dynamic text for Theme based on current mode
             try:
                 current_mode = self._theme_manager.get_theme()
@@ -497,10 +476,7 @@ class ModernMainWindow(QMainWindow):
                 tab.set_advanced_mode(self.advanced_mode)
 
     def _on_harvest_started(self):
-        self.status_pill.setText("Running")
-        self.status_pill.setProperty("state", "running")
-        self.status_pill.style().unpolish(self.status_pill)
-        self.status_pill.style().polish(self.status_pill)
+        self._set_sidebar_status("Running", "running")
         self.btn_harvest.click()
         self.dashboard_tab.set_running()
 
@@ -509,20 +485,13 @@ class ModernMainWindow(QMainWindow):
         is_cancelled = isinstance(stats, dict) and stats.get("cancelled", False)
         has_error = isinstance(stats, dict) and bool(stats.get("error"))
         if success:
-            self.status_pill.setText("Completed")
-            self.status_pill.setProperty("state", "success")
+            self._set_sidebar_status("Completed", "success")
         elif is_cancelled:
-            self.status_pill.setText("Cancelled")
-            self.status_pill.setProperty("state", "error")
+            self._set_sidebar_status("Cancelled", "error")
         elif has_error:
-            self.status_pill.setText("Error")
-            self.status_pill.setProperty("state", "error")
+            self._set_sidebar_status("Error", "error")
         else:
-            self.status_pill.setText("Failed")
-            self.status_pill.setProperty("state", "error")
-            
-        self.status_pill.style().unpolish(self.status_pill)
-        self.status_pill.style().polish(self.status_pill)
+            self._set_sidebar_status("Failed", "error")
         self.dashboard_tab.refresh_data()
         self.dashboard_tab.apply_run_stats(stats if isinstance(stats, dict) else {})
         
@@ -535,19 +504,24 @@ class ModernMainWindow(QMainWindow):
     def _on_harvest_paused(self, is_paused: bool):
         """Sync sidebar and dashboard pills when harvest is paused or resumed."""
         if is_paused:
-            self.status_pill.setText("Paused")
-            self.status_pill.setStyleSheet("background-color: #eeba0b; color: #1e2030; border-radius: 15px; font-weight: bold;")
+            self._set_sidebar_status("Paused", "paused")
         else:
-            self.status_pill.setText("Running")
-            self.status_pill.setStyleSheet("background-color: #8aadf4; color: #1e2030; border-radius: 15px; font-weight: bold;")
+            self._set_sidebar_status("Running", "running")
         self.dashboard_tab.set_paused(is_paused)
 
     def _on_harvest_reset(self):
         """Called when user presses New Harvest — reset sidebar pill and dashboard status to Idle."""
-        self.status_pill.setText("Idle")
-        self.status_pill.setStyleSheet("background-color: #363a4f; color: #d4daf2; border-radius: 15px; font-weight: bold;")
+        self._set_sidebar_status("Idle", "idle")
         self.dashboard_tab.reset_dashboard_stats()
         self.dashboard_tab.set_idle()
+
+    def _set_sidebar_status(self, text: str, state: str):
+        """Apply status via shared stylesheet states instead of ad-hoc inline styles."""
+        self.status_pill.setText(text)
+        self.status_pill.setProperty("state", state)
+        self.status_pill.setStyleSheet("")
+        self.status_pill.style().unpolish(self.status_pill)
+        self.status_pill.style().polish(self.status_pill)
 
     def closeEvent(self, event):
         if self.harvest_tab.is_running:

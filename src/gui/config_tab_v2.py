@@ -75,7 +75,7 @@ class CreateProfileDialog(QDialog):
         settings_layout.addLayout(retry_row)
 
         mode_row = QHBoxLayout()
-        mode_label = QLabel("Call Number Mode")
+        mode_label = QLabel("Call Number Selection")
         mode_label.setStyleSheet("")
         self.mode_combo = QComboBox()
         self.mode_combo.setFixedWidth(180)
@@ -260,13 +260,13 @@ class ConfigTabV2(QWidget):
         retry_pair.addWidget(retry_lbl)
         retry_pair.addWidget(self.spin_retry)
 
-        # Call Number Mode
-        mode_lbl = QLabel("Call Number &Mode")
+        # Call Number Selection
+        mode_lbl = QLabel("Call Number &Selection")
         mode_lbl.setStyleSheet("")
 
         self.call_number_combo = QComboBox()
         self.call_number_combo.setFixedWidth(180)
-        self.call_number_combo.setAccessibleName("Call number mode")
+        self.call_number_combo.setAccessibleName("Call number selection")
         self.call_number_combo.setAccessibleDescription("Choose whether to collect LCCN only, NLMCN only, or both.")
         self.call_number_combo.setToolTip("Select which call-number type is accepted during harvest")
         self.call_number_combo.addItem("LCCN only", "lccn")

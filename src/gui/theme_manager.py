@@ -11,7 +11,8 @@ class ThemeManager:
     """Manages theme persistence and application state."""
 
     def __init__(self):
-        self.app_root = Path(__file__).parent.parent.parent
+        from config.app_paths import get_app_root
+        self.app_root = get_app_root()
         # store settings in project data folder
         self.settings_file = self.app_root / "data" / "gui_settings.json"
         self.settings_file.parent.mkdir(parents=True, exist_ok=True)

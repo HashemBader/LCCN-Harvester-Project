@@ -88,7 +88,32 @@ class CreateProfileDialog(QDialog):
         mode_row.addWidget(mode_label)
         mode_row.addStretch()
         mode_row.addWidget(self.mode_combo)
+        mode_row.addWidget(self.mode_combo)
         settings_layout.addLayout(mode_row)
+
+        self.stop_rule_row = QHBoxLayout()
+        stop_rule_label = QLabel("Stop Rule")
+        stop_rule_label.setStyleSheet("")
+        self.stop_rule_combo = QComboBox()
+        self.stop_rule_combo.setFixedWidth(180)
+        self.stop_rule_combo.addItem("Stop if either found", "stop_either")
+        self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
+        self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")
+        self.stop_rule_combo.addItem("Continue until both found", "continue_both")
+        
+        initial_stop = self._initial_settings.get("stop_rule", "stop_either")
+        idx_stop = self.stop_rule_combo.findData(initial_stop)
+        self.stop_rule_combo.setCurrentIndex(idx_stop if idx_stop >= 0 else 0)
+        
+        self.stop_rule_row.addWidget(stop_rule_label)
+        self.stop_rule_row.addStretch()
+        self.stop_rule_row.addWidget(self.stop_rule_combo)
+        
+        # Only show stop rule if mode is 'both'
+        self._toggle_stop_rule_visibility()
+        self.mode_combo.currentTextChanged.connect(self._toggle_stop_rule_visibility)
+        
+        settings_layout.addLayout(self.stop_rule_row)
 
         layout.addWidget(settings_frame)
 
@@ -105,6 +130,13 @@ class CreateProfileDialog(QDialog):
         layout.addWidget(buttons)
 
         # Inherit app theme — no hardcoded colours
+
+    def _toggle_stop_rule_visibility(self):
+        is_both = self.mode_combo.currentData() == "both"
+        for i in range(self.stop_rule_row.count()):
+            widget = self.stop_rule_row.itemAt(i).widget()
+            if widget:
+                widget.setVisible(is_both)
 
     def _validate_and_accept(self):
         if not self.name_edit.text().strip():
@@ -124,6 +156,7 @@ class CreateProfileDialog(QDialog):
             "call_number_mode": mode,
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
+            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
             "output_tsv": True,
             "output_invalid_isbn_file": True,
         }
@@ -279,12 +312,45 @@ class ConfigTabV2(QWidget):
 
         form_layout.addLayout(retry_pair)
         form_layout.addLayout(mode_pair)
+        form_layout.addLayout(mode_pair)
+        
+        # Stop Rule Selection
+        self.stop_rule_lbl = QLabel("Stop &Rule")
+        self.stop_rule_lbl.setStyleSheet("")
+
+        self.stop_rule_combo = QComboBox()
+        self.stop_rule_combo.setFixedWidth(180)
+        self.stop_rule_combo.setAccessibleName("Stop rule selection")
+        self.stop_rule_combo.setToolTip("Choose when to stop scraping targets for a single ISBN")
+        self.stop_rule_combo.addItem("Stop if either found", "stop_either")
+        self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
+        self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")
+        self.stop_rule_combo.addItem("Continue until both found", "continue_both")
+        self.stop_rule_combo.currentTextChanged.connect(self._on_setting_changed)
+        self.stop_rule_lbl.setBuddy(self.stop_rule_combo)
+
+        self.stop_rule_pair = QHBoxLayout()
+        self.stop_rule_pair.setSpacing(8)
+        self.stop_rule_pair.addWidget(self.stop_rule_lbl)
+        self.stop_rule_pair.addWidget(self.stop_rule_combo)
+
+        # Toggle visibility
+        self.call_number_combo.currentTextChanged.connect(self._toggle_stop_rule_visibility)
+        self._toggle_stop_rule_visibility()
+
+        form_layout.addLayout(self.stop_rule_pair)
+
         form_layout.addStretch()
         
         settings_layout.addLayout(form_layout)
         layout.addWidget(settings_frame)
 
         layout.addStretch()
+
+    def _toggle_stop_rule_visibility(self):
+        is_both = self.call_number_combo.currentData() == "both"
+        self.stop_rule_lbl.setVisible(is_both)
+        self.stop_rule_combo.setVisible(is_both)
 
     def refresh_targets_preview(self, targets=None):
         """No-op stub — targets are now shown in the live TargetsTabV2 below."""
@@ -360,6 +426,10 @@ class ConfigTabV2(QWidget):
         mode = self._mode_from_settings(config)
         idx = self.call_number_combo.findData(mode)
         self.call_number_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        stop_rule = config.get("stop_rule", "stop_either")
+        idx_stop = self.stop_rule_combo.findData(stop_rule)
+        self.stop_rule_combo.setCurrentIndex(idx_stop if idx_stop >= 0 else 0)
         
         self.spin_retry.blockSignals(False)
         self.call_number_combo.blockSignals(False)
@@ -407,6 +477,7 @@ class ConfigTabV2(QWidget):
             "call_number_mode": mode,
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
+            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
         }
         self.profile_manager.save_profile(self.current_profile_name, config)
         self.has_unsaved_changes = False
@@ -482,6 +553,7 @@ class ConfigTabV2(QWidget):
             # Keep parity with legacy ConfigTab expected keys.
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
+            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
             "output_tsv": True,
             "output_invalid_isbn_file": True,
         }

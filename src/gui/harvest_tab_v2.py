@@ -326,6 +326,7 @@ class HarvestWorkerV2(QThread):
                 cancel_check=lambda: self._check_cancel_and_pause(),
                 max_workers=max_workers,
                 call_number_mode=call_number_mode,
+                stop_rule=self.config.get("stop_rule", "stop_either"),
             )
 
             # Final stats

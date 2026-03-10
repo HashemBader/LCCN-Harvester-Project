@@ -44,6 +44,13 @@ def parse_args(argv=None):
         help="Dry-run mode (no DB writes).",
     )
 
+    parser.add_argument(
+        "--stop-rule",
+        choices=["stop_either", "stop_lccn", "stop_nlmcn", "continue_both"],
+        default="stop_either",
+        help="When to stop searching targets (if call_number_mode is 'both').",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -106,7 +113,11 @@ def main(argv=None) -> int:
         print(f"- Preview:   {preview}" if preview else "- Preview:   (none)")
         print()
 
-        summary = run_harvest(input_path=input_path, dry_run=args.dry_run)
+        summary = run_harvest(
+            input_path=input_path, 
+            dry_run=args.dry_run,
+            stop_rule=args.stop_rule
+        )
 
         print("Summary:")
         print(f"- Total ISBNs:          {summary.total_isbns}")

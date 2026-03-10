@@ -88,6 +88,7 @@ class HarvestOrchestrator:
         bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
         cancel_check: Optional[CancelCheck] = None,
+        stop_rule: str = "stop_either",
     ):
         self.db = db
         self.retry_days = retry_days
@@ -96,6 +97,7 @@ class HarvestOrchestrator:
         self.progress_cb = progress_cb
         self.cancel_check = cancel_check
         self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
+        self.stop_rule = stop_rule
         self.max_workers = max(1, int(max_workers))
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
 
@@ -231,6 +233,11 @@ class HarvestOrchestrator:
         not_found_targets: list[str] = []
         other_errors: list[tuple[str, str]] = []
         skipped_retry_targets: list[str] = []
+        
+        # Accumulate results for "both" mode
+        best_lccn: Optional[str] = None
+        best_nlmcn: Optional[str] = None
+        best_source: Optional[str] = None
 
         for target in self.targets:
             self._check_cancelled()
@@ -250,28 +257,30 @@ class HarvestOrchestrator:
             result = self._filter_result_by_mode(target.lookup(isbn))
 
             if result.success:
-                self._emit(
-                    "success",
-                    {
-                        "isbn": isbn,
-                        "target": last_target,
-                        "source": result.source or last_target,
-                        "lccn": result.lccn,
-                        "nlmcn": result.nlmcn,
-                    },
-                )
+                if result.lccn and not best_lccn:
+                    best_lccn = result.lccn
+                    if not best_source: best_source = result.source or last_target
+                if result.nlmcn and not best_nlmcn:
+                    best_nlmcn = result.nlmcn
+                    if not best_source: best_source = result.source or last_target
 
-                if not dry_run:
-                    rec = MainRecord(
-                        isbn=isbn,
-                        lccn=result.lccn,
-                        nlmcn=result.nlmcn,
-                        source=result.source or last_target,
-                    )
-                    pending_main.append(rec)
+                should_stop = False
+                
+                # Evaluate stop rule if in both mode, otherwise break immediately
+                if self.call_number_mode == "both":
+                    if self.stop_rule == "stop_either":
+                        should_stop = True
+                    elif self.stop_rule == "stop_lccn" and best_lccn:
+                        should_stop = True
+                    elif self.stop_rule == "stop_nlmcn" and best_nlmcn:
+                        should_stop = True
+                    elif self.stop_rule == "continue_both" and best_lccn and best_nlmcn:
+                        should_stop = True
+                else:
+                    should_stop = True
 
-
-                return "success"
+                if should_stop:
+                    break
 
             # failure from this target; continue
             last_error = result.error or "Unknown error"
@@ -282,6 +291,30 @@ class HarvestOrchestrator:
                 other_errors.append((last_target, err))
             if not dry_run:
                 pending_attempted.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
+
+        # Check if we accumulated any success
+        if best_lccn or best_nlmcn:
+            self._emit(
+                "success",
+                {
+                    "isbn": isbn,
+                    "target": best_source,
+                    "source": best_source,
+                    "lccn": best_lccn,
+                    "nlmcn": best_nlmcn,
+                },
+            )
+
+            if not dry_run:
+                rec = MainRecord(
+                    isbn=isbn,
+                    lccn=best_lccn,
+                    nlmcn=best_nlmcn,
+                    source=best_source,
+                )
+                pending_main.append(rec)
+
+            return "success"
 
         if skipped_retry_targets and not not_found_targets and not other_errors:
             self._emit(

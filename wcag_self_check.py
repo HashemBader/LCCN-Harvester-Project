@@ -85,7 +85,7 @@ def run_checks() -> list[CheckResult]:
 
 
 def build_report(results: list[CheckResult]) -> str:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().isoformat().replace('T', ' ').split('.')[0]
     passed = sum(1 for r in results if r.passed)
     total = len(results)
 

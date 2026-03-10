@@ -169,7 +169,7 @@ class HarvestWorkerV2(QThread):
                             _nlmcn,
                             _extract_lc_classification(_lccn),
                             _src,
-                            datetime.now().strftime("%Y/%m/%d"),
+                            datetime.now().isoformat().replace('T', ' ').split('.')[0],
                         ]
                     )
                     self._append_live_success(
@@ -220,7 +220,7 @@ class HarvestWorkerV2(QThread):
                             _nlmcn,
                             _extract_lc_classification(_lccn),
                             _src,
-                            datetime.now().strftime("%Y/%m/%d"),
+                            datetime.now().isoformat().replace('T', ' ').split('.')[0],
                         ]
                     )
                     self._append_live_success(
@@ -394,7 +394,7 @@ class HarvestWorkerV2(QThread):
 
     def _append_live_success(self, isbn, source, message, lccn=None, nlmcn=None):
         classification = _extract_lc_classification(lccn or "")
-        date_added = datetime.now().strftime("%Y/%m/%d")
+        date_added = datetime.now().isoformat().replace('T', ' ').split('.')[0]
         self._append_live_row(
             "successful",
             [isbn, lccn or "", nlmcn or "", classification, source or "-", date_added],

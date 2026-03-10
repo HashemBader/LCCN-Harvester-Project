@@ -99,10 +99,10 @@ class HarvestWorkerV2(QThread):
         # Session-only result accumulators (never read from DB)
         self._session_success = (
             []
-        )  # [isbn, lccn, nlmcn, classification, source, date_added]
+        )  # per-run success TSV rows
         self._session_failed = (
             []
-        )  # [isbn, last_target, last_attempted, fail_count, last_error]
+        )  # [call_number_type, isbn, target, reason]
         self._session_invalid = []  # [isbn]
 
     def run(self):
@@ -172,24 +172,24 @@ class HarvestWorkerV2(QThread):
                     #    isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
                     # )
                     _lccn = payload.get("lccn") or ""
+                    _lccn_source = payload.get("lccn_source") or payload.get("source") or "Cache"
                     _nlmcn = payload.get("nlmcn") or ""
+                    _nlmcn_source = payload.get("nlmcn_source") or payload.get("source") or "Cache"
                     _src = payload.get("source") or "Cache"
-                    self._session_success.append(
-                        [
-                            isbn,
-                            _lccn,
-                            _nlmcn,
-                            _extract_lc_classification(_lccn),
-                            _src,
-                            datetime.now().isoformat().replace('T', ' ').split('.')[0],
-                        ]
-                    )
+                    self._session_success.append(self._build_success_row(
+                        isbn,
+                        lccn=_lccn,
+                        lccn_source=_lccn_source,
+                        nlmcn=_nlmcn,
+                        nlmcn_source=_nlmcn_source,
+                    ))
                     self._append_live_success(
                         isbn,
-                        _src,
                         "Found in cache",
                         lccn=_lccn,
+                        lccn_source=_lccn_source,
                         nlmcn=_nlmcn,
+                        nlmcn_source=_nlmcn_source,
                     )
                     self.live_result.emit({
                         "isbn": isbn,
@@ -197,6 +197,18 @@ class HarvestWorkerV2(QThread):
                         "detail": _src
                     })
                     self._update_processed()
+
+                elif event == "attempt_failed":
+                    self._append_failed_attempt_row(
+                        isbn,
+                        payload.get("attempt_type"),
+                        payload.get("target"),
+                        payload.get("reason"),
+                    )
+                    if payload.get("target") and payload.get("target") != "RetryRule":
+                        normalized_problem = self._normalize_target_problem(payload.get("reason"))
+                        if normalized_problem:
+                            self._append_live_problem(payload.get("target"), normalized_problem)
 
                 elif event == "skip_retry":
                     # self.progress_update.emit(
@@ -209,18 +221,11 @@ class HarvestWorkerV2(QThread):
                         "retry_days", self.config.get("retry_days", 7)
                     )
                     _err = f"Skipped due to retry window ({retry_days} days)"
-                    self._session_failed.append(
-                        [
-                            isbn,
-                            self._compute_next_try_value(isbn, retry_days),
-                        ]
-                    )
-                    self._append_live_failed(
+                    self._append_retry_skip_rows(
                         isbn,
+                        payload.get("targets"),
+                        payload.get("attempt_type"),
                         _err,
-                        "RetryRule",
-                        retry_days=retry_days,
-                        other_errors=[f"RetryRule: {_err}"],
                     )
                     self.live_result.emit({
                         "isbn": isbn,
@@ -233,24 +238,24 @@ class HarvestWorkerV2(QThread):
                     source = payload.get("target", "")
                     # self.progress_update.emit(isbn, "found", source, "Found")
                     _lccn = payload.get("lccn") or ""
+                    _lccn_source = payload.get("lccn_source") or payload.get("source") or source or "Target"
                     _nlmcn = payload.get("nlmcn") or ""
+                    _nlmcn_source = payload.get("nlmcn_source") or payload.get("source") or source or "Target"
                     _src = payload.get("source") or source or "Target"
-                    self._session_success.append(
-                        [
-                            isbn,
-                            _lccn,
-                            _nlmcn,
-                            _extract_lc_classification(_lccn),
-                            _src,
-                            datetime.now().isoformat().replace('T', ' ').split('.')[0],
-                        ]
-                    )
+                    self._session_success.append(self._build_success_row(
+                        isbn,
+                        lccn=_lccn,
+                        lccn_source=_lccn_source,
+                        nlmcn=_nlmcn,
+                        nlmcn_source=_nlmcn_source,
+                    ))
                     self._append_live_success(
                         isbn,
-                        _src,
                         "Found",
                         lccn=_lccn,
+                        lccn_source=_lccn_source,
                         nlmcn=_nlmcn,
+                        nlmcn_source=_nlmcn_source,
                     )
                     self.live_result.emit({
                         "isbn": isbn,
@@ -265,25 +270,6 @@ class HarvestWorkerV2(QThread):
                     )
                     source = payload.get("last_target") or "All"
                     # self.progress_update.emit(isbn, "failed", source, error)
-                    _retry_days = self.config.get("retry_days", 7)
-                    self._session_failed.append(
-                        [
-                            isbn,
-                            self._compute_next_try_value(isbn, _retry_days),
-                        ]
-                    )
-                    self._append_live_failed(
-                        isbn,
-                        error,
-                        source,
-                        retry_days=self.config.get("retry_days", 7),
-                        not_found_targets=payload.get("not_found_targets"),
-                        z3950_unsupported_targets=payload.get(
-                            "z3950_unsupported_targets"
-                        ),
-                        offline_targets=payload.get("offline_targets"),
-                        other_errors=payload.get("other_errors"),
-                    )
                     self.live_result.emit({
                         "isbn": isbn,
                         "status": "Failed",
@@ -326,6 +312,7 @@ class HarvestWorkerV2(QThread):
                 cancel_check=lambda: self._check_cancel_and_pause(),
                 max_workers=max_workers,
                 call_number_mode=call_number_mode,
+                both_stop_policy=self.config.get("both_stop_policy", "both"),
             )
 
             # Final stats
@@ -380,16 +367,9 @@ class HarvestWorkerV2(QThread):
     def _prepare_live_result_files(self):
         """Create per-run TSV output files using the pre-computed named paths."""
         headers = {
-            "successful": [
-                "ISBN",
-                "LCCN",
-                "NLMCN",
-                "Classification",
-                "Source",
-                "Date Added",
-            ],
+            "successful": self._successful_headers(),
             "invalid": ["ISBN"],
-            "failed": ["ISBN", "Next Try"],
+            "failed": ["Call Number Type", "ISBN", "Target", "Reason"],
             "problems": ["Target", "Problem"],
         }
         self._close_live_result_files()
@@ -425,12 +405,60 @@ class HarvestWorkerV2(QThread):
         for raw_isbn in invalid_list or []:
             self._append_live_row("invalid", [raw_isbn])
 
-    def _append_live_success(self, isbn, source, message, lccn=None, nlmcn=None):
+    def _successful_headers(self):
+        mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
+        if mode == "nlmcn":
+            return ["ISBN", "NLM", "NLM Source", "Date"]
+        if mode == "both":
+            return ["ISBN", "LCCN", "LCCN Source", "Classification", "NLM", "NLM Source", "Date"]
+        return ["ISBN", "LCCN", "LCCN Source", "Classification", "Date"]
+
+    def _build_success_row(
+        self,
+        isbn,
+        *,
+        lccn=None,
+        lccn_source=None,
+        nlmcn=None,
+        nlmcn_source=None,
+    ):
         classification = _extract_lc_classification(lccn or "")
         date_added = datetime.now().isoformat().replace('T', ' ').split('.')[0]
+        normalized_isbn = str(isbn or "").replace("-", "").strip()
+        mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
+        if mode == "nlmcn":
+            return [normalized_isbn, nlmcn or "", nlmcn_source or "-", date_added]
+        if mode == "both":
+            return [
+                normalized_isbn,
+                lccn or "",
+                lccn_source or "-",
+                classification,
+                nlmcn or "",
+                nlmcn_source or "-",
+                date_added,
+            ]
+        return [normalized_isbn, lccn or "", lccn_source or "-", classification, date_added]
+
+    def _append_live_success(
+        self,
+        isbn,
+        message,
+        *,
+        lccn=None,
+        lccn_source=None,
+        nlmcn=None,
+        nlmcn_source=None,
+    ):
         self._append_live_row(
             "successful",
-            [isbn, lccn or "", nlmcn or "", classification, source or "-", date_added],
+            self._build_success_row(
+                isbn,
+                lccn=lccn,
+                lccn_source=lccn_source,
+                nlmcn=nlmcn,
+                nlmcn_source=nlmcn_source,
+            ),
         )
 
     def _compute_next_try_value(self, isbn, retry_days):
@@ -479,6 +507,53 @@ class HarvestWorkerV2(QThread):
             other_errors=other_errors,
         )
 
+    def _failed_type_labels(self, attempt_type):
+        normalized = str(attempt_type or self.config.get("call_number_mode", "lccn")).strip().lower()
+        if normalized == "both":
+            return ["LCCN", "NLM"]
+        if normalized == "nlmcn":
+            return ["NLM"]
+        return ["LCCN"]
+
+    def _append_failed_attempt_row(self, isbn, attempt_type, target, reason):
+        normalized_isbn = str(isbn or "").replace("-", "").strip()
+        for label in self._failed_type_labels(attempt_type):
+            row = [label, normalized_isbn, target or "-", reason or "Unknown error"]
+            self._session_failed.append(row)
+            self._append_live_row("failed", row)
+
+    def _append_retry_skip_rows(self, isbn, targets, attempt_type, reason):
+        normalized_isbn = str(isbn or "").replace("-", "").strip()
+        for target_name in targets or ["RetryRule"]:
+            for label in self._failed_type_labels(attempt_type):
+                row = [label, normalized_isbn, target_name or "RetryRule", reason]
+                self._session_failed.append(row)
+                self._append_live_row("failed", row)
+
+    def _normalize_target_problem(self, reason):
+        text = str(reason or "").strip()
+        lowered = text.lower()
+        if not text:
+            return None
+        if "no records found in" in lowered or "not found" in lowered:
+            return None
+        if "pyz3950 import failed" in lowered or "pyz3950 import error" in lowered:
+            return f"Could not connect to Z39.50 server: {text}"
+        if "z39.50 support not available" in lowered:
+            return f"Could not connect to Z39.50 server: {text}"
+        if (
+            "remote end closed connection without response" in lowered
+            or "timed out" in lowered
+            or "connection refused" in lowered
+            or "connection reset" in lowered
+            or "temporary failure in name resolution" in lowered
+            or "name or service not known" in lowered
+            or "offline" in lowered
+            or "unreachable" in lowered
+        ):
+            return "Offline"
+        return None
+
     def _append_live_problem_rows(
         self,
         source,
@@ -493,14 +568,20 @@ class HarvestWorkerV2(QThread):
             return
 
         for target_name in z3950_unsupported_targets or []:
-            self._append_live_problem(target_name, "Z39.50 support not available")
+            normalized_problem = self._normalize_target_problem("Z39.50 support not available")
+            if normalized_problem:
+                self._append_live_problem(target_name, normalized_problem)
 
         for target_name in offline_targets or []:
-            self._append_live_problem(target_name, "Target offline or unreachable")
+            normalized_problem = self._normalize_target_problem("Target offline or unreachable")
+            if normalized_problem:
+                self._append_live_problem(target_name, normalized_problem)
 
         for item in other_errors or []:
             target_name, problem = self._split_problem_item(item)
-            self._append_live_problem(target_name, problem)
+            normalized_problem = self._normalize_target_problem(problem)
+            if normalized_problem:
+                self._append_live_problem(target_name, normalized_problem)
 
         if (
             not not_found_targets
@@ -509,9 +590,10 @@ class HarvestWorkerV2(QThread):
             and not (other_errors or [])
             and source
             and reason
-            and "not found" not in reason.lower()
         ):
-            self._append_live_problem(source, reason)
+            normalized_problem = self._normalize_target_problem(reason)
+            if normalized_problem:
+                self._append_live_problem(source, normalized_problem)
 
     def _split_problem_item(self, item):
         text = str(item or "").strip()
@@ -1423,6 +1505,14 @@ class HarvestTabV2(QWidget):
             config["call_number_mode"] = "both"
         else:
             config["call_number_mode"] = "lccn"
+        if config["call_number_mode"] == "both":
+            both_stop_policy = self._prompt_both_stop_policy()
+            if both_stop_policy is None:
+                self.log_output.setText("Harvest cancelled before start.")
+                return
+            config["both_stop_policy"] = both_stop_policy
+        else:
+            config["both_stop_policy"] = config["call_number_mode"]
 
 
         # 2. Get Targets
@@ -1447,6 +1537,34 @@ class HarvestTabV2(QWidget):
         # 3. Start Worker
         self._start_worker(config, targets, bypass_retry_isbns=bypass_retry_isbns)
 
+    def _prompt_both_stop_policy(self):
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Both Mode")
+        msg.setText("If one target returns only one of LCCN or NLM, when should this run stop for that ISBN?")
+        msg.setInformativeText("Choose one rule for this run.")
+
+        btn_lccn = msg.addButton("Stop on LCCN only", QMessageBox.ButtonRole.ActionRole)
+        btn_nlm = msg.addButton("Stop on NLM only", QMessageBox.ButtonRole.ActionRole)
+        btn_either = msg.addButton("Stop on either one first", QMessageBox.ButtonRole.ActionRole)
+        btn_both = msg.addButton("Keep going until both or exhausted", QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
+        msg.setDefaultButton(btn_both)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked == btn_lccn:
+            return "lccn"
+        if clicked == btn_nlm:
+            return "nlmcn"
+        if clicked == btn_either:
+            return "either"
+        if clicked == btn_both:
+            return "both"
+        if clicked == cancel_btn:
+            return None
+        return None
+
     def _start_worker(self, config, targets, bypass_retry_isbns=None):
         if self.worker and self.worker.isRunning():
             return
@@ -1458,18 +1576,27 @@ class HarvestTabV2(QWidget):
                 profile = _safe_filename(self._profile_getter() or "default")
             except Exception:
                 pass
-        date_str = datetime.now().strftime("%Y-%m-%d-%H")
-        # Use format: profilename-success-YYYY-MM-DD-HH.tsv
+        date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        # Use a per-run timestamp so repeated harvests never overwrite earlier files.
         live_dir = Path("data") / profile
         live_dir.mkdir(parents=True, exist_ok=True)
-
-        self._run_live_paths = {
-            "successful": str(live_dir / f"{profile}-success-{date_str}.tsv"),
-            "failed": str(live_dir / f"{profile}-failed-{date_str}.tsv"),
-            "problems": str(live_dir / f"{profile}-problems-{date_str}.tsv"),
-            "invalid": str(live_dir / f"{profile}-invalid-{date_str}.tsv"),
-            "profile_dir": str(live_dir),
-        }
+        suffix = 0
+        while True:
+            run_stamp = date_str if suffix == 0 else f"{date_str}-{suffix}"
+            candidate_paths = {
+                "successful": str(live_dir / f"{profile}-success-{run_stamp}.tsv"),
+                "failed": str(live_dir / f"{profile}-failed-{run_stamp}.tsv"),
+                "problems": str(live_dir / f"{profile}-problems-{run_stamp}.tsv"),
+                "invalid": str(live_dir / f"{profile}-invalid-{run_stamp}.tsv"),
+                "profile_dir": str(live_dir),
+            }
+            if not any(
+                Path(candidate_paths[key]).exists()
+                for key in ("successful", "failed", "problems", "invalid")
+            ):
+                self._run_live_paths = candidate_paths
+                break
+            suffix += 1
 
         # Notify dashboard of new live file paths
         self.result_files_ready.emit(self._run_live_paths)
@@ -1570,20 +1697,21 @@ class HarvestTabV2(QWidget):
             db.init_db()
             recent = []
             for isbn in self._iter_normalized_input_isbns():
-                att = db.get_attempted(isbn)
-                if att is None:
-                    continue
-                err = (att.last_error or "").lower()
-                # Focus this dialog on previous not-found runs, per user expectation.
-                if "not found" not in err:
-                    continue
-                if db.should_skip_retry(
-                    isbn,
-                    att.last_target or "",
-                    att.attempt_type or "both",
-                    retry_days=retry_days,
-                ):
-                    recent.append((isbn, att))
+                attempted_rows = db.get_all_attempted_for(isbn)
+                matching_attempts = []
+                for att in attempted_rows:
+                    err = (att.last_error or "").lower()
+                    if not self._is_retry_popup_candidate(err):
+                        continue
+                    if db.should_skip_retry(
+                        isbn,
+                        att.last_target or "",
+                        att.attempt_type or "both",
+                        retry_days=retry_days,
+                    ):
+                        matching_attempts.append(att)
+                if matching_attempts:
+                    recent.append((isbn, matching_attempts[0]))
         except Exception as e:
             self.log_output.setText(f"Warning: could not check retry window ({e})")
             return set()
@@ -1636,6 +1764,16 @@ class HarvestTabV2(QWidget):
         if clicked == override_btn:
             return {isbn for isbn, _ in recent}
         return set()
+
+    def _is_retry_popup_candidate(self, error_text: str) -> bool:
+        lowered = str(error_text or "").lower()
+        if "not found" in lowered:
+            return True
+        if "no lccn call number" in lowered:
+            return True
+        if "no nlmcn call number" in lowered:
+            return True
+        return False
 
     def _load_advanced_settings(self):
         """Load persisted advanced settings if available."""

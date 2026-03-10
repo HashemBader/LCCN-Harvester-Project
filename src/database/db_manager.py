@@ -37,7 +37,9 @@ def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
 class MainRecord:
     isbn: str
     lccn: Optional[str] = None
+    lccn_source: Optional[str] = None
     nlmcn: Optional[str] = None
+    nlmcn_source: Optional[str] = None
     classification: Optional[str] = None
     source: Optional[str] = None
     date_added: Optional[str] = None  # ISO string
@@ -145,7 +147,28 @@ class DatabaseManager:
 
         with self.connect() as conn:
             conn.executescript(schema_sql)
+            self._migrate_main_schema_if_needed(conn)
             self._migrate_attempted_schema_if_needed(conn)
+
+    def _migrate_main_schema_if_needed(self, conn: sqlite3.Connection) -> None:
+        """Ensure main table has per-type source columns."""
+        cols = conn.execute("PRAGMA table_info(main)").fetchall()
+        if not cols:
+            return
+
+        col_names = {row["name"] for row in cols}
+        if "lccn_source" not in col_names:
+            conn.execute("ALTER TABLE main ADD COLUMN lccn_source TEXT")
+            conn.execute(
+                "UPDATE main SET lccn_source = source WHERE lccn IS NOT NULL AND lccn_source IS NULL"
+            )
+        if "nlmcn_source" not in col_names:
+            conn.execute("ALTER TABLE main ADD COLUMN nlmcn_source TEXT")
+            conn.execute(
+                "UPDATE main SET nlmcn_source = source WHERE nlmcn IS NOT NULL AND nlmcn_source IS NULL"
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_main_lccn_source ON main(lccn_source)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_main_nlmcn_source ON main(nlmcn_source)")
 
     def _migrate_attempted_schema_if_needed(self, conn: sqlite3.Connection) -> None:
         """
@@ -223,7 +246,11 @@ class DatabaseManager:
     def get_main(self, isbn: str) -> Optional[MainRecord]:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT isbn, lccn, nlmcn, classification, source, date_added FROM main WHERE isbn = ?",
+                """
+                SELECT isbn, lccn, lccn_source, nlmcn, nlmcn_source, classification, source, date_added
+                FROM main
+                WHERE isbn = ?
+                """,
                 (isbn,),
             ).fetchone()
 
@@ -233,7 +260,9 @@ class DatabaseManager:
         return MainRecord(
             isbn=row["isbn"],
             lccn=row["lccn"],
+            lccn_source=row["lccn_source"] if "lccn_source" in row.keys() else row["source"],
             nlmcn=row["nlmcn"],
+            nlmcn_source=row["nlmcn_source"] if "nlmcn_source" in row.keys() else row["source"],
             classification=row["classification"],
             source=row["source"],
             date_added=row["date_added"],
@@ -259,16 +288,29 @@ class DatabaseManager:
         for r in records:
             date_added = r.date_added or utc_now_iso()
             classification = r.classification or classification_from_lccn(r.lccn)
-            rows.append((r.isbn, r.lccn, r.nlmcn, classification, r.source, date_added))
+            rows.append(
+                (
+                    r.isbn,
+                    r.lccn,
+                    r.lccn_source or r.source,
+                    r.nlmcn,
+                    r.nlmcn_source or r.source,
+                    classification,
+                    self._combine_sources(r.lccn_source or r.source, r.nlmcn_source or r.source),
+                    date_added,
+                )
+            )
             isbns.append(r.isbn)
 
         conn.executemany(
             """
-            INSERT INTO main (isbn, lccn, nlmcn, classification, source, date_added)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO main (isbn, lccn, lccn_source, nlmcn, nlmcn_source, classification, source, date_added)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(isbn) DO UPDATE SET
                 lccn = excluded.lccn,
+                lccn_source = excluded.lccn_source,
                 nlmcn = excluded.nlmcn,
+                nlmcn_source = excluded.nlmcn_source,
                 classification = excluded.classification,
                 source = excluded.source,
                 date_added = excluded.date_added
@@ -288,19 +330,34 @@ class DatabaseManager:
     ) -> None:
         date_added = record.date_added or utc_now_iso()
         classification = record.classification or classification_from_lccn(record.lccn)
+        source = self._combine_sources(
+            record.lccn_source or record.source,
+            record.nlmcn_source or record.source,
+        )
 
         conn.execute(
             """
-            INSERT INTO main (isbn, lccn, nlmcn, classification, source, date_added)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO main (isbn, lccn, lccn_source, nlmcn, nlmcn_source, classification, source, date_added)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(isbn) DO UPDATE SET
                 lccn = excluded.lccn,
+                lccn_source = excluded.lccn_source,
                 nlmcn = excluded.nlmcn,
+                nlmcn_source = excluded.nlmcn_source,
                 classification = excluded.classification,
                 source = excluded.source,
                 date_added = excluded.date_added
             """,
-            (record.isbn, record.lccn, record.nlmcn, classification, record.source, date_added),
+            (
+                record.isbn,
+                record.lccn,
+                record.lccn_source or record.source,
+                record.nlmcn,
+                record.nlmcn_source or record.source,
+                classification,
+                source,
+                date_added,
+            ),
         )
 
         if clear_attempted_on_success:
@@ -503,6 +560,17 @@ class DatabaseManager:
             placeholders = ",".join("?" for _ in chunk)
             conn.execute(f"DELETE FROM attempted WHERE isbn IN ({placeholders})", tuple(chunk))
 
+    @staticmethod
+    def _combine_sources(*values: Optional[str]) -> Optional[str]:
+        parts: list[str] = []
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in parts:
+                parts.append(text)
+        if not parts:
+            return None
+        return " + ".join(parts)
+
     # -------------------------
     # V2 GUI COMPATIBILITY HELPERS
     # -------------------------
@@ -511,7 +579,7 @@ class DatabaseManager:
         with self.connect() as conn:
             return conn.execute(
                 """
-                SELECT isbn, lccn, nlmcn, classification, source, date_added
+                SELECT isbn, lccn, lccn_source, nlmcn, nlmcn_source, classification, source, date_added
                 FROM main
                 ORDER BY date_added DESC
                 LIMIT ?

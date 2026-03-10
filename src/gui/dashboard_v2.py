@@ -3,7 +3,7 @@ Module: dashboard_v2.py
 Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 """
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QBoxLayout, QLabel, QFrame,
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QSizePolicy, QMessageBox
 )
@@ -30,13 +30,7 @@ def _problems_button_label(
     file_name: str | None = None,
     include_profile: bool = False,
 ) -> str:
-    safe_profile = _safe_filename(profile_name or "default")
-    label_prefix = "Open targets problems"
-    if include_profile and safe_profile != "default":
-        label_prefix = f"Open {safe_profile} targets problems"
-    if file_name:
-        return f"{label_prefix}{Path(file_name).suffix}"
-    return f"{label_prefix}.tsv"
+    return "Open targets problems"
 
 
 def _truncate_text(text: str, limit: int = 110) -> str:
@@ -52,6 +46,7 @@ class DashboardCard(QFrame):
     def __init__(self, title, icon_svg, accent_color="#8aadf4"):
         super().__init__()
         self.setProperty("class", "Card")
+        self.setMinimumWidth(220)
         self._setup_ui(title, icon_svg, accent_color)
 
     def _setup_ui(self, title, icon_svg, accent_color):
@@ -192,6 +187,7 @@ class DashboardTabV2(QWidget):
         self._is_running = False  # Guard: live RunStats stream prevents tab-switch overwrite
         self.session_recent = []
         self.last_run_text = "Last Run: Never"
+        self._responsive_mode = None
         self._setup_ui()
         
         # Auto-refresh timer (2s for live feel)
@@ -237,39 +233,73 @@ class DashboardTabV2(QWidget):
         main_layout.addLayout(header_layout)
 
         # 2. KPI Cards Row
-        kpi_layout = QHBoxLayout()
-        kpi_layout.setSpacing(20)
+        self.kpi_layout = QGridLayout()
+        self.kpi_layout.setSpacing(20)
 
         self.card_proc = DashboardCard("PROCESSED", SVG_ACTIVITY, "#8aadf4")
         self.card_found = DashboardCard("SUCCESSFUL", SVG_CHECK_CIRCLE, "#a6da95")
         self.card_failed = DashboardCard("FAILED", SVG_X_CIRCLE, "#ed8796")
         self.card_invalid = DashboardCard("INVALID", SVG_ALERT_CIRCLE, "#fab387")
         
-        kpi_layout.addWidget(self.card_proc)
-        kpi_layout.addWidget(self.card_found)
-        kpi_layout.addWidget(self.card_failed)
-        kpi_layout.addWidget(self.card_invalid)
-        
-        main_layout.addLayout(kpi_layout)
+        main_layout.addLayout(self.kpi_layout)
 
         # 3. Main Content Split (Result files vs Recent)
-        content_split = QHBoxLayout()
+        self.content_split = QHBoxLayout()
+        self.content_split.setSpacing(20)
 
         # Left: result-file actions
         left_col = QVBoxLayout()
         left_col.setSpacing(14)
         left_col.addWidget(self._build_result_files_panel())
         left_col.addStretch()
-        content_split.addLayout(left_col, stretch=2)
+        self.left_col = left_col
+        self.content_split.addLayout(left_col, stretch=2)
         
         # Right: Recent Results (60%)
         self.recent_panel = RecentResultsPanel()
-        content_split.addWidget(self.recent_panel, stretch=3)
+        self.recent_panel.setMinimumWidth(320)
+        self.content_split.addWidget(self.recent_panel, stretch=3)
         
-        main_layout.addLayout(content_split)
+        main_layout.addLayout(self.content_split)
         
         main_layout.addStretch()
+        self._apply_responsive_layout(max(self.width(), 1200))
         self._refresh_result_file_buttons()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
+
+    def _apply_responsive_layout(self, width: int):
+        mode = "compact" if width < 1180 else "wide"
+        if mode == self._responsive_mode:
+            return
+        self._responsive_mode = mode
+
+        while self.kpi_layout.count():
+            self.kpi_layout.takeAt(0)
+
+        if mode == "compact":
+            self.kpi_layout.addWidget(self.card_proc, 0, 0)
+            self.kpi_layout.addWidget(self.card_found, 0, 1)
+            self.kpi_layout.addWidget(self.card_failed, 1, 0)
+            self.kpi_layout.addWidget(self.card_invalid, 1, 1)
+            self.content_split.setDirection(QBoxLayout.Direction.TopToBottom)
+        else:
+            self.kpi_layout.addWidget(self.card_proc, 0, 0)
+            self.kpi_layout.addWidget(self.card_found, 0, 1)
+            self.kpi_layout.addWidget(self.card_failed, 0, 2)
+            self.kpi_layout.addWidget(self.card_invalid, 0, 3)
+            self.content_split.setDirection(QBoxLayout.Direction.LeftToRight)
+
+        for col in range(4):
+            self.kpi_layout.setColumnStretch(col, 0)
+        if mode == "compact":
+            self.kpi_layout.setColumnStretch(0, 1)
+            self.kpi_layout.setColumnStretch(1, 1)
+        else:
+            for col in range(4):
+                self.kpi_layout.setColumnStretch(col, 1)
 
     def _build_result_files_panel(self):
         panel = QFrame()
@@ -341,6 +371,12 @@ class DashboardTabV2(QWidget):
     def _refresh_result_file_buttons(self):
         if not hasattr(self, "btn_open_successful"):
             return
+        default_labels = {
+            "successful": "Open successful",
+            "failed": "Open failed",
+            "invalid": "Open invalid",
+            "problems": "Open targets problems",
+        }
         mapping = {
             "successful": self.btn_open_successful,
             "failed": self.btn_open_failed,
@@ -351,29 +387,7 @@ class DashboardTabV2(QWidget):
             path = self.result_files.get(key)
             enabled = path is not None and path.exists()
             btn.setEnabled(enabled)
-            if path is not None:
-                prefix = "Open "
-                if key == "problems":
-                    btn.setText(
-                        _problems_button_label(
-                            self.current_profile,
-                            path.name,
-                            include_profile=True,
-                        )
-                    )
-                else:
-                    btn.setText(f"{prefix}{path.name}")
-            else:
-                default_labels = {
-                    "successful": "Open successful.tsv",
-                    "failed": "Open failed.tsv",
-                    "invalid": "Open invalid.tsv",
-                    "problems": _problems_button_label(
-                        self.current_profile,
-                        include_profile=False,
-                    ),
-                }
-                btn.setText(default_labels[key])
+            btn.setText(default_labels[key])
         profile_dir = self.result_files.get("profile_dir") or self._profile_dir_path()
         self.btn_open_profile_folder.setEnabled(profile_dir is not None and profile_dir.exists())
 

@@ -104,10 +104,7 @@ class CreateProfileDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        self.setStyleSheet("""
-            QDialog { background-color: #24273a; color: #ffffff; }
-            QLabel { background: transparent; }
-        """)
+        # Inherit app theme — no hardcoded colours
 
     def _validate_and_accept(self):
         if not self.name_edit.text().strip():

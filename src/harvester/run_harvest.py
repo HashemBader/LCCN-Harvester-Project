@@ -35,6 +35,17 @@ class ParsedISBNFile:
     invalid_isbns: list[str]
     total_nonempty: int
 
+@dataclass
+class RunStats:
+    total_rows: int = 0
+    valid_rows: int = 0
+    duplicates: int = 0
+    invalid: int = 0
+    processed_unique: int = 0
+    found: int = 0
+    failed: int = 0
+    skipped: int = 0
+
 def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
     """Parse a TSV/CSV/TXT file and return structured statistics and deduplicated ISBNs."""
     valid_isbns: list[str] = []

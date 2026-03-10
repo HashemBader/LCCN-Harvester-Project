@@ -5,6 +5,7 @@ V2 Harvest Tab: Functional Core with Professional UI.
 
 from PyQt6.QtWidgets import (
     QWidget,
+    QApplication,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSizePolicy,
+    QComboBox,
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
@@ -40,7 +42,7 @@ from .icons import SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
 from .input_tab import ClickableDropZone
 
 # Add imports for Worker
-from src.harvester.run_harvest import run_harvest, parse_isbn_file
+from src.harvester.run_harvest import run_harvest, parse_isbn_file, RunStats
 from src.harvester.targets import create_target_from_config
 from src.harvester.orchestrator import HarvestCancelled
 from src.database import DatabaseManager
@@ -69,7 +71,8 @@ class HarvestWorkerV2(QThread):
     )  # success, statistics (can include 'cancelled': True)
     status_message = pyqtSignal(str)
     started = pyqtSignal()
-    stats_update = pyqtSignal(dict)  # real-time statistics update
+    stats_update = pyqtSignal(object)  # real-time statistics update (RunStats)
+    live_result = pyqtSignal(dict)   # real-time single row result
 
     def __init__(
         self,
@@ -109,7 +112,11 @@ class HarvestWorkerV2(QThread):
             self.status_message.emit(messages.HarvestMessages.starting)
 
             # Read and validate ISBNs
-            isbns, invalid_list = self._read_and_validate_isbns()
+            parsed = self._read_and_validate_isbns()
+            if not parsed:
+                return
+            isbns = parsed.unique_valid
+            invalid_list = parsed.invalid_isbns
             total = len(isbns)
             invalid_count = len(invalid_list)
 
@@ -126,6 +133,18 @@ class HarvestWorkerV2(QThread):
             if invalid_count > 0:
                 self._record_invalid_isbns(invalid_list)
 
+            # Track stats for GUI updates using centralized RunStats
+            self.run_stats = RunStats(
+                total_rows=parsed.total_nonempty,
+                valid_rows=parsed.valid_count,
+                duplicates=parsed.duplicate_count,
+                invalid=invalid_count,
+                processed_unique=0,
+                found=0,
+                failed=0,
+                skipped=0
+            )
+
             if total == 0:
                 self.status_message.emit(messages.HarvestMessages.no_valid_isbns)
                 self.harvest_complete.emit(
@@ -133,14 +152,6 @@ class HarvestWorkerV2(QThread):
                 )
                 return
 
-            # Track stats for GUI updates
-            self.stats = {
-                "total": total,
-                "found": 0,
-                "failed": 0,
-                "cached": 0,
-                "skipped": 0,
-            }
             self.processed_count = 0
 
             # Create progress callback
@@ -151,14 +162,15 @@ class HarvestWorkerV2(QThread):
                 isbn = payload.get("isbn", "")
 
                 if event == "isbn_start":
-                    self.progress_update.emit(
-                        isbn, "processing", "", messages.HarvestMessages.processing_isbn
-                    )
+                    # self.progress_update.emit(
+                    #    isbn, "processing", "", messages.HarvestMessages.processing_isbn
+                    # )
+                    pass
 
                 elif event == "cached":
-                    self.progress_update.emit(
-                        isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
-                    )
+                    # self.progress_update.emit(
+                    #    isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
+                    # )
                     _lccn = payload.get("lccn") or ""
                     _nlmcn = payload.get("nlmcn") or ""
                     _src = payload.get("source") or "Cache"
@@ -179,15 +191,20 @@ class HarvestWorkerV2(QThread):
                         lccn=_lccn,
                         nlmcn=_nlmcn,
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Found",
+                        "detail": _src
+                    })
                     self._update_processed()
 
                 elif event == "skip_retry":
-                    self.progress_update.emit(
-                        isbn,
-                        "skipped",
-                        "",
-                        messages.HarvestMessages.skipped_recent_failure,
-                    )
+                    # self.progress_update.emit(
+                    #     isbn,
+                    #     "skipped",
+                    #     "",
+                    #     messages.HarvestMessages.skipped_recent_failure,
+                    # )
                     retry_days = payload.get(
                         "retry_days", self.config.get("retry_days", 7)
                     )
@@ -205,11 +222,16 @@ class HarvestWorkerV2(QThread):
                         retry_days=retry_days,
                         other_errors=[f"RetryRule: {_err}"],
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Failed",
+                        "detail": _err
+                    })
                     self._update_processed()
 
                 elif event == "success":
                     source = payload.get("target", "")
-                    self.progress_update.emit(isbn, "found", source, "Found")
+                    # self.progress_update.emit(isbn, "found", source, "Found")
                     _lccn = payload.get("lccn") or ""
                     _nlmcn = payload.get("nlmcn") or ""
                     _src = payload.get("source") or source or "Target"
@@ -230,6 +252,11 @@ class HarvestWorkerV2(QThread):
                         lccn=_lccn,
                         nlmcn=_nlmcn,
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Found",
+                        "detail": _src
+                    })
                     self._update_processed()
 
                 elif event == "failed":
@@ -237,7 +264,7 @@ class HarvestWorkerV2(QThread):
                         "error", "No results"
                     )
                     source = payload.get("last_target") or "All"
-                    self.progress_update.emit(isbn, "failed", source, error)
+                    # self.progress_update.emit(isbn, "failed", source, error)
                     _retry_days = self.config.get("retry_days", 7)
                     self._session_failed.append(
                         [
@@ -257,16 +284,19 @@ class HarvestWorkerV2(QThread):
                         offline_targets=payload.get("offline_targets"),
                         other_errors=payload.get("other_errors"),
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Failed",
+                        "detail": error
+                    })
                     self._update_processed()
 
                 elif event == "stats":
-                    self.stats["total"] = payload.get("total", self.stats["total"])
-                    self.stats["found"] = payload.get("successes", 0)
-                    self.stats["failed"] = payload.get("failures", 0)
-                    self.stats["cached"] = payload.get("cached", 0)
-                    self.stats["skipped"] = payload.get("skipped", 0)
+                    self.run_stats.found = payload.get("successes", 0) + payload.get("cached", 0)
+                    self.run_stats.failed = payload.get("failures", 0)
+                    self.run_stats.skipped = payload.get("skipped", 0)
                     # Force stats update to UI
-                    self.stats_update.emit(self.stats.copy())
+                    self.stats_update.emit(self.run_stats)
 
             # Build targets list from config
             targets = self._build_targets()
@@ -306,6 +336,7 @@ class HarvestWorkerV2(QThread):
                 "cached": summary.cached_hits,
                 "skipped": summary.skipped_recent_fail,
                 "invalid": invalid_count,
+                "run_stats": self.run_stats,
             }
 
             self.status_message.emit(
@@ -317,13 +348,14 @@ class HarvestWorkerV2(QThread):
 
         except HarvestCancelled:
             self.status_message.emit("Harvest cancelled by user.")
-            stats = (
-                self.stats.copy()
-                if hasattr(self, "stats")
-                else {"total": 0, "found": 0, "failed": 0, "invalid": 0}
-            )
-            stats["invalid"] = len(getattr(self, "_session_invalid", []) or [])
-            stats["cancelled"] = True
+            stats = {
+                "total": self.run_stats.total_rows if hasattr(self, "run_stats") else 0,
+                "found": self.run_stats.found if hasattr(self, "run_stats") else 0,
+                "failed": self.run_stats.failed if hasattr(self, "run_stats") else 0,
+                "invalid": len(getattr(self, "_session_invalid", []) or []),
+                "run_stats": self.run_stats if hasattr(self, "run_stats") else None,
+                "cancelled": True
+            }
             self.harvest_complete.emit(False, stats)
         except Exception as e:
             import traceback
@@ -339,10 +371,11 @@ class HarvestWorkerV2(QThread):
     def _update_processed(self):
         """Update processed count and emit stats/milestones."""
         self.processed_count += 1
+        self.run_stats.processed_unique = self.processed_count
 
         # Emit stats update for UI
-        if self.processed_count % 5 == 0 or self.processed_count == self.stats["total"]:
-            self.stats_update.emit(self.stats.copy())
+        if self.processed_count % 5 == 0 or self.processed_count == getattr(self.run_stats, 'valid_rows', 0):
+            self.stats_update.emit(self.run_stats)
 
     def _prepare_live_result_files(self):
         """Create per-run TSV output files using the pre-computed named paths."""
@@ -386,7 +419,7 @@ class HarvestWorkerV2(QThread):
         with self._live_results_lock:
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow(row)
-            fh.flush()
+            fh.flush()  # Flush immediately so file is readable live during harvest
 
     def _write_invalid_live_rows(self, invalid_list):
         for raw_isbn in invalid_list or []:
@@ -503,12 +536,12 @@ class HarvestWorkerV2(QThread):
                         count=len(parsed.invalid_isbns)
                     )
                 )
-            return parsed.unique_valid, parsed.invalid_isbns
+            return parsed
         except Exception as e:
             self.status_message.emit(
                 messages.HarvestMessages.error_reading_file.format(error=str(e))
             )
-            return [], []
+            return None
 
     def _record_invalid_isbns(self, invalid_list):
         """Record invalid ISBNs in DB so they appear in stats."""
@@ -659,6 +692,8 @@ class HarvestTabV2(QWidget):
     harvest_paused = pyqtSignal(bool)  # True = paused, False = resumed
     progress_updated = pyqtSignal(str, str, str, str)  # isbn, status, source, message
     result_files_ready = pyqtSignal(dict)  # emitted when live output paths are known
+    live_result_ready = pyqtSignal(dict)   # emitted per ISBN harvested
+    live_stats_ready = pyqtSignal(object)    # emitted for batch counts (RunStats)
 
     # Signals to request data from main window
     request_start_harvest = pyqtSignal()
@@ -706,354 +741,313 @@ class HarvestTabV2(QWidget):
         self._check_start_conditions()
 
     def _setup_ui(self):
-        # Outer layout: scrollable content area + sticky action bar at the bottom
-        _outer = QVBoxLayout(self)
-        _outer.setContentsMargins(0, 0, 0, 0)
-        _outer.setSpacing(0)
-        _scroll = QScrollArea()
-        _scroll.setWidgetResizable(True)
-        _scroll.setFrameShape(QFrame.Shape.NoFrame)
-        _scroll.setProperty("class", "ScrollArea")
-        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        _scr_content = QWidget()
-        _scroll.setWidget(_scr_content)
-        _outer.addWidget(_scroll, 1)
+        # Direct layout — no outer scroll; the whole page sizes to fit the window
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(30, 24, 30, 24)
 
-        layout = QVBoxLayout(_scr_content)
-        layout.setSpacing(20)
-        layout.setContentsMargins(30, 30, 30, 30)
-
-        # 1. Header Area
+        # ── 1. Header ──────────────────────────────────────────────────────────
         header_layout = QHBoxLayout()
         title = QLabel("Harvest Execution")
         title.setProperty("class", "SectionTitle")
-
-        self.status_pill = QLabel("IDLE")
-        self.status_pill.setProperty("class", "StatusPill")
-        self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_pill.setAccessibleName("Harvest status")
-
-        header_layout.addWidget(title)
+        subtitle = QLabel("Configure your run and monitor progress")
+        subtitle.setStyleSheet("color: grey; font-size: 12px;")
+        header_col = QVBoxLayout()
+        header_col.setSpacing(2)
+        header_col.addWidget(title)
+        header_col.addWidget(subtitle)
+        header_layout.addLayout(header_col)
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
-        # 2. Input Section
-        input_frame = QFrame()
-        input_frame.setProperty("class", "Card")
-        input_layout = QVBoxLayout(input_frame)
-
-        # Drag & Drop Zone
-        self.drop_zone = ClickableDropZone()
-        self.drop_zone.setObjectName("DropZone")  # For styling
-        self.drop_zone.clicked.connect(self._browse_file)  # Connect click to browse
-        self.drop_zone.fileDropped.connect(
-            self.set_input_file
-        )  # Connect drop to handler
-
-        drop_layout = QVBoxLayout()
-        drop_icon = QLabel("📁")
-        drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_icon.setProperty("class", "DropIcon")
-
-        drop_text = QLabel("Drag & Drop ISBN File Here\nor click anywhere to browse")
-        drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_text.setProperty("class", "DropText")
-
-        drop_hint = QLabel("Supports: .tsv, .txt, .csv files")
-        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_hint.setProperty("class", "DropHint")
-
-        drop_layout.addWidget(drop_icon)
-        drop_layout.addWidget(drop_text)
-        drop_layout.addWidget(drop_hint)
-        drop_layout.setContentsMargins(16, 16, 16, 16)
-        drop_layout.setSpacing(6)
-
-        self.drop_zone.setLayout(drop_layout)
-        input_layout.addWidget(self.drop_zone)
-
-        # File selection group
-        file_group = QGroupBox("Select Input File")
-        file_layout = QVBoxLayout()
-
-        # File path display and browse button
-        path_layout = QHBoxLayout()
-        # Banner (Hidden initially)
+        # ── 2. Status Banner (hidden until a file is loaded / harvest runs) ────
         self.banner_frame = QFrame()
         self.banner_frame.setObjectName("HarvestBanner")
         self.banner_frame.setProperty("class", "Card")
         self.banner_frame.setMinimumHeight(48)
-
         banner_layout = QHBoxLayout(self.banner_frame)
         banner_layout.setContentsMargins(16, 12, 16, 12)
-
         self.lbl_banner_title = QLabel("READY")
         self.lbl_banner_title.setProperty("class", "CardTitle")
-
         self.lbl_banner_stats = QLabel("")
-        self.lbl_banner_stats.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
+        self.lbl_banner_stats.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.lbl_banner_stats.setProperty("class", "HelperText")
         self.lbl_banner_stats.setVisible(False)
-
         banner_layout.addWidget(self.lbl_banner_title)
         banner_layout.addStretch()
         banner_layout.addWidget(self.lbl_banner_stats)
-
         layout.addWidget(self.banner_frame)
 
-        # 2. Top Row: Run Setup (Slim Card)
+        # ── 3. Run Setup + File Stats in one card ──────────────────────────────
         self.input_card = DroppableGroupBox("Run Setup")
         self.input_card.file_dropped.connect(self.set_input_file)
-
         input_layout = QVBoxLayout(self.input_card)
         input_layout.setContentsMargins(16, 16, 16, 16)
         input_layout.setSpacing(12)
 
-        # Setup Grid
+        # File input row
         setup_grid = QGridLayout()
         setup_grid.setColumnStretch(1, 1)
 
-        # Row 0: Input File
         lbl_input = QLabel("Input file:")
         lbl_input.setProperty("class", "HelperText")
 
         file_input_layout = QHBoxLayout()
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText(
-            "No file selected... (drag & drop TSV/CSV/TXT here)"
-        )
+        self.file_path_edit.setPlaceholderText("No file selected... (drag & drop TSV/CSV/TXT here)")
         self.file_path_edit.setReadOnly(True)
         self.file_path_edit.setProperty("class", "LineEdit")
-
-        self.btn_browse = QPushButton("Choose file...")
+        self.btn_browse = QPushButton("Choose file…")
         self.btn_browse.setProperty("class", "PrimaryButton")
         self.btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_browse.clicked.connect(self._browse_file)
-
         self.btn_clear_file = QPushButton("Clear")
         self.btn_clear_file.setProperty("class", "DangerButton")
         self.btn_clear_file.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_file.clicked.connect(self._clear_input)
         self.btn_clear_file.setVisible(False)
-
         file_input_layout.addWidget(self.file_path_edit)
         file_input_layout.addWidget(self.btn_clear_file)
         file_input_layout.addWidget(self.btn_browse)
-
         setup_grid.addWidget(lbl_input, 0, 0)
         setup_grid.addLayout(file_input_layout, 0, 1)
 
+        # Run mode row
+        lbl_run_mode = QLabel("Run Mode:")
+        lbl_run_mode.setProperty("class", "HelperText")
+        self.combo_run_mode = QComboBox()
+        self.combo_run_mode.setProperty("class", "ComboBox")
+        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)"])
+        self.combo_run_mode.setToolTip("Select the type of call numbers to harvest")
+        if hasattr(self, "_config_getter") and callable(self._config_getter):
+            config = self._config_getter() or {}
+            saved_mode = config.get("call_number_mode", "lccn")
+            if saved_mode == "nlmcn":
+                self.combo_run_mode.setCurrentText("NLM Only")
+            elif saved_mode == "both":
+                self.combo_run_mode.setCurrentText("Both (LCCN & NLM)")
+            else:
+                self.combo_run_mode.setCurrentText("LCCN Only")
+        else:
+            self.combo_run_mode.setCurrentText("LCCN Only")
+        setup_grid.addWidget(lbl_run_mode, 1, 0)
+        setup_grid.addWidget(self.combo_run_mode, 1, 1)
         input_layout.addLayout(setup_grid)
+
+        # Thin separator between setup and stats
+        sep_line = QFrame()
+        sep_line.setFrameShape(QFrame.Shape.HLine)
+        sep_line.setStyleSheet("QFrame { color: rgba(128,128,128,0.2); }")
+        input_layout.addWidget(sep_line)
+
+        # File Stats strip (inside the same card)
+        stats_row = QHBoxLayout()
+        stats_row.setContentsMargins(0, 4, 0, 4)
+        stats_row.setSpacing(0)
+        stat_defs = [
+            ("Valid (unique)",  "lbl_val_loaded"),
+            ("Valid rows",      "lbl_val_rows_valid"),
+            ("Duplicates",      "lbl_val_duplicates"),
+            ("Invalid rows",    "lbl_val_invalid"),
+            ("Total rows",      "lbl_val_rows"),
+            ("File size",       "lbl_val_size"),
+        ]
+        for i, (label_text, attr_name) in enumerate(stat_defs):
+            if i > 0:
+                vsep = QFrame()
+                vsep.setFrameShape(QFrame.Shape.VLine)
+                vsep.setFixedWidth(1)
+                vsep.setFixedHeight(38)
+                vsep.setStyleSheet("QFrame { background: rgba(128,128,128,0.15); }")
+                stats_row.addWidget(vsep, 0, Qt.AlignmentFlag.AlignVCenter)
+            col = QWidget()
+            col_layout = QVBoxLayout(col)
+            col_layout.setContentsMargins(16, 0, 16, 0)
+            col_layout.setSpacing(2)
+            lbl_val = QLabel("—")
+            lbl_val.setStyleSheet("font-size: 18px; font-weight: 600;")
+            lbl_cat = QLabel(label_text)
+            lbl_cat.setStyleSheet("font-size: 10px; color: grey;")
+            col_layout.addWidget(lbl_val)
+            col_layout.addWidget(lbl_cat)
+            stats_row.addWidget(col)
+            setattr(self, attr_name, lbl_val)
+        stats_row.addStretch()
+        input_layout.addLayout(stats_row)
+
         layout.addWidget(self.input_card)
 
-        # 3. Middle Row: Stats & Run Status
-        middle_layout = QHBoxLayout()
-        middle_layout.setSpacing(20)
+        # ── 4. Preview ─────────────────────────────────────────────────────────
+        preview_frame = QFrame()
+        preview_frame.setProperty("class", "Card")
+        preview_frame_layout = QVBoxLayout(preview_frame)
+        preview_frame_layout.setContentsMargins(12, 10, 12, 10)
+        preview_frame_layout.setSpacing(8)
 
-        # Left: 6 Stat Tiles
-        self.stats_group = QGroupBox("File stats")
-        stats_grid = QGridLayout(self.stats_group)
-        stats_grid.setContentsMargins(16, 16, 16, 16)
-        stats_grid.setSpacing(16)
+        # Toolbar row: title + filename + copy button
+        preview_toolbar = QHBoxLayout()
+        preview_title = QLabel("File Preview")
+        preview_title.setStyleSheet("font-size: 11px; font-weight: 600; letter-spacing: 0.4px;")
+        self.lbl_preview_filename = QLabel("No file selected")
+        self.lbl_preview_filename.setStyleSheet("font-size: 10px; color: grey; font-style: italic;")
+        self.btn_copy_preview = QPushButton("Copy")
+        self.btn_copy_preview.setFixedHeight(24)
+        self.btn_copy_preview.setStyleSheet("font-size: 10px; padding: 0 10px;")
+        self.btn_copy_preview.clicked.connect(
+            lambda: QApplication.clipboard().setText(self.preview_text.toPlainText())
+        )
+        preview_toolbar.addWidget(preview_title)
+        preview_toolbar.addWidget(self.lbl_preview_filename)
+        preview_toolbar.addStretch()
+        preview_toolbar.addWidget(self.btn_copy_preview)
+        preview_frame_layout.addLayout(preview_toolbar)
 
-        def create_tile(title):
-            card = QFrame()
-            card.setProperty("class", "Card")
-            clayout = QVBoxLayout(card)
-            clayout.setContentsMargins(12, 12, 12, 12)
+        # Thin separator
+        prev_sep = QFrame()
+        prev_sep.setFrameShape(QFrame.Shape.HLine)
+        prev_sep.setStyleSheet("QFrame { color: rgba(128,128,128,0.2); }")
+        preview_frame_layout.addWidget(prev_sep)
 
-            lbl_title = QLabel(title)
-            lbl_title.setProperty("class", "CardHelper")
-            lbl_val = QLabel("-")
-            lbl_val.setProperty("class", "CardValue")
-            lbl_val.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
+        self.info_label = QLabel("No file selected")
+        self.info_label.setWordWrap(True)
+        self.info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.info_label.setProperty("class", "CardHelper")
+        self.preview_text = QTextEdit()
+        self.preview_text.setReadOnly(True)
+        self.preview_text.setProperty("class", "TerminalViewport")
+        self.preview_text.setFixedHeight(130)
+        self.preview_text.setStyleSheet("font-size: 13px; font-family: 'Consolas', monospace;")
+        preview_frame_layout.addWidget(self.preview_text)
+        layout.addWidget(preview_frame)
 
-            clayout.addWidget(lbl_title)
-            clayout.addWidget(lbl_val)
-            return card, lbl_val
-
-        tile_valid, self.lbl_val_loaded = create_tile("Valid ISBNs (unique)")
-        tile_rows, self.lbl_val_rows_valid = create_tile("Valid ISBN rows")
-        tile_dupes, self.lbl_val_duplicates = create_tile("Duplicate valid rows")
-        tile_invalid, self.lbl_val_invalid = create_tile("Invalid ISBN rows")
-        tile_size, self.lbl_val_size = create_tile("File size")
-        tile_total, self.lbl_val_rows = create_tile("Total rows")
-
-        stats_grid.addWidget(tile_valid, 0, 0)
-        stats_grid.addWidget(tile_rows, 0, 1)
-        stats_grid.addWidget(tile_dupes, 0, 2)
-        stats_grid.addWidget(tile_invalid, 1, 0)
-        stats_grid.addWidget(tile_size, 1, 1)
-        stats_grid.addWidget(tile_total, 1, 2)
-
-        middle_layout.addWidget(self.stats_group, stretch=2)
-
-        # Right: Run Status Card
-        self.run_status_group = QGroupBox("Run status")
-        status_layout = QVBoxLayout(self.run_status_group)
-        status_layout.setContentsMargins(16, 16, 16, 16)
-        status_layout.setSpacing(12)
-
-        def add_status_row(grid, row, title, val_widget):
-            lbl = QLabel(title)
-            lbl.setProperty("class", "HelperText")
-            grid.addWidget(lbl, row, 0)
-            grid.addWidget(val_widget, row, 1)
-
-        status_grid = QGridLayout()
-
+        # ── 5. Status pill + elapsed timer (created here, placed in action bar) ─
         self.lbl_run_status = QLabel("Idle")
         self.lbl_run_status.setProperty("class", "StatusPill")
-        self.lbl_run_progress = QLabel("0 / 0")
-        self.lbl_run_progress.setProperty("class", "ActivityValue")
         self.lbl_run_elapsed = QLabel("00:00:00")
         self.lbl_run_elapsed.setProperty("class", "ActivityValue")
 
-        add_status_row(status_grid, 0, "Status:", self.lbl_run_status)
-        add_status_row(status_grid, 1, "Progress:", self.lbl_run_progress)
-        add_status_row(status_grid, 2, "Elapsed:", self.lbl_run_elapsed)
-
-        status_layout.addLayout(status_grid)
-        status_layout.addStretch()
-
-        middle_layout.addWidget(self.run_status_group, stretch=1)
-
-        layout.addLayout(middle_layout)
-
-        # Timer setup
+        # Timer
         self.run_timer = QTimer(self)
         self.run_timer.timeout.connect(self._update_timer)
         self.run_time = QTime(0, 0, 0)
         self.timer_is_paused = False
 
-        # 4. Bottom Row: Preview
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setSpacing(20)
-
-        # Collapsible Preview
-        self.preview_group = QGroupBox("Preview (first 50 lines) • truncated")
-        preview_layout = QVBoxLayout(self.preview_group)
-
-        self.info_label = QLabel("No file selected")
-        self.info_label.setWordWrap(True)
-        self.info_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self.info_label.setProperty("class", "CardHelper")
-
-        preview_layout.setContentsMargins(12, 12, 12, 12)
-
-        self.preview_text = QTextEdit()
-        self.preview_text.setReadOnly(True)
-        self.preview_text.setProperty("class", "TerminalViewport")
-        self.preview_text.setMinimumHeight(120)
-
-        preview_layout.addWidget(self.preview_text)
-        bottom_layout.addWidget(self.preview_group)
-
-        layout.addLayout(bottom_layout)
-
-        layout.addStretch()
-
-        # 4. Sticky Bottom Action Bar
+        # ── 6. Action Bar ──────────────────────────────────────────────────────
         action_frame = QFrame()
         action_frame.setProperty("class", "Card")
+        action_frame.setStyleSheet("""
+            QFrame[class="Card"] {
+                border-radius: 10px;
+            }
+        """)
         action_layout = QHBoxLayout(action_frame)
-        action_layout.setContentsMargins(16, 16, 16, 16)
+        action_layout.setContentsMargins(20, 14, 20, 14)
+        action_layout.setSpacing(0)
 
-        # Left side: Status and Progress
-        status_layout = QVBoxLayout()
+        # ── Left: progress + status info ────────────────────────────────────
+        progress_section = QVBoxLayout()
+        progress_section.setSpacing(6)
 
-        self.log_output = QLabel("Ready...")
-        self.log_output.setProperty("class", "ActivityValue")
+        # Top row: status pill + elapsed + log message
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        top_row.addWidget(self.lbl_run_status)
 
-        progress_layout = QHBoxLayout()
-        self.lbl_counts = QLabel("0 / 0 processed")
-        self.lbl_counts.setProperty("class", "HelperText")
+        lbl_elapsed_label = QLabel("Elapsed:")
+        lbl_elapsed_label.setStyleSheet("color: grey; font-size: 11px;")
+        top_row.addWidget(lbl_elapsed_label)
+        top_row.addWidget(self.lbl_run_elapsed)
 
-        progress_layout.addWidget(self.lbl_counts)
-        progress_layout.addStretch()
+        self.log_output = QLabel("Ready…")
+        self.log_output.setProperty("class", "CardHelper")
+        self.log_output.setAccessibleName("Harvest status message")
+        self.log_output.setStyleSheet("font-size: 11px; color: grey; font-style: italic;")
+        top_row.addStretch()
 
+        # Progress count label — right-aligned, outside the bar
+        self.lbl_progress_text = QLabel("0 / 0")
+        self.lbl_progress_text.setStyleSheet("font-size: 11px; font-weight: 600; min-width: 80px;")
+        self.lbl_progress_text.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        top_row.addWidget(self.lbl_progress_text)
+
+        top_row.addWidget(self.log_output)
+        progress_section.addLayout(top_row)
+
+        # Progress bar — clean, no text inside
         self.progress_bar = QProgressBar()
         self.progress_bar.setProperty("class", "TerminalProgressBar")
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setMaximumHeight(8)
+        self.progress_bar.setFixedHeight(10)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border-radius: 5px;
+            }
+            QProgressBar::chunk {
+                border-radius: 5px;
+            }
+        """)
+        progress_section.addWidget(self.progress_bar)
 
-        status_layout.addWidget(self.log_output)
-        status_layout.addLayout(progress_layout)
-        status_layout.addWidget(self.progress_bar)
+        action_layout.addLayout(progress_section, stretch=3)
 
-        action_layout.addLayout(status_layout, stretch=2)
+        # ── Vertical divider ───────────────────────────────────────────────
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setFixedWidth(1)
+        divider.setFixedHeight(48)
+        divider.setStyleSheet("QFrame { background: rgba(128,128,128,0.2); }")
+        action_layout.addSpacing(20)
+        action_layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        action_layout.addSpacing(20)
 
-        # Right side: Buttons
+        # ── Right: buttons ─────────────────────────────────────────────────
         buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(12)
+        buttons_layout.setSpacing(10)
 
-        # Log Output (hidden by default or small)
-        self.log_output = QLabel("Ready...")
-        self.log_output.setProperty("class", "CardHelper")
-        self.log_output.setAccessibleName("Harvest status message")
-        status_layout.addWidget(self.log_output)
-        self.btn_stop = QPushButton("Cancel")
+        BTN_H = 44
+
+        self.btn_stop = QPushButton("✕  Cancel")
         self.btn_stop.setProperty("class", "DangerButton")
-        self.btn_stop.setMinimumHeight(40)
-        self.btn_stop.setMinimumWidth(80)
+        self.btn_stop.setFixedHeight(BTN_H)
         self.btn_stop.clicked.connect(self._stop_harvest)
         self.btn_stop.setEnabled(False)
 
-        self.btn_pause = QPushButton("Pause")
+        self.btn_pause = QPushButton("⏸  Pa&use")
         self.btn_pause.setProperty("class", "SecondaryButton")
-        self.btn_pause.setMinimumHeight(40)
-        self.btn_pause.setMinimumWidth(80)
+        self.btn_pause.setFixedHeight(BTN_H)
+        self.btn_pause.setToolTip("Pause or resume the harvest")
+        self.btn_pause.setAccessibleName("Pause harvest")
         self.btn_pause.clicked.connect(self._toggle_pause)
         self.btn_pause.setEnabled(False)
 
-        self.btn_start = QPushButton("Start Harvest")
+        self.btn_start = QPushButton("▶  Start Harvest")
         self.btn_start.setProperty("class", "PrimaryButton")
-        self.btn_start.setMinimumHeight(40)
-        self.btn_start.setMinimumWidth(160)
+        self.btn_start.setFixedHeight(BTN_H)
         mod_name = "Cmd" if self._shortcut_modifier == "Meta" else "Ctrl"
         self.btn_start.setToolTip(f"Start harvest ({mod_name}+Enter)")
         self.btn_start.clicked.connect(self._on_start_clicked)
         self.btn_start.setEnabled(False)
 
-        self.lbl_start_helper = QLabel("Select a valid TSV file to start.")
-        self.lbl_start_helper.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_start_helper.setText("Select a valid TSV file to start.")
-        self.lbl_start_helper.setProperty("class", "CardHelper")
-
-        self.btn_pause = QPushButton("Pa&use")
-        self.btn_pause.setProperty("class", "SecondaryButton")
-        self.btn_pause.setMinimumHeight(45)
-        self.btn_pause.setToolTip(f"Pause or resume the harvest")
-        self.btn_pause.setAccessibleName("Pause harvest")
-        self.btn_pause.clicked.connect(self._toggle_pause)
-        self.btn_pause.setEnabled(False)
-        self.btn_new_run = QPushButton("New Harvest")
+        self.btn_new_run = QPushButton("↺  New Harvest")
         self.btn_new_run.setProperty("class", "PrimaryButton")
-        self.btn_new_run.setMinimumHeight(40)
-        self.btn_new_run.setMinimumWidth(160)
+        self.btn_new_run.setFixedHeight(BTN_H)
         self.btn_new_run.clicked.connect(self._clear_input)
         self.btn_new_run.setVisible(False)
 
         self.lbl_start_helper = QLabel("")
         self.lbl_start_helper.setVisible(False)
 
-        buttons_layout.addStretch()
         buttons_layout.addWidget(self.btn_stop)
         buttons_layout.addWidget(self.btn_pause)
         buttons_layout.addWidget(self.btn_new_run)
         buttons_layout.addWidget(self.btn_start)
 
-        action_layout.addLayout(buttons_layout, stretch=1)
-
-        _outer.addWidget(action_frame)
+        action_layout.addLayout(buttons_layout)
+        layout.addWidget(action_frame)
 
         self._transition_state(UIState.IDLE)
+
+
 
     def _transition_state(self, state: UIState, **kwargs):
         """Unified UI state machine handling buttons, banners, and status."""
@@ -1238,7 +1232,7 @@ class HarvestTabV2(QWidget):
             self.btn_clear_file.style().polish(self.btn_clear_file)
 
             # Labels and Preview
-            self.lbl_counts.setText(f"0 / {unique_valid} processed")
+            self.progress_bar.setFormat(f"0 / {unique_valid}")
             self.log_output.setText(f"Ready to harvest {unique_valid} unique ISBNs.")
 
             self.file_path_edit.setText(str(path_obj))
@@ -1286,10 +1280,10 @@ class HarvestTabV2(QWidget):
             self._transition_state(UIState.IDLE)
             return
 
-        count_text = self.lbl_counts.text()
+        count_text = self.progress_bar.format()
         count = (
-            count_text.replace("Loaded: ", "").replace(" ISBNs", "")
-            if "Loaded" in count_text
+            count_text.split("/")[0].strip()
+            if "/" in count_text
             else "?"
         )
         if isbn_count is not None:
@@ -1315,6 +1309,7 @@ class HarvestTabV2(QWidget):
                 if len(lines) == 20:
                     preview_text += "\n... (truncated)"
             self.preview_text.setPlainText(preview_text)
+            self.lbl_preview_filename.setText(path_obj.name)
         except Exception as e:
             self.preview_text.setPlainText(f"Error reading file preview: {str(e)}")
 
@@ -1331,11 +1326,13 @@ class HarvestTabV2(QWidget):
         self.lbl_val_invalid.setText("-")
         self.lbl_val_duplicates.setText("-")
         self.preview_text.clear()
+        self.lbl_preview_filename.setText("No file selected")
 
         # Reset clear button
         self.btn_clear_file.setVisible(False)
 
-        self.lbl_counts.setText("0 / 0 processed")
+        self.lbl_progress_text.setText("0 / 0")
+        self.progress_bar.setValue(0)
         self.log_output.setText("Ready...")
         self.log_output.setProperty("state", "idle")
         self.log_output.style().unpolish(self.log_output)
@@ -1372,7 +1369,7 @@ class HarvestTabV2(QWidget):
         self.preview_text.clear()
         self.preview_text.setText(f"Error: {error_msg}")
 
-        self.lbl_counts.setText("0 / 0 processed")
+        self.progress_bar.setFormat("0 / 0")
         self.log_output.setText(error_msg)
         self.log_output.setProperty("state", "error")
         self.log_output.style().unpolish(self.log_output)
@@ -1417,6 +1414,16 @@ class HarvestTabV2(QWidget):
             if self._config_getter
             else {"retry_days": 7, "call_number_mode": "lccn"}
         )
+        
+        # Override call_number_mode based on UI selection
+        mode_text = self.combo_run_mode.currentText()
+        if mode_text == "NLM Only":
+            config["call_number_mode"] = "nlmcn"
+        elif mode_text == "Both (LCCN & NLM)":
+            config["call_number_mode"] = "both"
+        else:
+            config["call_number_mode"] = "lccn"
+
 
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
@@ -1478,7 +1485,9 @@ class HarvestTabV2(QWidget):
         self.worker.progress_update.connect(self._on_progress)
         self.worker.harvest_complete.connect(self._on_complete)
         self.worker.stats_update.connect(self._on_stats)
+        self.worker.stats_update.connect(self.live_stats_ready.emit)
         self.worker.status_message.connect(self._on_status)
+        self.worker.live_result.connect(self.live_result_ready.emit)
 
         self.worker.start()
 
@@ -1644,25 +1653,19 @@ class HarvestTabV2(QWidget):
         self.progress_updated.emit(isbn, status, source, msg)
 
     def _on_stats(self, stats):
-        total = stats.get("total", 0)
-        processed = (
-            stats.get("found", 0)
-            + stats.get("failed", 0)
-            + stats.get("cached", 0)
-            + stats.get("skipped", 0)
+        # stats is a RunStats dataclass; use getattr so it also works if a dict is passed
+        total = getattr(stats, "valid_rows", 0) or (stats.get("total", 0) if hasattr(stats, "get") else 0)
+        processed = getattr(stats, "processed_unique", 0) or (
+            stats.get("found", 0) + stats.get("failed", 0) + stats.get("cached", 0) + stats.get("skipped", 0)
+            if hasattr(stats, "get") else 0
         )
         self.processed_count = processed
         self.total_count = total
 
         progress_str = f"{processed} / {total}"
-        self.lbl_counts.setText(f"{progress_str} processed")
-        self.lbl_run_progress.setText(progress_str)
-
-        self.progress_bar.setFormat(
-            f"{progress_str} (%p%)" if total > 0 else "0/0 (0%)"
-        )
-        if total > 0:
-            self.progress_bar.setValue(int(processed / total * 100))
+        pct = int(processed / total * 100) if total > 0 else 0
+        self.lbl_progress_text.setText(f"{progress_str}  ({pct}%)")
+        self.progress_bar.setValue(pct)
 
     def _on_status(self, msg):
         self.log_output.setText(msg)
@@ -1684,8 +1687,7 @@ class HarvestTabV2(QWidget):
         if not success:
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("0/0 (0%)")
-            self.lbl_counts.setText("0 / 0 processed")
-            self.lbl_run_progress.setText("0 / 0")
+
             if error_msg:
                 # Crash/exception — show a clear error dialog and keep the message
                 self.log_output.setText(f"Harvest failed: {error_msg}")
@@ -1719,7 +1721,13 @@ class HarvestTabV2(QWidget):
         self.btn_banner_success.setText(success_path.name)
         self.btn_banner_failed.setText(failed_path.name)
         self.btn_banner_invalid.setText(invalid_path.name)
-        self.lbl_banner_out.setText(f"Saved to: {success_path.parent}/")
+        base_dir = "data"
+        parent = success_path.parent
+        if parent.name == base_dir or str(parent) == base_dir:
+            out_label = f"Saved to: {base_dir}/"
+        else:
+            out_label = f"Saved to: {base_dir}/{parent.name}/"
+        self.lbl_banner_out.setText(out_label)
 
     def _open_output_folder(self):
         """Open the data folder in Explorer."""

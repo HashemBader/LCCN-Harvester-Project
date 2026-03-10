@@ -77,9 +77,9 @@ class ModernMainWindow(QMainWindow):
         self._setup_layout()
         self._apply_advanced_mode()
 
-        # Apply User's Saved Theme
+        # Always start in light mode on launch
         try:
-            self._apply_theme(self._theme_manager.get_theme())
+            self._apply_theme("light")
         except Exception as e:
             print("Theme generation fallback tripped:", e)
             self.setStyleSheet(V2_STYLESHEET)
@@ -354,6 +354,9 @@ class ModernMainWindow(QMainWindow):
         
         # Live Dashboard Updates
         self.harvest_tab.progress_updated.connect(self._on_harvest_progress)
+        # Live stats streaming - bypasses DB with RunStats object
+        if hasattr(self.harvest_tab, 'live_stats_ready'):
+            self.harvest_tab.live_stats_ready.connect(self.dashboard_tab.update_live_stats)
 
         # Target Updates
         self.targets_config_tab.targets_changed.connect(self._on_targets_changed)
@@ -398,8 +401,8 @@ class ModernMainWindow(QMainWindow):
         )
         self.dashboard_tab.record_harvest_event(isbn, status, message)
         
-        # Real-time results update
-        if status in ("found", "failed", "cached", "skipped"):
+        # Real-time results update - only fall back to refresh if live_stats_ready is not connected
+        if status in ("found", "failed", "cached", "skipped") and not getattr(self.harvest_tab, 'live_stats_ready', None):
             self.dashboard_tab.refresh_data()
 
     def _sync_tab_state(self):
@@ -417,8 +420,9 @@ class ModernMainWindow(QMainWindow):
         """Fan out target changes to dependent tabs."""
         self.harvest_tab.on_targets_changed(targets)
         self.config_tab.refresh_targets_preview(targets)
-        # Dashboard stats come from DB, but refreshing keeps UI current after navigation/actions.
-        self.dashboard_tab.refresh_data()
+        # Only refresh DB stats if not actively streaming live data
+        if not getattr(self.harvest_tab, 'is_running', False):
+            self.dashboard_tab.refresh_data()
 
     def _refresh_dashboard_profile_controls(self):
         profiles = self.config_tab.list_profile_names()

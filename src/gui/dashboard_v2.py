@@ -189,6 +189,7 @@ class DashboardTabV2(QWidget):
             "failed": 0,
             "invalid": 0,
         }
+        self._is_running = False  # Guard: live RunStats stream prevents tab-switch overwrite
         self.session_recent = []
         self.last_run_text = "Last Run: Never"
         self._setup_ui()
@@ -288,12 +289,7 @@ class DashboardTabV2(QWidget):
         self.btn_open_profile_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_open_profile_folder.setFixedSize(42, 42)
         self.btn_open_profile_folder.setToolTip("Open this profile's results folder")
-        self.btn_open_profile_folder.setStyleSheet(
-            "QPushButton { background-color: #2a3144; color: #f4c542; border: 1px solid #5a647d; border-radius: 10px; }"
-            "QPushButton:hover { background-color: #343d55; border: 1px solid #f4c542; }"
-            "QPushButton:pressed { background-color: #20283a; }"
-            "QPushButton:disabled { background-color: #252b38; color: #7b7043; border: 1px solid #4a4f5c; }"
-        )
+        self.btn_open_profile_folder.setProperty("class", "IconButton")
         self.btn_open_profile_folder.clicked.connect(self._open_profile_folder)
         header.addWidget(self.btn_open_profile_folder)
         layout.addLayout(header)
@@ -445,13 +441,44 @@ class DashboardTabV2(QWidget):
         self._append_recent_result(isbn, status, detail)
         self._render_session_stats()
 
-    def apply_run_stats(self, stats: dict | None):
-        stats = stats or {}
+    def apply_run_stats(self, stats):
+        """Accept either a dict (legacy) or a RunStats dataclass."""
+        if hasattr(stats, 'processed_unique'):  # RunStats dataclass
+            found = getattr(stats, 'found', 0)
+            failed = getattr(stats, 'failed', 0)
+            skipped = getattr(stats, 'skipped', 0)
+            invalid = getattr(stats, 'invalid', 0)
+            processed = getattr(stats, 'processed_unique', 0) + invalid
+            self.session_stats = {
+                "processed": processed,
+                "successful": found,
+                "failed": failed + skipped,
+                "invalid": invalid,
+            }
+        else:  # legacy dict
+            stats = stats or {}
+            self.session_stats = {
+                "processed": int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)),
+                "successful": int(stats.get("found", 0)) + int(stats.get("cached", 0)),
+                "failed": int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
+                "invalid": int(stats.get("invalid", 0)),
+            }
+        self._render_session_stats()
+
+    def update_live_stats(self, stats):
+        """Live update session_stats from a RunStats object emitted by HarvestWorkerV2."""
+        if not hasattr(stats, 'processed_unique'):
+            return  # Only handle RunStats dataclass
+        found = getattr(stats, 'found', 0)
+        failed = getattr(stats, 'failed', 0)
+        skipped = getattr(stats, 'skipped', 0)
+        invalid = getattr(stats, 'invalid', 0)
+        processed = getattr(stats, 'processed_unique', 0) + invalid
         self.session_stats = {
-            "processed": int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)),
-            "successful": int(stats.get("found", 0)) + int(stats.get("cached", 0)),
-            "failed": int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
-            "invalid": int(stats.get("invalid", 0)),
+            "processed": processed,
+            "successful": found,
+            "failed": failed + skipped,
+            "invalid": invalid,
         }
         self._render_session_stats()
 
@@ -502,6 +529,7 @@ class DashboardTabV2(QWidget):
         pass
 
     def set_running(self):
+        self._is_running = True
         self._refresh_result_file_buttons()
         self.lbl_run_status.setText("● RUNNING")
         self.lbl_run_status.setProperty("state", "running")
@@ -517,6 +545,7 @@ class DashboardTabV2(QWidget):
         self._refresh_status_style()
 
     def set_idle(self, success: bool | None = None):
+        self._is_running = False
         self._refresh_result_file_buttons()
         if success is True:
             self.lbl_run_status.setText("● COMPLETED")

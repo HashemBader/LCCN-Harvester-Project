@@ -59,6 +59,13 @@ class HarvestSummary:
     dry_run: bool
 
 
+@dataclass(frozen=True)
+class ProcessOutcome:
+    status: str
+    record: Optional[MainRecord]
+    attempted_rows: tuple[tuple[str, Optional[str], str, Optional[str], Optional[str]], ...]
+
+
 class HarvestCancelled(Exception):
     """Raised when a harvest run is cancelled by the caller."""
 
@@ -84,6 +91,7 @@ class HarvestOrchestrator:
         retry_days: int = 7,
         max_workers: int = 1,
         call_number_mode: str = "both",
+        both_stop_policy: str = "both",
         bypass_retry_isbns: Optional[set[str]] = None,
         bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
@@ -96,6 +104,7 @@ class HarvestOrchestrator:
         self.progress_cb = progress_cb
         self.cancel_check = cancel_check
         self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
+        self.both_stop_policy = self._normalize_both_stop_policy(both_stop_policy)
         self.max_workers = max(1, int(max_workers))
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
 
@@ -115,6 +124,13 @@ class HarvestOrchestrator:
         mode_normalized = (mode or "").strip().lower()
         if mode_normalized in {"lccn", "nlmcn", "both"}:
             return mode_normalized
+        return "both"
+
+    @staticmethod
+    def _normalize_both_stop_policy(policy: str) -> str:
+        normalized = (policy or "").strip().lower()
+        if normalized in {"lccn", "nlmcn", "either", "both"}:
+            return normalized
         return "both"
 
     def _filter_result_by_mode(self, result: TargetResult) -> TargetResult:
@@ -187,165 +203,228 @@ class HarvestOrchestrator:
             "isbn": isbn,
             "last_target": last_target,
             "last_error": last_error,
+            "attempt_type": self.call_number_mode,
             "not_found_targets": not_found_targets,
             "z3950_unsupported_targets": z3950_unsupported_targets,
             "offline_targets": offline_targets,
             "other_errors": other_error_items,
         }
 
-    def process_isbn(
-        self,
-        isbn: str,
-        *,
-        dry_run: bool,
-        pending_main: list[MainRecord],
-        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
-    ) -> str:
+    def _should_stop_with_found(self, has_lccn: bool, has_nlmcn: bool) -> bool:
+        if self.call_number_mode == "lccn":
+            return has_lccn
+        if self.call_number_mode == "nlmcn":
+            return has_nlmcn
+        if self.both_stop_policy == "lccn":
+            return has_lccn
+        if self.both_stop_policy == "nlmcn":
+            return has_nlmcn
+        if self.both_stop_policy == "either":
+            return has_lccn or has_nlmcn
+        return has_lccn and has_nlmcn
 
-        """
-        Process one ISBN.
-        Returns status string: "cached" | "skip_retry" | "success" | "failed"
-        """
+    def _required_types(self, has_lccn: bool, has_nlmcn: bool) -> list[str]:
+        if self.call_number_mode == "lccn":
+            return [] if has_lccn else ["lccn"]
+        if self.call_number_mode == "nlmcn":
+            return [] if has_nlmcn else ["nlmcn"]
+        if self.both_stop_policy == "lccn":
+            return [] if has_lccn else ["lccn"]
+        if self.both_stop_policy == "nlmcn":
+            return [] if has_nlmcn else ["nlmcn"]
+        if self.both_stop_policy == "either":
+            return [] if (has_lccn or has_nlmcn) else ["lccn", "nlmcn"]
+        needed: list[str] = []
+        if not has_lccn:
+            needed.append("lccn")
+        if not has_nlmcn:
+            needed.append("nlmcn")
+        return needed
+
+    @staticmethod
+    def _type_label(call_number_type: str) -> str:
+        return "LCCN" if call_number_type == "lccn" else "NLMCN"
+
+    def _emit_attempt_failure(self, *, isbn: str, target: str, call_number_type: str, reason: str) -> None:
+        self._emit(
+            "attempt_failed",
+            {
+                "isbn": isbn,
+                "target": target,
+                "attempt_type": call_number_type,
+                "reason": reason,
+            },
+        )
+
+    @staticmethod
+    def _build_record(
+        *,
+        isbn: str,
+        lccn: Optional[str],
+        lccn_source: Optional[str],
+        nlmcn: Optional[str],
+        nlmcn_source: Optional[str],
+    ) -> MainRecord:
+        combined_sources: list[str] = []
+        for value in (lccn_source, nlmcn_source):
+            text = str(value or "").strip()
+            if text and text not in combined_sources:
+                combined_sources.append(text)
+        return MainRecord(
+            isbn=isbn,
+            lccn=lccn,
+            lccn_source=lccn_source,
+            nlmcn=nlmcn,
+            nlmcn_source=nlmcn_source,
+            source=" + ".join(combined_sources) if combined_sources else None,
+        )
+
+    def _emit_result(self, event_name: str, *, isbn: str, target: str, record: MainRecord) -> None:
+        self._emit(
+            event_name,
+            {
+                "isbn": isbn,
+                "target": target,
+                "source": record.source,
+                "lccn": record.lccn,
+                "lccn_source": record.lccn_source,
+                "nlmcn": record.nlmcn,
+                "nlmcn_source": record.nlmcn_source,
+            },
+        )
+
+    def _process_isbn_internal(self, isbn: str, *, dry_run: bool) -> ProcessOutcome:
         self._check_cancelled()
         self._emit("isbn_start", {"isbn": isbn})
 
-        # 1) cache check
         cached_rec = None
+        found_lccn: Optional[str] = None
+        found_lccn_source: Optional[str] = None
+        found_nlmcn: Optional[str] = None
+        found_nlmcn_source: Optional[str] = None
+        attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
+
         if isbn not in self.bypass_cache_isbns:
             cached_rec = self.db.get_main(isbn)
         if cached_rec is not None:
-            self._emit(
-                "cached",
-                {
-                    "isbn": isbn,
-                    "source": cached_rec.source,
-                    "lccn": cached_rec.lccn,
-                    "nlmcn": cached_rec.nlmcn,
-                },
-            )
-            return "cached"
+            found_lccn = cached_rec.lccn
+            found_lccn_source = getattr(cached_rec, "lccn_source", None) or cached_rec.source
+            found_nlmcn = cached_rec.nlmcn
+            found_nlmcn_source = getattr(cached_rec, "nlmcn_source", None) or cached_rec.source
+            if self._should_stop_with_found(bool(found_lccn), bool(found_nlmcn)):
+                record = self._build_record(
+                    isbn=isbn,
+                    lccn=found_lccn,
+                    lccn_source=found_lccn_source,
+                    nlmcn=found_nlmcn,
+                    nlmcn_source=found_nlmcn_source,
+                )
+                self._emit_result("cached", isbn=isbn, target=record.source or "Cache", record=record)
+                return ProcessOutcome("cached", record, tuple())
 
-        # 2) try targets in order with target/type-specific retry checks
         last_error: Optional[str] = None
         last_target: Optional[str] = None
         not_found_targets: list[str] = []
         other_errors: list[tuple[str, str]] = []
         skipped_retry_targets: list[str] = []
-        collected_lccn: Optional[str] = None
-        collected_nlmcn: Optional[str] = None
-        collected_sources: list[str] = []
 
         for target in self.targets:
             self._check_cancelled()
             last_target = getattr(target, "name", target.__class__.__name__)
+            required_types = self._required_types(bool(found_lccn), bool(found_nlmcn))
+            if not required_types:
+                break
 
-            if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
-                isbn,
-                last_target,
-                self.call_number_mode,
-                retry_days=self.retry_days,
+            if isbn not in self.bypass_retry_isbns and all(
+                self.db.should_skip_retry(isbn, last_target, call_number_type, retry_days=self.retry_days)
+                for call_number_type in required_types
             ):
                 skipped_retry_targets.append(last_target)
                 continue
 
             self._emit("target_start", {"isbn": isbn, "target": last_target})
+            raw_result = target.lookup(isbn)
+            attempt_time = utc_now_iso()
+            source_name = raw_result.source or last_target
 
-            result = self._filter_result_by_mode(target.lookup(isbn))
+            if self.call_number_mode == "lccn":
+                result = self._filter_result_by_mode(raw_result)
+            elif self.call_number_mode == "nlmcn":
+                result = self._filter_result_by_mode(raw_result)
+            else:
+                result = raw_result
 
-            if result.success:
-                if self.call_number_mode == "both":
-                    if result.lccn and not collected_lccn:
-                        collected_lccn = result.lccn
-                    if result.nlmcn and not collected_nlmcn:
-                        collected_nlmcn = result.nlmcn
-                    source_name = result.source or last_target
-                    if source_name and source_name not in collected_sources:
-                        collected_sources.append(source_name)
+            before_lccn = bool(found_lccn)
+            before_nlmcn = bool(found_nlmcn)
+            if result.lccn and not found_lccn:
+                found_lccn = result.lccn
+                found_lccn_source = source_name
+            if result.nlmcn and not found_nlmcn:
+                found_nlmcn = result.nlmcn
+                found_nlmcn_source = source_name
 
-                    self._emit(
-                        "success",
-                        {
-                            "isbn": isbn,
-                            "target": last_target,
-                            "source": source_name,
-                            "lccn": collected_lccn,
-                            "nlmcn": collected_nlmcn,
-                        },
-                    )
+            gained_required = False
+            if "lccn" in required_types and not before_lccn and found_lccn:
+                gained_required = True
+            if "nlmcn" in required_types and not before_nlmcn and found_nlmcn:
+                gained_required = True
 
-                    if collected_lccn and collected_nlmcn:
-                        if not dry_run:
-                            pending_main.append(
-                                MainRecord(
-                                    isbn=isbn,
-                                    lccn=collected_lccn,
-                                    nlmcn=collected_nlmcn,
-                                    source=" + ".join(collected_sources) if collected_sources else source_name,
-                                )
-                            )
-                        return "success"
-                    # Continue until both are collected.
-                    continue
-
-                self._emit(
-                    "success",
-                    {
-                        "isbn": isbn,
-                        "target": last_target,
-                        "source": result.source or last_target,
-                        "lccn": result.lccn,
-                        "nlmcn": result.nlmcn,
-                    },
+            if gained_required and self._should_stop_with_found(bool(found_lccn), bool(found_nlmcn)):
+                record = self._build_record(
+                    isbn=isbn,
+                    lccn=found_lccn,
+                    lccn_source=found_lccn_source,
+                    nlmcn=found_nlmcn,
+                    nlmcn_source=found_nlmcn_source,
                 )
+                self._emit_result("success", isbn=isbn, target=last_target, record=record)
+                return ProcessOutcome("success", record, tuple(attempted_rows))
 
-                if not dry_run:
-                    rec = MainRecord(
+            if gained_required and self.call_number_mode == "both" and self.both_stop_policy == "both":
+                missing_types = self._required_types(bool(found_lccn), bool(found_nlmcn))
+                for call_number_type in missing_types:
+                    reason = f"No {self._type_label(call_number_type)} call number"
+                    attempted_rows.append((isbn, last_target, call_number_type, attempt_time, reason))
+                    self._emit_attempt_failure(
                         isbn=isbn,
-                        lccn=result.lccn,
-                        nlmcn=result.nlmcn,
-                        source=result.source or last_target,
+                        target=last_target,
+                        call_number_type=call_number_type,
+                        reason=reason,
                     )
-                    pending_main.append(rec)
+                continue
 
+            if gained_required:
+                continue
 
-                return "success"
-
-            # failure from this target; continue
             last_error = result.error or "Unknown error"
             err = (result.error or "").strip()
             if err.lower().startswith("no records found in"):
                 not_found_targets.append(last_target)
             elif err:
                 other_errors.append((last_target, err))
-            if not dry_run:
-                pending_attempted.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
-
-        # In "both" mode, keep backward-compatible success behavior if at least one number
-        # was found, but prefer combined values from multiple targets when available.
-        if self.call_number_mode == "both" and (collected_lccn or collected_nlmcn):
-            source = " + ".join(collected_sources) if collected_sources else last_target
-            self._emit(
-                "success",
-                {
-                    "isbn": isbn,
-                    "target": last_target,
-                    "source": source,
-                    "lccn": collected_lccn,
-                    "nlmcn": collected_nlmcn,
-                },
-            )
-            if not dry_run:
-                pending_main.append(
-                    MainRecord(
-                        isbn=isbn,
-                        lccn=collected_lccn,
-                        nlmcn=collected_nlmcn,
-                        source=source,
-                    )
+            for call_number_type in required_types:
+                reason = err or f"No {self._type_label(call_number_type)} call number"
+                attempted_rows.append((isbn, last_target, call_number_type, attempt_time, reason))
+                self._emit_attempt_failure(
+                    isbn=isbn,
+                    target=last_target,
+                    call_number_type=call_number_type,
+                    reason=reason,
                 )
-            return "success"
 
-        if skipped_retry_targets and not not_found_targets and not other_errors:
+        if self._should_stop_with_found(bool(found_lccn), bool(found_nlmcn)):
+            record = self._build_record(
+                isbn=isbn,
+                lccn=found_lccn,
+                lccn_source=found_lccn_source,
+                nlmcn=found_nlmcn,
+                nlmcn_source=found_nlmcn_source,
+            )
+            event_name = "cached" if cached_rec is not None and not attempted_rows else "success"
+            self._emit_result(event_name, isbn=isbn, target=last_target or record.source or "Cache", record=record)
+            return ProcessOutcome(event_name, record, tuple(attempted_rows))
+
+        if skipped_retry_targets:
             self._emit(
                 "skip_retry",
                 {
@@ -355,9 +434,8 @@ class HarvestOrchestrator:
                     "attempt_type": self.call_number_mode,
                 },
             )
-            return "skip_retry"
+            return ProcessOutcome("skip_retry", None, tuple())
 
-        # 3) all tried targets failed
         if not_found_targets and not other_errors:
             last_error = "Not found in: " + ", ".join(not_found_targets)
         elif not_found_targets and other_errors:
@@ -370,15 +448,32 @@ class HarvestOrchestrator:
         elif other_errors:
             last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
 
-        self._emit("failed", self._build_failed_payload(
-            isbn=isbn,
-            last_target=last_target,
-            last_error=last_error,
-            not_found_targets=not_found_targets,
-            other_errors=other_errors,
-        ))
+        self._emit(
+            "failed",
+            self._build_failed_payload(
+                isbn=isbn,
+                last_target=last_target,
+                last_error=last_error,
+                not_found_targets=not_found_targets,
+                other_errors=other_errors,
+            ),
+        )
+        return ProcessOutcome("failed", None, tuple(attempted_rows))
 
-        return "failed"
+    def process_isbn(
+        self,
+        isbn: str,
+        *,
+        dry_run: bool,
+        pending_main: list[MainRecord],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
+    ) -> str:
+        outcome = self._process_isbn_internal(isbn, dry_run=dry_run)
+        if not dry_run and outcome.record is not None and outcome.status == "success":
+            pending_main.append(outcome.record)
+        if not dry_run and outcome.attempted_rows:
+            pending_attempted.extend(outcome.attempted_rows)
+        return outcome.status
     def run(self, isbns: list[str], *, dry_run: bool) -> HarvestSummary:
         cached_hits = 0
         skipped_recent_fail = 0
@@ -454,164 +549,14 @@ class HarvestOrchestrator:
         else:
             # --- parallel mode (SAFE): threads do lookup only, main thread writes DB in batches ---
             def worker(isbn: str):
-                self._check_cancelled()
-                # Only compute outcome; do NOT touch shared pending_* lists here.
-                # Also: emitting progress from threads is okay only if your GUI callback is thread-safe.
-                self._emit("isbn_start", {"isbn": isbn})
-
-                cached_rec = None
-                if isbn not in self.bypass_cache_isbns:
-                    cached_rec = self.db.get_main(isbn)
-                if cached_rec is not None:
-                    self._emit("cached", {
-                        "isbn": isbn,
-                        "source": cached_rec.source,
-                        "lccn": cached_rec.lccn,
-                        "nlmcn": cached_rec.nlmcn,
-                    })
-                    return ("cached", None, None)
-
-                last_error = None
-                last_target = None
-                not_found_targets: list[str] = []
-                other_errors: list[tuple[str, str]] = []
-                skipped_retry_targets: list[str] = []
-                attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
-                collected_lccn: Optional[str] = None
-                collected_nlmcn: Optional[str] = None
-                collected_sources: list[str] = []
-
-                for target in self.targets:
-                    self._check_cancelled()
-                    last_target = getattr(target, "name", target.__class__.__name__)
-
-                    if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
-                        isbn,
-                        last_target,
-                        self.call_number_mode,
-                        retry_days=self.retry_days,
-                    ):
-                        skipped_retry_targets.append(last_target)
-                        continue
-
-                    self._emit("target_start", {"isbn": isbn, "target": last_target})
-
-                    result = self._filter_result_by_mode(target.lookup(isbn))
-                    if result.success:
-                        if self.call_number_mode == "both":
-                            if result.lccn and not collected_lccn:
-                                collected_lccn = result.lccn
-                            if result.nlmcn and not collected_nlmcn:
-                                collected_nlmcn = result.nlmcn
-                            source_name = result.source or last_target
-                            if source_name and source_name not in collected_sources:
-                                collected_sources.append(source_name)
-
-                            self._emit("success", {
-                                "isbn": isbn,
-                                "target": last_target,
-                                "source": source_name,
-                                "lccn": collected_lccn,
-                                "nlmcn": collected_nlmcn,
-                            })
-
-                            if collected_lccn and collected_nlmcn:
-                                rec = None
-                                if not dry_run:
-                                    rec = MainRecord(
-                                        isbn=isbn,
-                                        lccn=collected_lccn,
-                                        nlmcn=collected_nlmcn,
-                                        source=" + ".join(collected_sources) if collected_sources else source_name,
-                                    )
-                                return ("success", rec, None)
-                            continue
-
-                        self._emit("success", {
-                            "isbn": isbn,
-                            "target": last_target,
-                            "source": result.source or last_target,
-                            "lccn": result.lccn,
-                            "nlmcn": result.nlmcn,
-                        })
-
-                        rec = None
-                        if not dry_run:
-                            rec = MainRecord(
-                                isbn=isbn,
-                                lccn=result.lccn,
-                                nlmcn=result.nlmcn,
-                                source=result.source or last_target,
-                            )
-                        return ("success", rec, None)
-
-                    last_error = result.error or "Unknown error"
-                    err = (result.error or "").strip()
-                    if err.lower().startswith("no records found in"):
-                        not_found_targets.append(last_target)
-                    elif err:
-                        other_errors.append((last_target, err))
-                    if not dry_run:
-                        attempted_rows.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
-
-                if self.call_number_mode == "both" and (collected_lccn or collected_nlmcn):
-                    source = " + ".join(collected_sources) if collected_sources else last_target
-                    self._emit("success", {
-                        "isbn": isbn,
-                        "target": last_target,
-                        "source": source,
-                        "lccn": collected_lccn,
-                        "nlmcn": collected_nlmcn,
-                    })
-                    rec = None
-                    if not dry_run:
-                        rec = MainRecord(
-                            isbn=isbn,
-                            lccn=collected_lccn,
-                            nlmcn=collected_nlmcn,
-                            source=source,
-                        )
-                    return ("success", rec, None)
-
-                if skipped_retry_targets and not not_found_targets and not other_errors:
-                    self._emit(
-                        "skip_retry",
-                        {
-                            "isbn": isbn,
-                            "retry_days": self.retry_days,
-                            "targets": skipped_retry_targets,
-                            "attempt_type": self.call_number_mode,
-                        },
-                    )
-                    return ("skip_retry", None, None)
-
-                if not_found_targets and not other_errors:
-                    last_error = "Not found in: " + ", ".join(not_found_targets)
-                elif not_found_targets and other_errors:
-                    last_error = (
-                        "Not found in: "
-                        + ", ".join(not_found_targets)
-                        + " | Other errors: "
-                        + " ; ".join(f"{t}: {e}" for t, e in other_errors)
-                    )
-                elif other_errors:
-                    last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
-
-                self._emit("failed", self._build_failed_payload(
-                    isbn=isbn,
-                    last_target=last_target,
-                    last_error=last_error,
-                    not_found_targets=not_found_targets,
-                    other_errors=other_errors,
-                ))
-
-                return ("failed", None, attempted_rows)
+                outcome = self._process_isbn_internal(isbn, dry_run=dry_run)
+                return (outcome.status, outcome.record, list(outcome.attempted_rows))
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
                 for status, rec, att in ex.map(worker, isbns):
                     self._check_cancelled()
                     # main-thread batching writes
-                    if rec is not None:
+                    if status == "success" and rec is not None:
                         pending_main.append(rec)
                     if att:
                         pending_attempted.extend(att)

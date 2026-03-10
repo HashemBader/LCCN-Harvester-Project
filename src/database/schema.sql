@@ -10,7 +10,9 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS main (
     isbn            TEXT PRIMARY KEY,
     lccn            TEXT,
+    lccn_source     TEXT,
     nlmcn           TEXT,
+    nlmcn_source    TEXT,
     classification  TEXT,
     source          TEXT,
     date_added      TEXT NOT NULL

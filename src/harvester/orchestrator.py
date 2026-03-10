@@ -74,7 +74,7 @@ class HarvestOrchestrator:
     - Optional progress callback hook
     """
 
-    DEFAULT_FLUSH_BATCH_SIZE = 1
+    DEFAULT_FLUSH_BATCH_SIZE = 500
 
     def __init__(
         self,

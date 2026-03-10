@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSizePolicy,
+    QComboBox,
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
@@ -40,7 +41,7 @@ from .icons import SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
 from .input_tab import ClickableDropZone
 
 # Add imports for Worker
-from src.harvester.run_harvest import run_harvest, parse_isbn_file
+from src.harvester.run_harvest import run_harvest, parse_isbn_file, RunStats
 from src.harvester.targets import create_target_from_config
 from src.harvester.orchestrator import HarvestCancelled
 from src.database import DatabaseManager
@@ -69,7 +70,8 @@ class HarvestWorkerV2(QThread):
     )  # success, statistics (can include 'cancelled': True)
     status_message = pyqtSignal(str)
     started = pyqtSignal()
-    stats_update = pyqtSignal(dict)  # real-time statistics update
+    stats_update = pyqtSignal(object)  # real-time statistics update (RunStats)
+    live_result = pyqtSignal(dict)   # real-time single row result
 
     def __init__(
         self,
@@ -109,7 +111,11 @@ class HarvestWorkerV2(QThread):
             self.status_message.emit(messages.HarvestMessages.starting)
 
             # Read and validate ISBNs
-            isbns, invalid_list = self._read_and_validate_isbns()
+            parsed = self._read_and_validate_isbns()
+            if not parsed:
+                return
+            isbns = parsed.unique_valid
+            invalid_list = parsed.invalid_isbns
             total = len(isbns)
             invalid_count = len(invalid_list)
 
@@ -126,6 +132,18 @@ class HarvestWorkerV2(QThread):
             if invalid_count > 0:
                 self._record_invalid_isbns(invalid_list)
 
+            # Track stats for GUI updates using centralized RunStats
+            self.run_stats = RunStats(
+                total_rows=parsed.total_nonempty,
+                valid_rows=parsed.valid_count,
+                duplicates=parsed.duplicate_count,
+                invalid=invalid_count,
+                processed_unique=0,
+                found=0,
+                failed=0,
+                skipped=0
+            )
+
             if total == 0:
                 self.status_message.emit(messages.HarvestMessages.no_valid_isbns)
                 self.harvest_complete.emit(
@@ -133,14 +151,6 @@ class HarvestWorkerV2(QThread):
                 )
                 return
 
-            # Track stats for GUI updates
-            self.stats = {
-                "total": total,
-                "found": 0,
-                "failed": 0,
-                "cached": 0,
-                "skipped": 0,
-            }
             self.processed_count = 0
 
             # Create progress callback
@@ -151,14 +161,15 @@ class HarvestWorkerV2(QThread):
                 isbn = payload.get("isbn", "")
 
                 if event == "isbn_start":
-                    self.progress_update.emit(
-                        isbn, "processing", "", messages.HarvestMessages.processing_isbn
-                    )
+                    # self.progress_update.emit(
+                    #    isbn, "processing", "", messages.HarvestMessages.processing_isbn
+                    # )
+                    pass
 
                 elif event == "cached":
-                    self.progress_update.emit(
-                        isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
-                    )
+                    # self.progress_update.emit(
+                    #    isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
+                    # )
                     _lccn = payload.get("lccn") or ""
                     _nlmcn = payload.get("nlmcn") or ""
                     _src = payload.get("source") or "Cache"
@@ -179,15 +190,20 @@ class HarvestWorkerV2(QThread):
                         lccn=_lccn,
                         nlmcn=_nlmcn,
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Found",
+                        "detail": _src
+                    })
                     self._update_processed()
 
                 elif event == "skip_retry":
-                    self.progress_update.emit(
-                        isbn,
-                        "skipped",
-                        "",
-                        messages.HarvestMessages.skipped_recent_failure,
-                    )
+                    # self.progress_update.emit(
+                    #     isbn,
+                    #     "skipped",
+                    #     "",
+                    #     messages.HarvestMessages.skipped_recent_failure,
+                    # )
                     retry_days = payload.get(
                         "retry_days", self.config.get("retry_days", 7)
                     )
@@ -205,11 +221,16 @@ class HarvestWorkerV2(QThread):
                         retry_days=retry_days,
                         other_errors=[f"RetryRule: {_err}"],
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Failed",
+                        "detail": _err
+                    })
                     self._update_processed()
 
                 elif event == "success":
                     source = payload.get("target", "")
-                    self.progress_update.emit(isbn, "found", source, "Found")
+                    # self.progress_update.emit(isbn, "found", source, "Found")
                     _lccn = payload.get("lccn") or ""
                     _nlmcn = payload.get("nlmcn") or ""
                     _src = payload.get("source") or source or "Target"
@@ -230,6 +251,11 @@ class HarvestWorkerV2(QThread):
                         lccn=_lccn,
                         nlmcn=_nlmcn,
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Found",
+                        "detail": _src
+                    })
                     self._update_processed()
 
                 elif event == "failed":
@@ -237,7 +263,7 @@ class HarvestWorkerV2(QThread):
                         "error", "No results"
                     )
                     source = payload.get("last_target") or "All"
-                    self.progress_update.emit(isbn, "failed", source, error)
+                    # self.progress_update.emit(isbn, "failed", source, error)
                     _retry_days = self.config.get("retry_days", 7)
                     self._session_failed.append(
                         [
@@ -257,16 +283,19 @@ class HarvestWorkerV2(QThread):
                         offline_targets=payload.get("offline_targets"),
                         other_errors=payload.get("other_errors"),
                     )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Failed",
+                        "detail": error
+                    })
                     self._update_processed()
 
                 elif event == "stats":
-                    self.stats["total"] = payload.get("total", self.stats["total"])
-                    self.stats["found"] = payload.get("successes", 0)
-                    self.stats["failed"] = payload.get("failures", 0)
-                    self.stats["cached"] = payload.get("cached", 0)
-                    self.stats["skipped"] = payload.get("skipped", 0)
+                    self.run_stats.found = payload.get("successes", 0) + payload.get("cached", 0)
+                    self.run_stats.failed = payload.get("failures", 0)
+                    self.run_stats.skipped = payload.get("skipped", 0)
                     # Force stats update to UI
-                    self.stats_update.emit(self.stats.copy())
+                    self.stats_update.emit(self.run_stats)
 
             # Build targets list from config
             targets = self._build_targets()
@@ -306,6 +335,7 @@ class HarvestWorkerV2(QThread):
                 "cached": summary.cached_hits,
                 "skipped": summary.skipped_recent_fail,
                 "invalid": invalid_count,
+                "run_stats": self.run_stats,
             }
 
             self.status_message.emit(
@@ -317,13 +347,14 @@ class HarvestWorkerV2(QThread):
 
         except HarvestCancelled:
             self.status_message.emit("Harvest cancelled by user.")
-            stats = (
-                self.stats.copy()
-                if hasattr(self, "stats")
-                else {"total": 0, "found": 0, "failed": 0, "invalid": 0}
-            )
-            stats["invalid"] = len(getattr(self, "_session_invalid", []) or [])
-            stats["cancelled"] = True
+            stats = {
+                "total": self.run_stats.total_rows if hasattr(self, "run_stats") else 0,
+                "found": self.run_stats.found if hasattr(self, "run_stats") else 0,
+                "failed": self.run_stats.failed if hasattr(self, "run_stats") else 0,
+                "invalid": len(getattr(self, "_session_invalid", []) or []),
+                "run_stats": self.run_stats if hasattr(self, "run_stats") else None,
+                "cancelled": True
+            }
             self.harvest_complete.emit(False, stats)
         except Exception as e:
             import traceback
@@ -339,10 +370,11 @@ class HarvestWorkerV2(QThread):
     def _update_processed(self):
         """Update processed count and emit stats/milestones."""
         self.processed_count += 1
+        self.run_stats.processed_unique = self.processed_count
 
         # Emit stats update for UI
-        if self.processed_count % 5 == 0 or self.processed_count == self.stats["total"]:
-            self.stats_update.emit(self.stats.copy())
+        if self.processed_count % 5 == 0 or self.processed_count == getattr(self.run_stats, 'valid_rows', 0):
+            self.stats_update.emit(self.run_stats)
 
     def _prepare_live_result_files(self):
         """Create per-run TSV output files using the pre-computed named paths."""
@@ -386,7 +418,7 @@ class HarvestWorkerV2(QThread):
         with self._live_results_lock:
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow(row)
-            fh.flush()
+            fh.flush()  # Flush immediately so file is readable live during harvest
 
     def _write_invalid_live_rows(self, invalid_list):
         for raw_isbn in invalid_list or []:
@@ -503,12 +535,12 @@ class HarvestWorkerV2(QThread):
                         count=len(parsed.invalid_isbns)
                     )
                 )
-            return parsed.unique_valid, parsed.invalid_isbns
+            return parsed
         except Exception as e:
             self.status_message.emit(
                 messages.HarvestMessages.error_reading_file.format(error=str(e))
             )
-            return [], []
+            return None
 
     def _record_invalid_isbns(self, invalid_list):
         """Record invalid ISBNs in DB so they appear in stats."""
@@ -659,6 +691,8 @@ class HarvestTabV2(QWidget):
     harvest_paused = pyqtSignal(bool)  # True = paused, False = resumed
     progress_updated = pyqtSignal(str, str, str, str)  # isbn, status, source, message
     result_files_ready = pyqtSignal(dict)  # emitted when live output paths are known
+    live_result_ready = pyqtSignal(dict)   # emitted per ISBN harvested
+    live_stats_ready = pyqtSignal(object)    # emitted for batch counts (RunStats)
 
     # Signals to request data from main window
     request_start_harvest = pyqtSignal()
@@ -845,6 +879,31 @@ class HarvestTabV2(QWidget):
         setup_grid.addWidget(lbl_input, 0, 0)
         setup_grid.addLayout(file_input_layout, 0, 1)
 
+        # Row 1: Run Mode Selector
+        lbl_run_mode = QLabel("Run Mode:")
+        lbl_run_mode.setProperty("class", "HelperText")
+        
+        self.combo_run_mode = QComboBox()
+        self.combo_run_mode.setProperty("class", "ComboBox")
+        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)"])
+        self.combo_run_mode.setToolTip("Select the type of call numbers to harvest")
+        
+        # Load last used mode from config if available (defaulting to LCCN Only if not set)
+        if hasattr(self, "_config_getter") and callable(self._config_getter):
+            config = self._config_getter() or {}
+            saved_mode = config.get("call_number_mode", "lccn")
+            if saved_mode == "nlmcn":
+                self.combo_run_mode.setCurrentText("NLM Only")
+            elif saved_mode == "both":
+                self.combo_run_mode.setCurrentText("Both (LCCN & NLM)")
+            else:
+                self.combo_run_mode.setCurrentText("LCCN Only")
+        else:
+            self.combo_run_mode.setCurrentText("LCCN Only")
+        
+        setup_grid.addWidget(lbl_run_mode, 1, 0)
+        setup_grid.addWidget(self.combo_run_mode, 1, 1)
+
         input_layout.addLayout(setup_grid)
         layout.addWidget(self.input_card)
 
@@ -983,7 +1042,6 @@ class HarvestTabV2(QWidget):
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setMaximumHeight(8)
 
-        status_layout.addWidget(self.log_output)
         status_layout.addLayout(progress_layout)
         status_layout.addWidget(self.progress_bar)
 
@@ -997,7 +1055,6 @@ class HarvestTabV2(QWidget):
         self.log_output = QLabel("Ready...")
         self.log_output.setProperty("class", "CardHelper")
         self.log_output.setAccessibleName("Harvest status message")
-        status_layout.addWidget(self.log_output)
         self.btn_stop = QPushButton("Cancel")
         self.btn_stop.setProperty("class", "DangerButton")
         self.btn_stop.setMinimumHeight(40)
@@ -1417,6 +1474,16 @@ class HarvestTabV2(QWidget):
             if self._config_getter
             else {"retry_days": 7, "call_number_mode": "lccn"}
         )
+        
+        # Override call_number_mode based on UI selection
+        mode_text = self.combo_run_mode.currentText()
+        if mode_text == "NLM Only":
+            config["call_number_mode"] = "nlmcn"
+        elif mode_text == "Both (LCCN & NLM)":
+            config["call_number_mode"] = "both"
+        else:
+            config["call_number_mode"] = "lccn"
+
 
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
@@ -1478,7 +1545,9 @@ class HarvestTabV2(QWidget):
         self.worker.progress_update.connect(self._on_progress)
         self.worker.harvest_complete.connect(self._on_complete)
         self.worker.stats_update.connect(self._on_stats)
+        self.worker.stats_update.connect(self.live_stats_ready.emit)
         self.worker.status_message.connect(self._on_status)
+        self.worker.live_result.connect(self.live_result_ready.emit)
 
         self.worker.start()
 
@@ -1644,12 +1713,11 @@ class HarvestTabV2(QWidget):
         self.progress_updated.emit(isbn, status, source, msg)
 
     def _on_stats(self, stats):
-        total = stats.get("total", 0)
-        processed = (
-            stats.get("found", 0)
-            + stats.get("failed", 0)
-            + stats.get("cached", 0)
-            + stats.get("skipped", 0)
+        # stats is a RunStats dataclass; use getattr so it also works if a dict is passed
+        total = getattr(stats, "valid_rows", 0) or (stats.get("total", 0) if hasattr(stats, "get") else 0)
+        processed = getattr(stats, "processed_unique", 0) or (
+            stats.get("found", 0) + stats.get("failed", 0) + stats.get("cached", 0) + stats.get("skipped", 0)
+            if hasattr(stats, "get") else 0
         )
         self.processed_count = processed
         self.total_count = total
@@ -1719,7 +1787,13 @@ class HarvestTabV2(QWidget):
         self.btn_banner_success.setText(success_path.name)
         self.btn_banner_failed.setText(failed_path.name)
         self.btn_banner_invalid.setText(invalid_path.name)
-        self.lbl_banner_out.setText(f"Saved to: {success_path.parent}/")
+        base_dir = "data"
+        parent = success_path.parent
+        if parent.name == base_dir or str(parent) == base_dir:
+            out_label = f"Saved to: {base_dir}/"
+        else:
+            out_label = f"Saved to: {base_dir}/{parent.name}/"
+        self.lbl_banner_out.setText(out_label)
 
     def _open_output_folder(self):
         """Open the data folder in Explorer."""

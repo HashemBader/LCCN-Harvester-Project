@@ -279,14 +279,16 @@ class ProfileManager:
             new_json = new_profile_dir / f"{new_slug}.json"
             if old_json.exists() and not new_json.exists():
                 old_json.rename(new_json)
-        else:
-            # Legacy flat targets file: move to new location
-            old_targets = self.profiles_dir / f"{old_slug}_targets.tsv"
-            new_targets_dir = new_profile_dir
-            new_targets_dir.mkdir(parents=True, exist_ok=True)
-            new_targets_path = new_targets_dir / f"{new_slug}_targets.tsv"
-            if old_targets.exists() and not new_targets_path.exists():
+        # Legacy flat targets file: move to new location or clean up if stale
+        old_targets = self.profiles_dir / f"{old_slug}_targets.tsv"
+        if old_targets.exists():
+            new_profile_dir.mkdir(parents=True, exist_ok=True)
+            new_targets_path = new_profile_dir / f"{new_slug}_targets.tsv"
+            if not new_targets_path.exists():
                 old_targets.rename(new_targets_path)
+            else:
+                # New-style targets already exist; remove stale legacy file
+                old_targets.unlink()
 
         # Remove old legacy flat JSON if present
         for file in list(self.profiles_dir.glob("*.json")):

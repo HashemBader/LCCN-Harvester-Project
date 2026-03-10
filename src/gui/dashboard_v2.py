@@ -4,46 +4,20 @@ Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QPushButton, QSizePolicy, QMessageBox
+    QProgressBar, QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
+    QGraphicsDropShadowEffect, QComboBox, QPushButton, QSizePolicy, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QUrl
 from datetime import datetime
 from pathlib import Path
-from PyQt6.QtGui import QColor, QPainter, QPen, QDesktopServices
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen, QDesktopServices
 
 from database import DatabaseManager
+from .theme_manager import ThemeManager
+from .styles_v2 import CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .icons import (
-    get_icon, get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE,
-    SVG_X_CIRCLE, SVG_DASHBOARD, SVG_FOLDER_OPEN
+    get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE, SVG_X_CIRCLE, SVG_DASHBOARD, SVG_SETTINGS
 )
-
-
-def _safe_filename(s: str) -> str:
-    cleaned = "".join("_" if c in '\\/:*?"<>| ' else c for c in (s or "").strip())
-    cleaned = cleaned.strip("_")
-    return cleaned or "default"
-
-
-def _problems_button_label(
-    profile_name: str | None,
-    file_name: str | None = None,
-    include_profile: bool = False,
-) -> str:
-    safe_profile = _safe_filename(profile_name or "default")
-    label_prefix = "Open targets problems"
-    if include_profile and safe_profile != "default":
-        label_prefix = f"Open {safe_profile} targets problems"
-    if file_name:
-        return f"{label_prefix}{Path(file_name).suffix}"
-    return f"{label_prefix}.tsv"
-
-
-def _truncate_text(text: str, limit: int = 110) -> str:
-    text = str(text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
 
 class DashboardCard(QFrame):
     """
@@ -115,39 +89,68 @@ class RecentResultsPanel(QFrame):
         self.table.setShowGrid(False)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.table.setWordWrap(False)
         self.table.setStyleSheet("background: transparent; border: none;")
         
         layout.addWidget(self.table)
     
     def update_data(self, records):
         """Records: list of dict(isbn, status, detail, time)"""
+        mode = ThemeManager().get_theme()
+        t = CATPPUCCIN_DARK if mode == "dark" else CATPPUCCIN_LIGHT
+        
         self.table.setRowCount(0)
         for row_idx, r in enumerate(records):
             self.table.insertRow(row_idx)
             
             # ISBN
             item_isbn = QTableWidgetItem(r['isbn'])
-            item_isbn.setForeground(QColor("#ffffff"))
+            item_isbn.setForeground(QColor(t['text']))
             self.table.setItem(row_idx, 0, item_isbn)
             
             # Status
             status = r['status']
             item_status = QTableWidgetItem(status)
-            if status == "Successful":
-                item_status.setForeground(QColor("#4CAF50")) # Safe accessible green
+            if status == "Found":
+                item_status.setForeground(QColor(t['success']))
             else:
-                item_status.setForeground(QColor("#E53935")) # Safe accessible red
+                item_status.setForeground(QColor(t['danger']))
             self.table.setItem(row_idx, 1, item_status)
             
             # Detail (Truncated with Tooltip)
             detail_text = r.get('detail') or "-"
-            item_detail = QTableWidgetItem(_truncate_text(detail_text, 90))
-            item_detail.setForeground(QColor("#a5adcb"))
+            item_detail = QTableWidgetItem(detail_text)
+            item_detail.setForeground(QColor(t['text_muted']))
             item_detail.setToolTip(detail_text) # Full text on hover
             self.table.setItem(row_idx, 2, item_detail)
+
+    def prepend_data(self, record: dict):
+        """Insert a single new record at the top in real-time."""
+        mode = ThemeManager().get_theme()
+        t = CATPPUCCIN_DARK if mode == "dark" else CATPPUCCIN_LIGHT
+        
+        self.table.insertRow(0)
+        
+        item_isbn = QTableWidgetItem(record.get('isbn', ''))
+        item_isbn.setForeground(QColor(t['text']))
+        self.table.setItem(0, 0, item_isbn)
+        
+        status = record.get('status', '')
+        item_status = QTableWidgetItem(status)
+        if status == "Found":
+            item_status.setForeground(QColor(t['success']))
+        else:
+            item_status.setForeground(QColor(t['danger']))
+        self.table.setItem(0, 1, item_status)
+        
+        detail_text = record.get('detail') or "-"
+        item_detail = QTableWidgetItem(detail_text)
+        item_detail.setForeground(QColor(t['text_muted']))
+        item_detail.setToolTip(detail_text)
+        self.table.setItem(0, 2, item_detail)
+        
+        # Enforce exactly 10 visible history rows
+        if self.table.rowCount() > 10:
+            self.table.removeRow(10)
 
 
 class ProfileSwitchCombo(QComboBox):
@@ -174,29 +177,15 @@ class DashboardTabV2(QWidget):
         super().__init__()
         self.db = DatabaseManager()
         self.db.init_db()
+        self._baseline_stats = {'processed': 0, 'found': 0, 'failed': 0, 'invalid': 0}
+        self._is_running = False  # Guard: prevents DB polling overwriting live stats
         # No result files until a harvest runs this session
         self.result_files = {
             "successful": None,
             "invalid": None,
             "failed": None,
-            "problems": None,
-            "profile_dir": None,
         }
-        self.current_profile = "default"
-        self.session_stats = {
-            "processed": 0,
-            "successful": 0,
-            "failed": 0,
-            "invalid": 0,
-        }
-        self.session_recent = []
-        self.last_run_text = "Last Run: Never"
         self._setup_ui()
-        
-        # Auto-refresh timer (2s for live feel)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(2000)
         
         self.refresh_data()
 
@@ -215,7 +204,7 @@ class DashboardTabV2(QWidget):
         _outer.addWidget(_scroll)
         main_layout = QVBoxLayout(_scr_content)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(16)
+        main_layout.setSpacing(20)
 
         # 1. Header Bar
         header_layout = QHBoxLayout()
@@ -226,21 +215,76 @@ class DashboardTabV2(QWidget):
         
         self.lbl_last_run = QLabel("Last Run: Never")
         self.lbl_last_run.setProperty("class", "HelperText")
-        self.lbl_last_run.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.lbl_last_run.setWordWrap(False)
         
         header_layout.addWidget(self.lbl_run_status)
-        header_layout.addWidget(self.lbl_last_run, 1)
+        header_layout.addWidget(self.lbl_last_run)
         header_layout.addStretch()
         
         main_layout.addLayout(header_layout)
+
+        # 1b. Profile dock (right utility)
+        profile_row = QHBoxLayout()
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.setSpacing(0)
+        profile_row.addStretch()
+
+        self.profile_panel = QFrame()
+        self.profile_panel.setObjectName("DashboardProfilePanel")
+        self.profile_panel.setMinimumHeight(74)
+        self.profile_panel.setMaximumWidth(720)
+        self.profile_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        profile_panel_layout = QHBoxLayout(self.profile_panel)
+        profile_panel_layout.setContentsMargins(12, 10, 12, 10)
+        profile_panel_layout.setSpacing(10)
+
+        self.profile_icon = QLabel()
+        self.profile_icon.setObjectName("DashboardProfileIcon")
+        self.profile_icon.setFixedSize(30, 30)
+        self.profile_icon.setPixmap(get_pixmap(SVG_SETTINGS, "#8aadf4", 18))
+        self.profile_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        profile_panel_layout.addWidget(self.profile_icon)
+
+        profile_text_col = QVBoxLayout()
+        profile_text_col.setSpacing(1)
+
+        self.profile_title = QLabel("PROFILES")
+        self.profile_title.setObjectName("DashboardProfileEyebrow")
+        profile_text_col.addWidget(self.profile_title)
+
+        self.profile_meta = QLabel("0 saved")
+        self.profile_meta.setObjectName("DashboardProfileMeta")
+        profile_text_col.addWidget(self.profile_meta)
+
+        profile_panel_layout.addLayout(profile_text_col)
+        profile_panel_layout.addSpacing(4)
+
+        self.profile_combo = ProfileSwitchCombo()
+        self.profile_combo.setObjectName("DashboardProfileCombo")
+        self.profile_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_combo.setMinimumWidth(260)
+        self.profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.profile_combo.setMaximumWidth(390)
+        self.profile_combo.setToolTip("")
+        self.profile_combo.currentTextChanged.connect(self._on_profile_combo_changed)
+        profile_panel_layout.addWidget(self.profile_combo, 1)
+
+        self.btn_new_profile = QPushButton("Manage Profiles")
+        self.btn_new_profile.setObjectName("DashboardProfileAction")
+        self.btn_new_profile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_new_profile.setMinimumWidth(142)
+        self.btn_new_profile.setToolTip("")
+        self.btn_new_profile.clicked.connect(self.create_profile_requested.emit)
+        profile_panel_layout.addWidget(self.btn_new_profile)
+
+        profile_row.addWidget(self.profile_panel)
+        main_layout.addLayout(profile_row)
 
         # 2. KPI Cards Row
         kpi_layout = QHBoxLayout()
         kpi_layout.setSpacing(20)
 
         self.card_proc = DashboardCard("PROCESSED", SVG_ACTIVITY, "#8aadf4")
-        self.card_found = DashboardCard("SUCCESSFUL", SVG_CHECK_CIRCLE, "#a6da95")
+        self.card_found = DashboardCard("FOUND", SVG_CHECK_CIRCLE, "#a6da95")
         self.card_failed = DashboardCard("FAILED", SVG_X_CIRCLE, "#ed8796")
         self.card_invalid = DashboardCard("INVALID", SVG_ALERT_CIRCLE, "#fab387")
         
@@ -251,10 +295,10 @@ class DashboardTabV2(QWidget):
         
         main_layout.addLayout(kpi_layout)
 
-        # 3. Main Content Split (Result files vs Recent)
+        # 3. Main Content Split (Live vs Recent)
         content_split = QHBoxLayout()
 
-        # Left: result-file actions
+        # Left: Live panel + result-file actions (40%)
         left_col = QVBoxLayout()
         left_col.setSpacing(14)
         left_col.addWidget(self._build_result_files_panel())
@@ -277,42 +321,20 @@ class DashboardTabV2(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        header = QHBoxLayout()
         title = QLabel("RESULT FILES")
         title.setProperty("class", "CardTitle")
-        header.addWidget(title)
-        header.addStretch()
-
-        self.btn_open_profile_folder = QPushButton()
-        self.btn_open_profile_folder.setIcon(get_icon(SVG_FOLDER_OPEN, "#f4c542"))
-        self.btn_open_profile_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_open_profile_folder.setFixedSize(42, 42)
-        self.btn_open_profile_folder.setToolTip("Open this profile's results folder")
-        self.btn_open_profile_folder.setStyleSheet(
-            "QPushButton { background-color: #2a3144; color: #f4c542; border: 1px solid #5a647d; border-radius: 10px; }"
-            "QPushButton:hover { background-color: #343d55; border: 1px solid #f4c542; }"
-            "QPushButton:pressed { background-color: #20283a; }"
-            "QPushButton:disabled { background-color: #252b38; color: #7b7043; border: 1px solid #4a4f5c; }"
-        )
-        self.btn_open_profile_folder.clicked.connect(self._open_profile_folder)
-        header.addWidget(self.btn_open_profile_folder)
-        layout.addLayout(header)
+        layout.addWidget(title)
 
         subtitle = QLabel("Live TSV files are created fresh for each harvest run.")
         subtitle.setProperty("class", "HelperText")
         layout.addWidget(subtitle)
 
         self.btn_open_successful = self._create_result_open_button("Open successful.tsv", "successful")
-        self.btn_open_failed = self._create_result_open_button("Open failed.tsv", "failed")
         self.btn_open_invalid = self._create_result_open_button("Open invalid.tsv", "invalid")
-        self.btn_open_problems = self._create_result_open_button(
-            _problems_button_label(self.current_profile, include_profile=False),
-            "problems",
-        )
+        self.btn_open_failed = self._create_result_open_button("Open failed.tsv", "failed")
         layout.addWidget(self.btn_open_successful)
-        layout.addWidget(self.btn_open_failed)
         layout.addWidget(self.btn_open_invalid)
-        layout.addWidget(self.btn_open_problems)
+        layout.addWidget(self.btn_open_failed)
 
         self.btn_reset_stats = QPushButton("Reset Dashboard Stats")
         self.btn_reset_stats.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -335,10 +357,8 @@ class DashboardTabV2(QWidget):
         """Called when a new harvest starts with the paths of the live output files."""
         self.result_files = {
             "successful": Path(paths["successful"]) if paths.get("successful") else None,
-            "invalid": Path(paths["invalid"]) if paths.get("invalid") else None,
-            "failed": Path(paths["failed"]) if paths.get("failed") else None,
-            "problems": Path(paths["problems"]) if paths.get("problems") else None,
-            "profile_dir": Path(paths["profile_dir"]) if paths.get("profile_dir") else self._profile_dir_path(),
+            "invalid":    Path(paths["invalid"])    if paths.get("invalid")    else None,
+            "failed":     Path(paths["failed"])     if paths.get("failed")     else None,
         }
         self._refresh_result_file_buttons()
 
@@ -347,39 +367,17 @@ class DashboardTabV2(QWidget):
             return
         mapping = {
             "successful": self.btn_open_successful,
-            "failed": self.btn_open_failed,
             "invalid": self.btn_open_invalid,
-            "problems": self.btn_open_problems,
+            "failed": self.btn_open_failed,
         }
         for key, btn in mapping.items():
             path = self.result_files.get(key)
             enabled = path is not None and path.exists()
             btn.setEnabled(enabled)
             if path is not None:
-                prefix = "Open "
-                if key == "problems":
-                    btn.setText(
-                        _problems_button_label(
-                            self.current_profile,
-                            path.name,
-                            include_profile=True,
-                        )
-                    )
-                else:
-                    btn.setText(f"{prefix}{path.name}")
+                btn.setText(f"Open {path.name}")
             else:
-                default_labels = {
-                    "successful": "Open successful.tsv",
-                    "failed": "Open failed.tsv",
-                    "invalid": "Open invalid.tsv",
-                    "problems": _problems_button_label(
-                        self.current_profile,
-                        include_profile=False,
-                    ),
-                }
-                btn.setText(default_labels[key])
-        profile_dir = self.result_files.get("profile_dir") or self._profile_dir_path()
-        self.btn_open_profile_folder.setEnabled(profile_dir is not None and profile_dir.exists())
+                btn.setText(f"Open {key}.tsv")
 
     def _open_result_file(self, key):
         path = self.result_files[key]
@@ -390,108 +388,158 @@ class DashboardTabV2(QWidget):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
             QMessageBox.warning(self, "Open Failed", f"Could not open {path}.")
 
-    def _profile_dir_path(self) -> Path:
-        return Path("data") / _safe_filename(self.current_profile)
+    def _read_offsets(self):
+        try:
+            import json
+            with open("data/gui_offsets.json", "r") as f:
+                return json.load(f)
+        except Exception:
+            return {"processed": 0, "found": 0, "failed": 0, "invalid": 0}
 
-    def _open_profile_folder(self):
-        path = self.result_files.get("profile_dir") or self._profile_dir_path()
-        if not path.exists():
-            QMessageBox.warning(self, "Folder Not Found", f"{path} does not exist yet.")
-            self._refresh_result_file_buttons()
-            return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
-            QMessageBox.warning(self, "Open Failed", f"Could not open {path}.")
+    def _write_offsets(self, offsets):
+        import json
+        with open("data/gui_offsets.json", "w") as f:
+            json.dump(offsets, f)
 
     def _reset_dashboard_stats(self):
-        """Reset only the visible dashboard state."""
+        """Reset dashboard counters visually via offset tracker."""
         if "RUNNING" in self.lbl_run_status.text():
             QMessageBox.information(self, "Harvest Running", "Stop the current harvest before resetting dashboard stats.")
             return
+
         confirm = QMessageBox.question(
             self,
             "Reset Dashboard Stats",
-            "This resets the dashboard stats and recent results shown here. Continue?",
+            "This resets dashboard numbers to zero visually without dropping records from the database. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        self.reset_dashboard_stats()
-        self.refresh_data()
-        self.set_idle(None)
 
-    def refresh_data(self):
-        """Refresh dashboard-only state without repopulating cleared results."""
+        try:
+            stats = self.db.get_global_stats()
+            offsets = {
+                "processed": int(stats.get("processed", 0)),
+                "found": int(stats.get("found", 0)),
+                "failed": int(stats.get("failed", 0)),
+                "invalid": int(stats.get("invalid", 0))
+            }
+            self._write_offsets(offsets)
+            self.refresh_data()
+            # Also clear the Recent Results panel to visually reflect a clean slate
+            self.recent_panel.update_data([])
+            self.set_idle(None)
+        except Exception as e:
+            QMessageBox.warning(self, "Reset Failed", f"Could not reset dashboard stats: {e}")
+
+    def refresh_data(self, run_stats=None):
+        """Fetch latest stats from DB and update cards, or use provided run_stats."""
         try:
             self._refresh_result_file_buttons()
-            self._render_session_stats()
-            self.recent_panel.update_data(self.session_recent)
-            self.lbl_last_run.setText(self.last_run_text)
+            
+            if run_stats is not None:
+                self.update_live_stats(run_stats)
+            elif self._is_running:
+                # Skip DB polling while a harvest is actively streaming live data
+                return
+            else:
+                stats = self.db.get_global_stats()
+                offsets = self._read_offsets()
+                
+                raw_proc = int(stats.get("processed", 0))
+                raw_found = int(stats.get("found", 0))
+                raw_failed = int(stats.get("failed", 0))
+                raw_invalid = int(stats.get("invalid", 0))
+
+                processed = max(0, raw_proc - offsets.get("processed", 0))
+                found = max(0, raw_found - offsets.get("found", 0))
+                failed = max(0, raw_failed - offsets.get("failed", 0))
+                invalid = max(0, raw_invalid - offsets.get("invalid", 0))
+
+                failed_noninvalid = max(0, failed - invalid)
+                
+                # Update Cards
+                self.card_proc.set_data(processed, "Total records attempted")
+                self.card_found.set_data(found, "Successfully harvested")
+                self.card_failed.set_data(failed_noninvalid, "Errors or Not Found (excluding invalid)")
+                self.card_invalid.set_data(invalid, "Invalid ISBNs")
+
+            # Update Recent
+            recent = self.db.get_recent_results(limit=10)
+            self.recent_panel.update_data(recent)
+            # Update "Last Run" from most recent DB activity
+            last_run = "Last Run: Never"
+            if recent:
+                t = recent[0].get("time")
+                if t:
+                    try:
+                        # Parse ISO format (handled by fromisoformat in newer python, or simplistic split)
+                        # DB likely stores ISO string.
+                        dt = datetime.fromisoformat(t)
+                        # Format: "Oct 27, 10:30 AM" or "2024-10-27 10:30"
+                        readable_time = dt.strftime("%Y-%m-%d %H:%M")
+                        last_run = f"Last Run: {readable_time}"
+                    except ValueError:
+                        last_run = f"Last Run: {t}" # Fallback
+            self.lbl_last_run.setText(last_run)
+
+            # Live Status (Mocked for now, real connection via signals in Window)
+            # Window sets this via callback, but here we can poll if we stored state in DB
+            
         except Exception as e:
             print(f"Dashboard Refresh Error: {e}")
 
     def update_live_status(self, target, isbn, progress, msg):
         """Called by MainWindow during harvest."""
-        self.last_run_text = _truncate_text(f"Last Event: {msg}", 140)
-        self.lbl_last_run.setText(self.last_run_text)
+        pass
 
-    def record_harvest_event(self, isbn: str, status: str, detail: str):
-        if status not in ("found", "failed", "cached", "skipped"):
-            return
-        self.session_stats["processed"] += 1
-        if status in ("found", "cached"):
-            self.session_stats["successful"] += 1
-        elif status in ("failed", "skipped"):
-            self.session_stats["failed"] += 1
-        self._append_recent_result(isbn, status, detail)
-        self._render_session_stats()
+    def append_live_result(self, record: dict):
+        """Receive a real-time ISBN result directly from the pipeline worker."""
+        # Visual override to update "Last Run" instantly to now during active harvest
+        dt = datetime.now()
+        readable_time = dt.strftime("%Y-%m-%d %H:%M")
+        self.lbl_last_run.setText(f"Last Run: {readable_time} (Live)")
+        
+        # Insert the row statically into the table
+        self.recent_panel.prepend_data(record)
 
-    def apply_run_stats(self, stats: dict | None):
-        stats = stats or {}
-        self.session_stats = {
-            "processed": int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)),
-            "successful": int(stats.get("found", 0)) + int(stats.get("cached", 0)),
-            "failed": int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
-            "invalid": int(stats.get("invalid", 0)),
-        }
-        self._render_session_stats()
+    def update_live_stats(self, stats):
+        """Receive real-time statistics strictly from the RunStats object."""
+        base = getattr(self, '_baseline_stats', {'processed': 0, 'found': 0, 'failed': 0, 'invalid': 0})
+        
+        # stats is a RunStats dataclass from run_harvest.py
+        processed_live = getattr(stats, "processed_unique", 0)
+        found_live = getattr(stats, "found", 0)
+        failed_live = getattr(stats, "failed", 0) + getattr(stats, "skipped", 0)
+        invalid_live = getattr(stats, "invalid", 0)
+        
+        # 'base["failed"]' is SELECT COUNT(*) FROM attempted (which contains both failed AND invalid).
+        # 'failed_live' is strictly standard failures. 'invalid_live' is strictly invalid.
+        # Likewise, 'processed_live' is strictly standard valid rows. For 'Processed' to equal everything:
+        total_processed = base['processed'] + processed_live + invalid_live
+        total_found = base['found'] + found_live
+        total_invalid = base['invalid'] + invalid_live
+        
+        # Real historical failures = base['failed'] - base['invalid']
+        historical_failed_only = max(0, base['failed'] - base['invalid'])
+        total_failed_only = historical_failed_only + failed_live
+        
+        self.card_proc.set_data(total_processed, "Total records attempted")
+        self.card_found.set_data(total_found, "Successfully harvested")
+        self.card_failed.set_data(total_failed_only, "Errors or Not Found (excluding invalid)")
+        self.card_invalid.set_data(total_invalid, "Invalid ISBNs")
 
-    def reset_dashboard_stats(self):
-        self.session_stats = {
-            "processed": 0,
-            "successful": 0,
-            "failed": 0,
-            "invalid": 0,
-        }
-        self.session_recent = []
-        self.last_run_text = "Last Run: Never"
-        self.recent_panel.update_data([])
-        self.lbl_last_run.setText(self.last_run_text)
-        self._render_session_stats()
-
-    def _append_recent_result(self, isbn: str, status: str, detail: str):
-        status_label = "Successful" if status in ("found", "cached") else "Failed"
-        self.session_recent.insert(
-            0,
-            {
-                "isbn": isbn or "-",
-                "status": status_label,
-                "detail": detail or "-",
-                "time": datetime.now().isoformat(),
-            },
-        )
-        self.session_recent = self.session_recent[:10]
-        self.recent_panel.update_data(self.session_recent)
-
-    def _render_session_stats(self):
-        self.card_proc.set_data(self.session_stats["processed"], "Processed in this dashboard view")
-        self.card_found.set_data(self.session_stats["successful"], "Successfully harvested")
-        self.card_failed.set_data(self.session_stats["failed"], "Failed or skipped in this dashboard view")
-        self.card_invalid.set_data(self.session_stats["invalid"], "Invalid ISBNs in this run")
 
     def set_profile_options(self, profiles, current_profile):
-        self.current_profile = current_profile or "default"
-        self.result_files["profile_dir"] = self._profile_dir_path()
-        self._refresh_result_file_buttons()
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItems(profiles or [])
+        idx = self.profile_combo.findText(current_profile or "")
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
+        count = len(profiles or [])
+        self.profile_meta.setText(f"{count} saved profiles")
 
     def _on_profile_combo_changed(self, name):
         if name:
@@ -502,10 +550,29 @@ class DashboardTabV2(QWidget):
         pass
 
     def set_running(self):
+        self._is_running = True
         self._refresh_result_file_buttons()
         self.lbl_run_status.setText("● RUNNING")
         self.lbl_run_status.setProperty("state", "running")
         self._refresh_status_style()
+        
+        # Snapshot the current DB stats as a baseline so live updates accumulate naturally
+        try:
+            stats = self.db.get_global_stats()
+            offsets = self._read_offsets()
+            raw_proc = int(stats.get("processed", 0))
+            raw_found = int(stats.get("found", 0))
+            raw_failed = int(stats.get("failed", 0))
+            raw_invalid = int(stats.get("invalid", 0))
+
+            self._baseline_stats = {
+                "processed": max(0, raw_proc - offsets.get("processed", 0)),
+                "found": max(0, raw_found - offsets.get("found", 0)),
+                "failed": max(0, raw_failed - offsets.get("failed", 0)),
+                "invalid": max(0, raw_invalid - offsets.get("invalid", 0))
+            }
+        except Exception:
+            self._baseline_stats = {'processed': 0, 'found': 0, 'failed': 0, 'invalid': 0}
 
     def set_paused(self, is_paused: bool):
         if is_paused:
@@ -517,6 +584,7 @@ class DashboardTabV2(QWidget):
         self._refresh_status_style()
 
     def set_idle(self, success: bool | None = None):
+        self._is_running = False
         self._refresh_result_file_buttons()
         if success is True:
             self.lbl_run_status.setText("● COMPLETED")

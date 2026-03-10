@@ -231,6 +231,9 @@ class HarvestOrchestrator:
         not_found_targets: list[str] = []
         other_errors: list[tuple[str, str]] = []
         skipped_retry_targets: list[str] = []
+        collected_lccn: Optional[str] = None
+        collected_nlmcn: Optional[str] = None
+        collected_sources: list[str] = []
 
         for target in self.targets:
             self._check_cancelled()
@@ -250,6 +253,40 @@ class HarvestOrchestrator:
             result = self._filter_result_by_mode(target.lookup(isbn))
 
             if result.success:
+                if self.call_number_mode == "both":
+                    if result.lccn and not collected_lccn:
+                        collected_lccn = result.lccn
+                    if result.nlmcn and not collected_nlmcn:
+                        collected_nlmcn = result.nlmcn
+                    source_name = result.source or last_target
+                    if source_name and source_name not in collected_sources:
+                        collected_sources.append(source_name)
+
+                    self._emit(
+                        "success",
+                        {
+                            "isbn": isbn,
+                            "target": last_target,
+                            "source": source_name,
+                            "lccn": collected_lccn,
+                            "nlmcn": collected_nlmcn,
+                        },
+                    )
+
+                    if collected_lccn and collected_nlmcn:
+                        if not dry_run:
+                            pending_main.append(
+                                MainRecord(
+                                    isbn=isbn,
+                                    lccn=collected_lccn,
+                                    nlmcn=collected_nlmcn,
+                                    source=" + ".join(collected_sources) if collected_sources else source_name,
+                                )
+                            )
+                        return "success"
+                    # Continue until both are collected.
+                    continue
+
                 self._emit(
                     "success",
                     {
@@ -282,6 +319,31 @@ class HarvestOrchestrator:
                 other_errors.append((last_target, err))
             if not dry_run:
                 pending_attempted.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
+
+        # In "both" mode, keep backward-compatible success behavior if at least one number
+        # was found, but prefer combined values from multiple targets when available.
+        if self.call_number_mode == "both" and (collected_lccn or collected_nlmcn):
+            source = " + ".join(collected_sources) if collected_sources else last_target
+            self._emit(
+                "success",
+                {
+                    "isbn": isbn,
+                    "target": last_target,
+                    "source": source,
+                    "lccn": collected_lccn,
+                    "nlmcn": collected_nlmcn,
+                },
+            )
+            if not dry_run:
+                pending_main.append(
+                    MainRecord(
+                        isbn=isbn,
+                        lccn=collected_lccn,
+                        nlmcn=collected_nlmcn,
+                        source=source,
+                    )
+                )
+            return "success"
 
         if skipped_retry_targets and not not_found_targets and not other_errors:
             self._emit(
@@ -415,6 +477,9 @@ class HarvestOrchestrator:
                 other_errors: list[tuple[str, str]] = []
                 skipped_retry_targets: list[str] = []
                 attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
+                collected_lccn: Optional[str] = None
+                collected_nlmcn: Optional[str] = None
+                collected_sources: list[str] = []
 
                 for target in self.targets:
                     self._check_cancelled()
@@ -433,6 +498,35 @@ class HarvestOrchestrator:
 
                     result = self._filter_result_by_mode(target.lookup(isbn))
                     if result.success:
+                        if self.call_number_mode == "both":
+                            if result.lccn and not collected_lccn:
+                                collected_lccn = result.lccn
+                            if result.nlmcn and not collected_nlmcn:
+                                collected_nlmcn = result.nlmcn
+                            source_name = result.source or last_target
+                            if source_name and source_name not in collected_sources:
+                                collected_sources.append(source_name)
+
+                            self._emit("success", {
+                                "isbn": isbn,
+                                "target": last_target,
+                                "source": source_name,
+                                "lccn": collected_lccn,
+                                "nlmcn": collected_nlmcn,
+                            })
+
+                            if collected_lccn and collected_nlmcn:
+                                rec = None
+                                if not dry_run:
+                                    rec = MainRecord(
+                                        isbn=isbn,
+                                        lccn=collected_lccn,
+                                        nlmcn=collected_nlmcn,
+                                        source=" + ".join(collected_sources) if collected_sources else source_name,
+                                    )
+                                return ("success", rec, None)
+                            continue
+
                         self._emit("success", {
                             "isbn": isbn,
                             "target": last_target,
@@ -459,6 +553,25 @@ class HarvestOrchestrator:
                         other_errors.append((last_target, err))
                     if not dry_run:
                         attempted_rows.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
+
+                if self.call_number_mode == "both" and (collected_lccn or collected_nlmcn):
+                    source = " + ".join(collected_sources) if collected_sources else last_target
+                    self._emit("success", {
+                        "isbn": isbn,
+                        "target": last_target,
+                        "source": source,
+                        "lccn": collected_lccn,
+                        "nlmcn": collected_nlmcn,
+                    })
+                    rec = None
+                    if not dry_run:
+                        rec = MainRecord(
+                            isbn=isbn,
+                            lccn=collected_lccn,
+                            nlmcn=collected_nlmcn,
+                            source=source,
+                        )
+                    return ("success", rec, None)
 
                 if skipped_retry_targets and not not_found_targets and not other_errors:
                     self._emit(

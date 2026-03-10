@@ -19,10 +19,11 @@ from .help_tab import HelpTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
+from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .icons import (
     get_icon, get_pixmap, 
-    SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
+    SVG_DASHBOARD, SVG_TARGETS, SVG_SETTINGS, SVG_RESULTS,
     SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT,
     SVG_TOGGLE_ON, SVG_TOGGLE_OFF
 )
@@ -134,7 +135,7 @@ class ModernMainWindow(QMainWindow):
         self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
         self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
         self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 3)
-        self.btn_help = self._create_nav_btn("Help", SVG_SETTINGS, 4)
+        self.btn_help = self._create_nav_btn("Help", SVG_RESULTS, 4)
 
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_configure)
@@ -292,6 +293,10 @@ class ModernMainWindow(QMainWindow):
     def _open_help_tab(self):
         self.btn_help.click()
 
+    def _show_accessibility_statement(self):
+        dialog = AccessibilityStatementDialog(self)
+        dialog.exec()
+
     def _toggle_sidebar(self):
         self.sidebar_collapsed = not self.sidebar_collapsed
         
@@ -375,6 +380,7 @@ class ModernMainWindow(QMainWindow):
 
         # Keep tab state fresh when navigating
         self.stack.currentChanged.connect(self._on_page_changed)
+        self.help_tab.open_accessibility_requested.connect(self._show_accessibility_statement)
 
     def _on_harvest_progress(self, isbn, status, source, message):
         """Pass real-time harvest events to dashboard."""
@@ -578,6 +584,14 @@ class ModernMainWindow(QMainWindow):
                 app.setStyleSheet(qss)
             else:
                 self.setStyleSheet(qss)
+
+            # Notify tabs that use inline theme-specific styles
+            try:
+                colors = CATPPUCCIN_LIGHT if mode == "light" else CATPPUCCIN_DARK
+                if hasattr(self, "help_tab"):
+                    self.help_tab.refresh_theme(colors)
+            except Exception:
+                pass
 
             # Persist selection
             try:

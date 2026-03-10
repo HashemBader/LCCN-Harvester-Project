@@ -4,15 +4,16 @@ Purpose: A modern, dark-themed Target Management tab.
          Integrates with TargetsManager for persistence.
 """
 
-from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import sys
+import urllib.request
 
 # Add src to path for utils/z3950 imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from PyQt6.QtCore import Qt, QDateTime, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
+from PyQt6.QtGui import QIcon, QColor
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -31,25 +32,29 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QCheckBox,
     QComboBox,
-    QListWidget,
-    QListWidgetItem,
     QToolButton,
     QInputDialog,
     QSizePolicy,
+    QScrollArea,
+    QFrame,
 )
 
 from utils.targets_manager import TargetsManager, Target
+from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
+from gui.theme_manager import ThemeManager
 
 
 class TargetDialog(QDialog):
     """Dialog for adding/editing Z39.50 targets with dark theme support."""
 
-    def __init__(self, parent=None, target: Target | None = None):
+    def __init__(self, parent=None, target: Target | None = None, total_targets: int = 1):
         super().__init__(parent)
         self.setWindowTitle("Add Target" if target is None else "Edit Target")
         self.target = target
+        self.total_targets = total_targets
         self.connection_status = None  # Store connection test result
+        self.remove_requested = False
         self._setup_ui()
         self._apply_styles()
 
@@ -64,10 +69,19 @@ class TargetDialog(QDialog):
         self.port_spin.setValue(self.target.port if self.target and self.target.port else 210)
         self.database_edit = QLineEdit(self.target.database if self.target else "")
 
+        # Rank selector — range grows to include +1 slot when adding
+        self.rank_spin = QSpinBox()
+        self.rank_spin.setRange(1, self.total_targets)
+        if self.target:
+            self.rank_spin.setValue(self.target.rank if self.target.rank else 1)
+        else:
+            self.rank_spin.setValue(self.total_targets)  # default: last
+
         form_layout.addRow("Target Name:", self.name_edit)
         form_layout.addRow("Host Address:", self.host_edit)
         form_layout.addRow("Port:", self.port_spin)
         form_layout.addRow("Database Name:", self.database_edit)
+        form_layout.addRow("Rank:", self.rank_spin)
 
         layout.addLayout(form_layout)
 
@@ -75,74 +89,34 @@ class TargetDialog(QDialog):
         self.btn_test.clicked.connect(self.test_connection)
         layout.addWidget(self.btn_test)
 
+        # Bottom row: Remove (left, edit-only) | Ok / Cancel (right)
+        bottom_layout = QHBoxLayout()
+
+        if self.target is not None:
+            self.btn_remove_dlg = QPushButton("Remove")
+            self.btn_remove_dlg.setObjectName("DangerButton")
+            self.btn_remove_dlg.clicked.connect(self._on_remove_clicked)
+            bottom_layout.addWidget(self.btn_remove_dlg)
+
+        bottom_layout.addStretch()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.try_accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        bottom_layout.addWidget(buttons)
+
+        layout.addLayout(bottom_layout)
 
         self.setLayout(layout)
 
-    def _apply_styles(self):
-        self.setStyleSheet(
-            """
-            QDialog {
-                background-color: #1e1e2e;
-                color: #cdd6f4;
-            }
-            QLabel {
-                color: #cdd6f4;
-                font-weight: bold;
-            }
-            QLineEdit, QSpinBox {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-                padding: 6px;
-                color: #ffffff;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 20px;
-                background-color: #313244;
-                border: none;
-                border-left: 1px solid #45475a;
-            }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                background-color: #45475a;
-            }
-            QSpinBox::up-arrow {
-                width: 12px;
-                height: 12px;
-                image: url(src/gui/icons/plus.svg);
-                border: none;
-            }
-            QSpinBox::down-arrow {
-                width: 12px;
-                height: 12px;
-                image: url(src/gui/icons/minus.svg);
-                border: none;
-            }
-            QLineEdit:focus, QSpinBox:focus {
-                border: 1px solid #89b4fa;
-            }
-            QPushButton {
-                background-color: #313244;
-                color: white;
-                border: 1px solid #45475a;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45475a;
-            }
-        """
-        )
 
     def test_connection(self):
         """Manually test connection and show result."""
         host = self.host_edit.text().strip()
         port = self.port_spin.value()
+        database = self.database_edit.text().strip()
 
         if not host:
             QMessageBox.warning(self, "Input Error", "Please enter a host to test.")
@@ -153,20 +127,22 @@ class TargetDialog(QDialog):
         self.unsetCursor()
         
         self.connection_status = success  # Store the result
+        address = f"{host}:{port}/{database}" if database else f"{host}:{port}"
 
         if success:
-            QMessageBox.information(self, "Success", f"Successfully connected to {host}:{port}")
+            QMessageBox.information(self, "Success", f"Successfully connected to {address}")
         else:
             QMessageBox.critical(
                 self,
                 "Connection Failed",
-                f"Could not connect to {host}:{port}.\nPlease check the details and try again.",
+                f"Could not connect to {address}.\nPlease check the details and try again.",
             )
 
     def try_accept(self):
         """Validate connection before accepting, with user override."""
         host = self.host_edit.text().strip()
         port = self.port_spin.value()
+        database = self.database_edit.text().strip()
 
         if not self.name_edit.text().strip() or not host:
             QMessageBox.warning(self, "Validation Error", "Name and Host are required.")
@@ -177,6 +153,7 @@ class TargetDialog(QDialog):
         self.unsetCursor()
         
         self.connection_status = success  # Store the result
+        address = f"{host}:{port}/{database}" if database else f"{host}:{port}"
 
         if success:
             self.accept()
@@ -184,7 +161,7 @@ class TargetDialog(QDialog):
             reply = QMessageBox.question(
                 self,
                 "Connection Failed",
-                f"Could not connect to {host}:{port}.\n\nDo you want to save this target anyway?",
+                f"Could not connect to {address}.\n\nDo you want to save this target anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
@@ -197,69 +174,146 @@ class TargetDialog(QDialog):
             "host": self.host_edit.text().strip(),
             "port": self.port_spin.value(),
             "database": self.database_edit.text().strip(),
+            "rank": self.rank_spin.value(),
         }
     
     def get_connection_status(self):
         """Return the connection test result (True/False/None)."""
         return self.connection_status
 
-
-
-class RestoreDialog(QDialog):
-    """Dialog to show edit/delete history and restore items."""
-
-    def __init__(self, history, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Restore History")
-        self.resize(500, 400)
-        self.history = history
-        self._setup_ui()
-        self._apply_styles()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout()
-
-        lbl = QLabel("Select an action to undo:")
-        layout.addWidget(lbl)
-
-        self.list_widget = QListWidget()
-        for idx, item in enumerate(self.history):
-            action = item["type"]
-            target_name = item["snapshot"].name if item["snapshot"] else "Unknown"
-            time_str = item["timestamp"].toString("HH:mm:ss")
-            text = f"[{time_str}] {action}: {target_name}"
-
-            list_item = QListWidgetItem(text)
-            list_item.setData(Qt.ItemDataRole.UserRole, idx)
-            self.list_widget.addItem(list_item)
-
-        layout.addWidget(self.list_widget)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Restore")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self.setLayout(layout)
+    def _on_remove_clicked(self):
+        """Flag that remove was requested and close the dialog."""
+        self.remove_requested = True
+        self.reject()
 
     def _apply_styles(self):
-        self.setStyleSheet(
-            """
-            QDialog { background-color: #1e1e2e; color: #cdd6f4; }
-            QListWidget { background-color: #313244; color: #ffffff; border: 1px solid #45475a; border-radius: 4px; }
-            QLabel { color: #cdd6f4; font-weight: bold; }
-            QPushButton { background-color: #313244; color: white; border: 1px solid #45475a; padding: 6px 12px; border-radius: 4px; }
-            QPushButton:hover { background-color: #45475a; }
-        """
-        )
-
-    def get_selected_index(self):
-        if len(self.list_widget.selectedItems()) > 0:
-            return self.list_widget.selectedItems()[0].data(Qt.ItemDataRole.UserRole)
-        return None
+        """Apply theme-aware styles for both dark and light modes."""
+        mode = ThemeManager().get_theme()
+        icons_dir = (Path(__file__).parent / "icons").as_posix()
+        if mode == "dark":
+            self.setStyleSheet(
+                """
+                QDialog {
+                    background-color: #1e1e2e;
+                    color: #cdd6f4;
+                }
+                QLabel {
+                    color: #cdd6f4;
+                    font-weight: bold;
+                }
+                QLineEdit, QSpinBox {
+                    background-color: #313244;
+                    border: 1px solid #45475a;
+                    border-radius: 4px;
+                    padding: 6px;
+                    color: #ffffff;
+                }
+                QSpinBox::up-button, QSpinBox::down-button {
+                    width: 20px;
+                    background-color: #313244;
+                    border: none;
+                    border-left: 1px solid #45475a;
+                }
+                QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                    background-color: #45475a;
+                }
+                QSpinBox::up-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/plus.svg);
+                    border: none;
+                }
+                QSpinBox::down-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/minus.svg);
+                    border: none;
+                }
+                QLineEdit:focus, QSpinBox:focus {
+                    border: 1px solid #89b4fa;
+                }
+                QPushButton {
+                    background-color: #313244;
+                    color: white;
+                    border: 1px solid #45475a;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #45475a;
+                }
+                QPushButton#DangerButton {
+                    background-color: #ed8796;
+                    color: #1e1e2e;
+                    border: 1px solid #d97082;
+                }
+                QPushButton#DangerButton:hover {
+                    background-color: #d97082;
+                }
+            """.replace("url(src/gui/icons/", f"url({icons_dir}/")
+            )
+        else:
+            self.setStyleSheet(
+                """
+                QDialog {
+                    background-color: #ffffff;
+                    color: #0f172a;
+                }
+                QLabel {
+                    color: #0f172a;
+                    font-weight: bold;
+                }
+                QLineEdit, QSpinBox {
+                    background-color: #f3f4f6;
+                    border: 1px solid #cbd5e1;
+                    border-radius: 4px;
+                    padding: 6px;
+                    color: #0f172a;
+                }
+                QSpinBox::up-button, QSpinBox::down-button {
+                    width: 20px;
+                    background-color: #f3f4f6;
+                    border: none;
+                    border-left: 1px solid #cbd5e1;
+                }
+                QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                    background-color: #e2e8f0;
+                }
+                QSpinBox::up-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/plus.svg);
+                    border: none;
+                }
+                QSpinBox::down-arrow {
+                    width: 12px;
+                    height: 12px;
+                    image: url(src/gui/icons/minus.svg);
+                    border: none;
+                }
+                QLineEdit:focus, QSpinBox:focus {
+                    border: 1px solid #3b82f6;
+                }
+                QPushButton {
+                    background-color: #f1f5f9;
+                    color: #0f172a;
+                    border: 1px solid #cbd5e1;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #e2e8f0;
+                }
+                QPushButton#DangerButton {
+                    background-color: #dc2626;
+                    color: #ffffff;
+                    border: 1px solid #b91c1c;
+                }
+                QPushButton#DangerButton:hover {
+                    background-color: #b91c1c;
+                }
+            """.replace("url(src/gui/icons/", f"url({icons_dir}/")
+            )
 
 
 class TargetsTabV2(QWidget):
@@ -268,18 +322,59 @@ class TargetsTabV2(QWidget):
     """
 
     targets_changed = pyqtSignal(list)
+    profile_selected = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
-        self.manager = TargetsManager()
-        self.history = []
+        self._profile_manager = ProfileManager()
+        active_profile = self._profile_manager.get_active_profile()
+        targets_file = self._profile_manager.get_targets_file(active_profile)
+        self.manager = TargetsManager(targets_file=targets_file)
         self.server_status = {}  # Cache for server status checks
         self._setup_ui()
-        self.refresh_targets(check_servers=True)  # Check servers only on initial load
+        self._check_on_startup()  # Check APIs + active Z3950 on launch
+
+    def _check_on_startup(self):
+        """Check APIs and active Z3950 targets on launch."""
+        targets = self.manager.get_all_targets()
+        api_targets = [
+            t for t in targets
+            if t.target_type and "api" in t.target_type.lower()
+        ]
+        z3950_active = [
+            t for t in targets
+            if not (t.target_type and "api" in t.target_type.lower()) and t.selected
+        ]
+        check_targets = api_targets + z3950_active
+        if check_targets:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {}
+                for t in api_targets:
+                    futures[executor.submit(self._check_api_online, t.name)] = t
+                for t in z3950_active:
+                    futures[executor.submit(validate_connection, t.host, t.port, 2, True)] = t
+                for future in as_completed(futures):
+                    t = futures[future]
+                    try:
+                        self.server_status[t.target_id] = future.result()
+                    except Exception:
+                        self.server_status[t.target_id] = False
+        self.refresh_targets()
 
     def set_advanced_mode(self, enabled):
         """No-op for compatibility with main window calls."""
         _ = enabled
+
+    def load_profile_targets(self, profile_name: str):
+        """Switch to the targets file associated with *profile_name*.
+
+        Called automatically when the active profile changes so that
+        each profile maintains its own independent set of targets.
+        """
+        targets_file = self._profile_manager.get_targets_file(profile_name)
+        self.manager = TargetsManager(targets_file=targets_file)
+        self.server_status.clear()
+        self._check_on_startup()
 
     def eventFilter(self, obj, event):
         """Filter out wheel events on comboboxes to prevent accidental value changes."""
@@ -288,81 +383,48 @@ class TargetsTabV2(QWidget):
         return super().eventFilter(obj, event)
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Wrap content in a scroll area so widgets never get compressed on resize
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scr_content = QWidget()
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+        layout = QVBoxLayout(_scr_content)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
-        # Header
-        header_layout = QHBoxLayout()
-        title = QLabel("Target Management")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #cdd6f4;")
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
-
-        # Info banner
-        built_in_label = QLabel(
-            "Built-in APIs: Library of Congress API, Harvard Library API, OpenLibrary API"
-        )
-        built_in_label.setWordWrap(True)
-        built_in_label.setStyleSheet(
-            "color: #a6adc8; background-color: #1e1e2e; border-left: 3px solid #89b4fa; "
-            "padding: 10px; border-radius: 6px; font-size: 11px;"
-        )
-        layout.addWidget(built_in_label)
-
-        # Action buttons row
+        # Action buttons row (includes profile selector)
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
         self.btn_add = QPushButton("Add New Target")
         self.btn_add.setObjectName("PrimaryButton")
+        self.btn_add.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_add.clicked.connect(self.add_target)
-
-        self.btn_edit = QPushButton("Edit Selected")
-        self.btn_edit.setObjectName("SecondaryButton")
-        self.btn_edit.clicked.connect(self.edit_target)
-
-        self.btn_remove = QPushButton("Remove Selected")
-        self.btn_remove.setObjectName("DangerButton")
-        self.btn_remove.clicked.connect(self.remove_target)
-
-        self.btn_restore = QPushButton("Restore History")
-        self.btn_restore.setObjectName("SecondaryButton")
-        self.btn_restore.clicked.connect(self.show_restore_dialog)
 
         self.btn_check_servers = QPushButton("Check Servers")
         self.btn_check_servers.setObjectName("SecondaryButton")
+        self.btn_check_servers.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_check_servers.clicked.connect(self.check_all_servers)
 
+        profile_label = QLabel("Profile:")
+        profile_label.setObjectName("FormLabel")
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(150)
+        self.profile_combo.setMaximumWidth(220)
+        self.profile_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_combo.installEventFilter(self)
+        self.profile_combo.currentTextChanged.connect(self._on_profile_combo_changed)
+
         self.search_container = QWidget()
-        self.search_container.setStyleSheet(
-            """
-            QWidget {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-            }
-            QLineEdit {
-                background-color: transparent;
-                border: none;
-                color: #cdd6f4;
-                padding: 4px 8px;
-                min-width: 180px;
-            }
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 2px;
-                color: #cdd6f4;
-                font-weight: bold;
-                font-size: 16px;
-            }
-            QToolButton:hover {
-                background-color: #45475a;
-                color: #ffffff;
-            }
-        """
-        )
+        self.search_container.setProperty("class", "SearchContainer")
         search_layout = QHBoxLayout(self.search_container)
         search_layout.setContentsMargins(0, 0, 2, 0)
         search_layout.setSpacing(0)
@@ -384,10 +446,10 @@ class TargetsTabV2(QWidget):
         search_layout.addWidget(self.search_clear_btn)
 
         btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_edit)
-        btn_layout.addWidget(self.btn_remove)
-        btn_layout.addWidget(self.btn_restore)
         btn_layout.addWidget(self.btn_check_servers)
+        btn_layout.addSpacing(16)
+        btn_layout.addWidget(profile_label)
+        btn_layout.addWidget(self.profile_combo)
         btn_layout.addStretch()
         btn_layout.addWidget(self.search_container)
 
@@ -395,9 +457,9 @@ class TargetsTabV2(QWidget):
 
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(
-            ["Rank", "Active", "Target Name", "Host / IP", "Port", "Database", "Server"]
+            ["Rank", "Active", "Target Name", "Host / IP", "Port", "Database", "Edit", "Server"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -406,195 +468,114 @@ class TargetsTabV2(QWidget):
         self.table.setColumnWidth(1, 90)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(6, 100)
+        self.table.setColumnWidth(6, 60)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(7, 110)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(52)
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setAlternatingRowColors(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setStyleSheet(
-            """
-            QTableWidget {
-                background-color: #1e1e2e;
-                border: 2px solid #313244;
-                border-radius: 8px;
-                color: #cdd6f4;
-                outline: none;
-                selection-background-color: #89b4fa;
-                selection-color: #11111b;
-            }
-            QTableWidget::item {
-                padding: 12px 8px;
-                border-bottom: 1px solid #313244;
-                outline: none;
-                border: none;
-            }
-            QTableWidget::item:hover {
-                background-color: #313244;
-            }
-            QTableWidget::item:selected {
-                background-color: #89b4fa;
-                color: #11111b;
-            }
-            QTableWidget::item:selected:hover {
-                background-color: #74c7ec;
-                color: #11111b;
-            }
-            QHeaderView::section {
-                background-color: #181825;
-                color: #b4befe;
-                padding: 12px;
-                border: none;
-                border-bottom: 2px solid #313244;
-                font-weight: bold;
-                text-transform: uppercase;
-                font-size: 11px;
-                letter-spacing: 0.5px;
-            }
-        """
-        )
+        # Table inherits global stylesheet
 
-        self.table.itemDoubleClicked.connect(lambda _item: self.edit_target())
+        self.table.itemDoubleClicked.connect(lambda item: self._edit_target_from_item(item))
 
+        # Ensure the table always shows a reasonable minimum height
+        self.table.setMinimumHeight(200)
         layout.addWidget(self.table)
 
-    def mousePressEvent(self, event):
-        """Clear table selection when clicking outside the table."""
-        if not self.table.geometry().contains(event.pos()):
-            self.table.clearSelection()
-        super().mousePressEvent(event)
+    def set_profile_options(self, profiles: list, current: str):
+        """Populate the profile combo box without triggering a profile switch."""
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        for p in profiles:
+            self.profile_combo.addItem(p)
+        idx = self.profile_combo.findText(current)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
+
+    def _on_profile_combo_changed(self, name: str):
+        """Emit profile_selected when the user picks a different profile."""
+        if name:
+            self.profile_selected.emit(name)
 
     def _emit_targets_changed(self):
         self.targets_changed.emit(self.get_targets())
 
+    @staticmethod
+    def _check_api_online(target_name: str) -> bool:
+        """Check if a built-in API target is reachable via HTTP."""
+        name = target_name.strip().lower()
+        if "library of congress" in name or name == "loc":
+            url = "http://lx2.loc.gov:210/LCDB?operation=explain&version=1.1"
+        elif "harvard" in name:
+            url = "https://api.lib.harvard.edu/v2/items.json?limit=1"
+        elif "openlibrary" in name or "open library" in name:
+            url = "https://openlibrary.org/"
+        else:
+            return False
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            req.add_header("User-Agent", "LCCNHarvester/0.1")
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                return resp.status < 500
+        except Exception:
+            pass
+        try:
+            req2 = urllib.request.Request(url)
+            req2.add_header("User-Agent", "LCCNHarvester/0.1")
+            with urllib.request.urlopen(req2, timeout=4) as resp:
+                return resp.status < 500
+        except Exception:
+            return False
+
     def check_all_servers(self):
-        """Manually check all server connections in parallel and update the display."""
+        """Check active Z3950 targets and all API targets in parallel."""
         self.setCursor(Qt.CursorShape.WaitCursor)
         self.server_status.clear()
         targets = self.manager.get_all_targets()
-        
-        # Filter Z3950 targets only
-        z3950_targets = [
-            target for target in targets
-            if not (target.target_type and "api" in target.target_type.lower())
+
+        z3950_active = [
+            t for t in targets
+            if not (t.target_type and "api" in t.target_type.lower()) and t.selected
         ]
-        
-        # Check all servers in parallel
-        if z3950_targets:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                # Submit all checks
-                future_to_target = {
-                    executor.submit(validate_connection, target.host, target.port, 2, True): target
-                    for target in z3950_targets
-                }
-                
-                # Collect results as they complete
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    try:
-                        is_online = future.result()
-                        self.server_status[target.target_id] = is_online
-                    except Exception:
-                        # If check fails, mark as offline
-                        self.server_status[target.target_id] = False
-        
+        api_targets = [
+            t for t in targets
+            if t.target_type and "api" in t.target_type.lower()
+        ]
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {}
+            for t in z3950_active:
+                futures[executor.submit(validate_connection, t.host, t.port, 2, True)] = t
+            for t in api_targets:
+                futures[executor.submit(self._check_api_online, t.name)] = t
+
+            for future in as_completed(futures):
+                t = futures[future]
+                try:
+                    self.server_status[t.target_id] = future.result()
+                except Exception:
+                    self.server_status[t.target_id] = False
+
         self.refresh_targets(check_servers=False)
         self.unsetCursor()
 
     def refresh_targets(self, check_servers=False):
-        """Reload targets from the manager and display them.
-        
-        Args:
-            check_servers (bool): If True, check server connection status.
-        """
+        """Reload targets from the manager and display them."""
         self.table.clearContents()
         targets = self.manager.get_all_targets()
         self.table.setRowCount(len(targets))
         self.table.blockSignals(True)
-        
-        # Check servers if requested (parallel)
-        if check_servers:
-            z3950_targets = [
-                target for target in targets
-                if not (target.target_type and "api" in target.target_type.lower())
-            ]
-            
-            if z3950_targets:
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    future_to_target = {
-                        executor.submit(validate_connection, target.host, target.port, 2, True): target
-                        for target in z3950_targets
-                    }
-                    
-                    for future in as_completed(future_to_target):
-                        target = future_to_target[future]
-                        try:
-                            is_online = future.result()
-                            self.server_status[target.target_id] = is_online
-                        except Exception:
-                            self.server_status[target.target_id] = False
 
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
             rank_combo.setFixedHeight(36)
-            rank_combo.setStyleSheet("""
-                QComboBox {
-                    background-color: #313244;
-                    border: 2px solid #45475a;
-                    border-radius: 8px;
-                    padding: 6px 30px 6px 16px;
-                    color: #cdd6f4;
-                    font-size: 14px;
-                    font-weight: 600;
-                }
-                QComboBox:hover {
-                    background-color: #3a3d4f;
-                    border-color: #89b4fa;
-                }
-                QComboBox:focus {
-                    border-color: #89b4fa;
-                    background-color: #3a3d4f;
-                }
-                QComboBox::drop-down {
-                    subcontrol-origin: padding;
-                    subcontrol-position: right center;
-                    width: 24px;
-                    border: none;
-                    border-top-right-radius: 8px;
-                    border-bottom-right-radius: 8px;
-                }
-                QComboBox::drop-down:hover {
-                    background-color: #45475a;
-                }
-                QComboBox::down-arrow {
-                    width: 0;
-                    height: 0;
-                    border-left: 5px solid transparent;
-                    border-right: 5px solid transparent;
-                    border-top: 6px solid #cdd6f4;
-                    margin-right: 6px;
-                }
-                QComboBox QAbstractItemView {
-                    background-color: #313244;
-                    color: #cdd6f4;
-                    border: 2px solid #45475a;
-                    border-radius: 8px;
-                    padding: 4px;
-                    selection-background-color: #89b4fa;
-                    selection-color: #11111b;
-                    outline: none;
-                }
-                QComboBox QAbstractItemView::item {
-                    padding: 8px 12px;
-                    border-radius: 4px;
-                }
-                QComboBox QAbstractItemView::item:hover {
-                    background-color: #89b4fa;
-                    color: #11111b;
-                }
-            """)
+            rank_combo.setObjectName("RankCombo")
             for i in range(1, len(targets) + 1):
                 rank_combo.addItem(str(i), i)
             # Set current rank using userData (robust)
@@ -612,7 +593,7 @@ class TargetsTabV2(QWidget):
 
             self.table.setCellWidget(row, 0, rank_combo)
 
-            # Active status indicator
+            # Active toggle
             active_btn = QPushButton()
             active_btn.setFixedHeight(36)
             active_btn.setMinimumWidth(50)
@@ -620,52 +601,18 @@ class TargetsTabV2(QWidget):
             active_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             active_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            active_btn.setObjectName("ActiveToggle")
             if target.selected:
-                active_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #a6da95;
-                        border: 2px solid #8bd57e;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 18px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                    QPushButton:hover {
-                        background-color: #8bd57e;
-                        border-color: #6fb76a;
-                    }
-                    QPushButton:pressed {
-                        background-color: #6fb76a;
-                    }
-                """)
-                active_btn.setText("✓")
+                active_btn.setProperty("state", "active")
+                active_btn.setText("✔")
             else:
-                active_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #ed8796;
-                        border: 2px solid #d97082;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 18px;
-                        color: #1e1e2e;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                    QPushButton:hover {
-                        background-color: #d97082;
-                        border-color: #c55d6e;
-                    }
-                    QPushButton:pressed {
-                        background-color: #c55d6e;
-                    }
-                """)
-                active_btn.setText("✕")
+                active_btn.setProperty("state", "inactive")
+                active_btn.setText("✘")
             active_btn.clicked.connect(lambda checked, t=target: self._toggle_target_active(t))
-            
+
             self.table.setCellWidget(row, 1, active_btn)
 
+            # --- Target Model Items ---
             name_item = QTableWidgetItem(target.name)
             name_item.setData(Qt.ItemDataRole.UserRole, target)
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -684,79 +631,46 @@ class TargetsTabV2(QWidget):
             db_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 5, db_item)
 
+            # Edit button (pencil icon)
+            edit_btn = QPushButton()
+            edit_btn.setFixedHeight(36)
+            edit_btn.setFixedWidth(40)
+            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            edit_btn.setToolTip("Edit target")
+            _pencil_icon_path = str(Path(__file__).parent / "icons" / "pencil.svg")
+            edit_btn.setIcon(QIcon(_pencil_icon_path))
+            edit_btn.setIconSize(QSize(18, 18))
+            edit_btn.setProperty("class", "IconButton")
+            edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
+            self.table.setCellWidget(row, 6, edit_btn)
+
             # Server status indicator
             server_btn = QPushButton()
             server_btn.setFixedHeight(36)
-            server_btn.setMinimumWidth(60)
-            server_btn.setMaximumWidth(100)
-            server_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             server_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            server_btn.setEnabled(False)  # Not clickable, just status display
+            server_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+            server_btn.setProperty("class", "StatusIndicator")
+
+            is_online = self.server_status.get(target.target_id, None)
             
-            # Check server status for Z3950 targets only
-            if target.target_type and "api" in target.target_type.lower():
-                # API targets don't need server check
-                server_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #6c7086;
-                        border: 2px solid #585b70;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        font-size: 11px;
-                        color: #cdd6f4;
-                        text-align: center;
-                        padding: 0px;
-                    }
-                """)
-                server_btn.setText("API")
+            if is_online is None:
+                server_btn.setProperty("state", "unknown")
+                server_btn.setText("UNKNOWN")
+            elif is_online:
+                server_btn.setProperty("state", "online")
+                server_btn.setText("ONLINE")
             else:
-                # Use cached server status
-                is_online = self.server_status.get(target.target_id, None)
-                if is_online is None:
-                    # No cached status, show offline
-                    server_btn.setStyleSheet("""
-                        QPushButton {
-                            background-color: #ed8796;
-                            border: 2px solid #d97082;
-                            border-radius: 8px;
-                            font-weight: bold;
-                            font-size: 11px;
-                            color: #1e1e2e;
-                            text-align: center;
-                            padding: 0px;
-                        }
-                    """)
-                    server_btn.setText("OFFLINE")
-                elif is_online:
-                    server_btn.setStyleSheet("""
-                        QPushButton {
-                            background-color: #a6da95;
-                            border: 2px solid #8bd57e;
-                            border-radius: 8px;
-                            font-weight: bold;
-                            font-size: 11px;
-                            color: #1e1e2e;
-                            text-align: center;
-                            padding: 0px;
-                        }
-                    """)
-                    server_btn.setText("ONLINE")
-                else:
-                    server_btn.setStyleSheet("""
-                        QPushButton {
-                            background-color: #ed8796;
-                            border: 2px solid #d97082;
-                            border-radius: 8px;
-                            font-weight: bold;
-                            font-size: 11px;
-                            color: #1e1e2e;
-                            text-align: center;
-                            padding: 0px;
-                        }
-                    """)
-                    server_btn.setText("OFFLINE")
-            
-            self.table.setCellWidget(row, 6, server_btn)
+                server_btn.setProperty("state", "offline")
+                server_btn.setText("OFFLINE")
+
+            server_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            server_container = QWidget()
+            server_layout = QHBoxLayout(server_container)
+            server_layout.setContentsMargins(4, 0, 4, 0)
+            server_layout.setSpacing(0)
+            server_layout.addWidget(server_btn)
+            self.table.setCellWidget(row, 7, server_container)
 
         self.table.blockSignals(False)
         self._emit_targets_changed()
@@ -806,12 +720,12 @@ class TargetsTabV2(QWidget):
         self.refresh_targets()
 
     def add_target(self):
-        dialog = TargetDialog(self)
+        all_targets = self.manager.get_all_targets()
+        total = len(all_targets) + 1  # +1 to include the new slot
+        dialog = TargetDialog(self, total_targets=total)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
-
-            all_targets = self.manager.get_all_targets()
-            next_rank = len(all_targets) + 1
+            chosen_rank = data["rank"]
 
             new_target = Target(
                 target_id="",
@@ -821,11 +735,11 @@ class TargetsTabV2(QWidget):
                 port=data["port"],
                 database=data["database"],
                 record_syntax="USMARC",
-                rank=next_rank,
+                rank=total,  # temporary; reordering below
                 selected=True,
             )
             self.manager.add_target(new_target)
-            
+
             # Get the newly added target and store its connection status
             added_targets = self.manager.get_all_targets()
             added_target = next((t for t in added_targets if t.name == data["name"] and t.host == data["host"]), None)
@@ -833,21 +747,37 @@ class TargetsTabV2(QWidget):
                 connection_status = dialog.get_connection_status()
                 if connection_status is not None:
                     self.server_status[added_target.target_id] = connection_status
-            
-            self.refresh_targets()
+
+                # Apply chosen rank via reorder; if rank didn't change, refresh directly
+                if chosen_rank != added_target.rank:
+                    self._on_rank_changed(chosen_rank, added_target)
+                else:
+                    self.refresh_targets()
+            else:
+                self.refresh_targets()
 
     def edit_target(self):
         target = self._get_selected_target()
-        if not target:
-            return
+        if target:
+            self._edit_specific_target(target)
 
+    def _edit_specific_target(self, target):
+        """Open edit dialog for a given target object."""
         if target.target_type == "API":
             QMessageBox.information(self, "Info", "Built-in API targets cannot be edited.")
             return
 
-        dialog = TargetDialog(self, target)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._track_history("EDIT", target)
+        all_targets_now = self.manager.get_all_targets()
+        total = len(all_targets_now)
+        dialog = TargetDialog(self, target, total_targets=total)
+        result = dialog.exec()
+
+        # Remove was clicked inside the dialog
+        if dialog.remove_requested:
+            self._remove_specific_target(target)
+            return
+
+        if result == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
 
             target.name = data["name"]
@@ -856,13 +786,18 @@ class TargetsTabV2(QWidget):
             target.database = data["database"]
 
             self.manager.modify_target(target)
-            
+
             # Update server status with the connection test result from dialog
             connection_status = dialog.get_connection_status()
             if connection_status is not None:
                 self.server_status[target.target_id] = connection_status
-            
-            self.refresh_targets()
+
+            # Apply rank change if it differs
+            chosen_rank = data["rank"]
+            if chosen_rank != target.rank:
+                self._on_rank_changed(chosen_rank, target)
+            else:
+                self.refresh_targets()
 
     def remove_target(self):
         target = self._get_selected_target()
@@ -883,16 +818,6 @@ class TargetsTabV2(QWidget):
         )
 
         if confirm == QMessageBox.StandardButton.Yes:
-            typed, ok = QInputDialog.getText(
-                self,
-                "Type to Confirm",
-                f"Type 'delete' to permanently remove '{target.name}':",
-            )
-            if not ok or typed.strip().lower() != "delete":
-                QMessageBox.information(self, "Cancelled", "Deletion cancelled.")
-                return
-
-            self._track_history("DELETE", target)
             self.manager.delete_target(target.target_id)
             self.refresh_targets()
 
@@ -900,69 +825,58 @@ class TargetsTabV2(QWidget):
         """Toggle target active status from the table button."""
         target.selected = not target.selected
         self.manager.modify_target(target)
+
+        # Check server when activating
+        if target.selected:
+            try:
+                if target.target_type and "api" in target.target_type.lower():
+                    is_online = self._check_api_online(target.name)
+                else:
+                    is_online = validate_connection(target.host, target.port, 2, True)
+                self.server_status[target.target_id] = is_online
+            except Exception:
+                is_online = False
+                self.server_status[target.target_id] = False
+
+            if not is_online:
+                if target.target_type and "api" in target.target_type.lower():
+                    address = target.name
+                else:
+                    address = f"{target.host}:{target.port}/{target.database}" if target.database else f"{target.host}:{target.port}"
+                QMessageBox.warning(
+                    self,
+                    "Connection Failed",
+                    f"Could not connect to {address}.\nThe target has been activated but may not respond during harvest.",
+                )
+
         self.refresh_targets()
+
+    def _edit_target_from_item(self, item):
+        """Edit the target corresponding to the double-clicked table item."""
+        row = item.row()
+        name_item = self.table.item(row, 2)  # Name column
+        if name_item:
+            target = name_item.data(Qt.ItemDataRole.UserRole)
+            if target:
+                self._edit_specific_target(target)
 
     def _get_selected_target(self):
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 2)  # Name column is now at index 2
+        item = self.table.item(row, 2)  # Name column reverted to index 2
         if item:
             return item.data(Qt.ItemDataRole.UserRole)
         return None
-
     def filter_targets(self, text):
         """Filter rows based on search text (Target Name only)."""
         text = text.lower()
         for row in range(self.table.rowCount()):
-            name_item = self.table.item(row, 2)  # Name column is now at index 2
+            name_item = self.table.item(row, 2)  # Name column reverted to index 2
             name = name_item.text().lower() if name_item else ""
             visible = text in name
             self.table.setRowHidden(row, not visible)
 
-    def _track_history(self, action_type, target):
-        """Save a snapshot of the target state."""
-        snapshot = deepcopy(target)
-        self.history.append(
-            {
-                "type": action_type,
-                "snapshot": snapshot,
-                "timestamp": QDateTime.currentDateTime(),
-            }
-        )
-        if len(self.history) > 50:
-            self.history.pop(0)
 
-    def show_restore_dialog(self):
-        """Show the restore history dialog."""
-        if not self.history:
-            QMessageBox.information(self, "History", "No actions to restore in this session.")
-            return
-
-        dialog = RestoreDialog(self.history, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            idx = dialog.get_selected_index()
-            if idx is not None:
-                item = self.history.pop(idx)
-                self._restore_item(item)
-
-    def _restore_item(self, item):
-        """Restore the target based on action type."""
-        action = item["type"]
-        snapshot = item["snapshot"]
-
-        if action == "DELETE":
-            all_targets = self.manager.get_all_targets()
-            next_rank = max((t.rank for t in all_targets), default=0) + 1
-
-            snapshot.rank = next_rank
-            self.manager.add_target(snapshot)
-            self.refresh_targets()
-            QMessageBox.information(self, "Restored", f"Restored '{snapshot.name}' to end of list.")
-
-        elif action == "EDIT":
-            self.manager.modify_target(snapshot)
-            self.refresh_targets()
-            QMessageBox.information(self, "Restored", f"Reverted changes to '{snapshot.name}'.")
 
 

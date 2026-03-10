@@ -46,8 +46,14 @@ class TargetsManager:
     """
     Manager class for handling configuration file operations (CRUD).
     """
-    def __init__(self):
-        """Initialize the TargetsManager and ensure the data file exists."""
+    def __init__(self, targets_file=None):
+        """Initialize the TargetsManager and ensure the data file exists.
+
+        Args:
+            targets_file: Optional path (str or Path) to the targets TSV file.
+                          Defaults to the shared ``data/targets.tsv`` when not given.
+        """
+        self._targets_file = str(targets_file) if targets_file is not None else TARGETS_FILE
         self._ensure_targets_file()
         self._ensure_default_api_targets()
 
@@ -56,12 +62,13 @@ class TargetsManager:
         Check if the data directory and targets file exist.
         If not, create them and populate the file with default starting targets.
         """
-        # Create 'data' directory if it doesn't exist
-        if not os.path.exists(DATA_DIR):
-            os.makedirs(DATA_DIR, exist_ok=True)
+        # Create the parent directory if it doesn't exist
+        parent_dir = os.path.dirname(self._targets_file)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
 
-        # Create 'targets.tsv' with defaults if it doesn't exist
-        if not os.path.exists(TARGETS_FILE):
+        # Create targets file with defaults if it doesn't exist
+        if not os.path.exists(self._targets_file):
             default_targets = [
                 Target(
                     target_id="1",
@@ -160,11 +167,11 @@ class TargetsManager:
             List[Target]: A list of Target objects sorted by rank.
         """
         targets: List[Target] = []
-        if not os.path.exists(TARGETS_FILE):
+        if not os.path.exists(self._targets_file):
              return targets
 
         try:
-            with open(TARGETS_FILE, newline="", encoding="utf-8") as f:
+            with open(self._targets_file, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f, delimiter="\t")
                 for row in reader:
                     # Handle potential missing or empty port (convert string to int or None)
@@ -208,7 +215,7 @@ class TargetsManager:
             # Always save in rank order
             targets.sort(key=lambda x: x.rank)
             
-            with open(TARGETS_FILE, "w", newline="", encoding="utf-8") as f:
+            with open(self._targets_file, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f, delimiter="\t")
                 # Write header row
                 writer.writerow([

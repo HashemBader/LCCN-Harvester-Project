@@ -28,63 +28,6 @@ def _safe_int(v: object, default: int = 0) -> int:
         return default
 
 
-def _extract_callnum_from_field(field: Any) -> Optional[str]:
-    """
-    Extract a human-readable call number from a MARC field like 050 or 060.
-
-    Typical structure:
-      050 $a QA76.76 $b .C65 2008
-      060 $a W 26.5 $b ...
-    """
-    try:
-        # pymarc Field supports get_subfields()
-        parts: list[str] = []
-        for code in ("a", "b", "c"):
-            vals = field.get_subfields(code) or []
-            for val in vals:
-                val = (val or "").strip()
-                if val:
-                    parts.append(val)
-        call = " ".join(parts).strip()
-        return call or None
-    except Exception:
-        return None
-
-
-def _extract_call_numbers(records: list[Any]) -> tuple[Optional[str], Optional[str]]:
-    """
-    From MARC records, try to pull:
-      - LCCN call number from 050
-      - NLM call number from 060
-    """
-    for rec in records:
-        lccn = None
-        nlmcn = None
-
-        try:
-            f050 = rec.get_fields("050") or []
-            for f in f050:
-                lccn = _extract_callnum_from_field(f)
-                if lccn:
-                    break
-        except Exception:
-            pass
-
-        try:
-            f060 = rec.get_fields("060") or []
-            for f in f060:
-                nlmcn = _extract_callnum_from_field(f)
-                if nlmcn:
-                    break
-        except Exception:
-            pass
-
-        if lccn or nlmcn:
-            return lccn, nlmcn
-
-    return None, None
-
-
 @dataclass(frozen=True)
 class Z3950Target(HarvestTarget):
     """
@@ -101,17 +44,16 @@ class Z3950Target(HarvestTarget):
     def lookup(self, isbn: str) -> TargetResult:
         # Import lazily so missing deps don’t crash app startup
         try:
-            # Try both common layouts (you keep whichever matches your repo)
+            from src.z3950.client import Z3950Client  # type: ignore
+        except ImportError:
             try:
                 from z3950.client import Z3950Client  # type: ignore
-            except Exception:
-                from z3950.client import Z3950Client  # type: ignore
-        except Exception as e:
-            return TargetResult(
-                success=False,
-                source=self.name,
-                error=f"Z39.50 client import failed: {e}",
-            )
+            except ImportError as e:
+                return TargetResult(
+                    success=False,
+                    source=self.name,
+                    error=f"Z39.50 client import failed: {e}",
+                )
 
         try:
             with Z3950Client(
@@ -129,7 +71,18 @@ class Z3950Target(HarvestTarget):
                     error="No records found",
                 )
 
-            lccn, nlmcn = _extract_call_numbers(records)
+            from src.z3950.marc_decoder import extract_call_numbers_from_pymarc
+            from src.utils.call_number_validators import validate_lccn, validate_nlmcn
+
+            lccn = None
+            nlmcn = None
+            for rec in records:
+                raw_lccn, raw_nlmcn = extract_call_numbers_from_pymarc(rec)
+                lccn = validate_lccn(raw_lccn)
+                nlmcn = validate_nlmcn(raw_nlmcn)
+                if lccn or nlmcn:
+                    break
+
             if lccn or nlmcn:
                 return TargetResult(
                     success=True,

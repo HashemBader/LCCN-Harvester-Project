@@ -23,15 +23,18 @@ CREATE INDEX IF NOT EXISTS idx_main_date_added ON main(date_added);
 -- Attempted / failure tracking table
 -- =========================
 CREATE TABLE IF NOT EXISTS attempted (
-    isbn              TEXT PRIMARY KEY,
-    last_target       TEXT,
+    isbn              TEXT NOT NULL,
+    last_target       TEXT NOT NULL,
+    attempt_type      TEXT NOT NULL DEFAULT 'both',
     last_attempted    TEXT NOT NULL,
     fail_count        INTEGER NOT NULL DEFAULT 1,
-    last_error        TEXT
+    last_error        TEXT,
+    PRIMARY KEY (isbn, last_target, attempt_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_attempted_last_attempted ON attempted(last_attempted);
 CREATE INDEX IF NOT EXISTS idx_attempted_last_target ON attempted(last_target);
+CREATE INDEX IF NOT EXISTS idx_attempted_isbn ON attempted(isbn);
 
 -- =========================
 -- Stretch: Linked ISBNs

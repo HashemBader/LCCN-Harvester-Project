@@ -17,7 +17,7 @@ import csv
 from pathlib import Path
 
 from src.database import DatabaseManager
-from src.harvester.run_harvest import run_harvest, read_isbns_from_tsv
+from src.harvester.run_harvest import run_harvest, parse_isbn_file
 from src.utils import isbn_validator
 
 def parse_args(argv=None):
@@ -42,6 +42,13 @@ def parse_args(argv=None):
         action="store_true",
         default=False,
         help="Dry-run mode (no DB writes).",
+    )
+
+    parser.add_argument(
+        "--stop-rule",
+        choices=["stop_either", "stop_lccn", "stop_nlmcn", "continue_both"],
+        default="stop_either",
+        help="When to stop searching targets (if call_number_mode is 'both').",
     )
 
     return parser.parse_args(argv)
@@ -83,49 +90,6 @@ def init_database_or_exit() -> DatabaseManager:
 #     return raw.strip().replace("-", "").replace(" ", "")
 
 
-def read_isbns_from_tsv(input_path: Path) -> List[str]:
-    """
-    Read ISBN values from a TSV file.
-
-    Expected format:
-    - Tab-separated values (TSV)
-    - ISBN is assumed to be in the first column
-    - Header row is allowed (will be skipped if detected)
-    - Blank lines are ignored
-
-    Parameters
-    ----------
-    input_path : Path
-        Path to input TSV file.
-
-    Returns
-    -------
-    list[str]
-        A list of normalized ISBN strings (may include invalid ISBNs for now).
-    """
-    isbns: List[str] = []
-
-    # utf-8-sig handles BOM that sometimes appears in exported TSV files
-    with input_path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f, delimiter="\t")
-
-        for row_index, row in enumerate(reader, start=1):
-            if not row:
-                continue  # empty line
-
-            first_cell = row[0].strip()
-            if not first_cell:
-                continue  # blank first column
-
-            # Skip a header row if the first column looks like "ISBN"
-            if row_index == 1 and first_cell.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
-                continue
-
-            isbn = isbn_validator.normalize_isbn(first_cell)
-            if isbn_validator.validate_isbn(isbn):
-                isbns.append(isbn)
-
-    return isbns
 
 
 def main(argv=None) -> int:
@@ -137,7 +101,7 @@ def main(argv=None) -> int:
         db = init_database_or_exit()
 
         # Preview ISBNs using the same function as the pipeline
-        isbns = read_isbns_from_tsv(input_path)
+        isbns = parse_isbn_file(input_path).unique_valid
 
         print("LCCN Harvester")
         print(f"- Input TSV: {input_path}")
@@ -149,7 +113,11 @@ def main(argv=None) -> int:
         print(f"- Preview:   {preview}" if preview else "- Preview:   (none)")
         print()
 
-        summary = run_harvest(input_path=input_path, dry_run=args.dry_run)
+        summary = run_harvest(
+            input_path=input_path, 
+            dry_run=args.dry_run,
+            stop_rule=args.stop_rule
+        )
 
         print("Summary:")
         print(f"- Total ISBNs:          {summary.total_isbns}")

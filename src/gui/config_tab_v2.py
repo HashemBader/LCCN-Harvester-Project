@@ -5,7 +5,7 @@ V2 Configuration Tab with modern borderless design and clean form layout.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QComboBox,
-    QSpinBox, QMessageBox, QInputDialog
+    QSpinBox, QMessageBox, QDialog, QDialogButtonBox, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from pathlib import Path
@@ -14,8 +14,153 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.profile_manager import ProfileManager
-from .icons import get_pixmap, SVG_SETTINGS
+from .icons import get_pixmap, SVG_SETTINGS, SVG_HARVEST
 from .styles_v2 import CATPPUCCIN_THEME
+
+
+class CreateProfileDialog(QDialog):
+    """Profile creation dialog with inline settings controls."""
+
+    def __init__(self, parent=None, initial_settings=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Profile")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+        self._initial_settings = initial_settings or {}
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        title = QLabel("Create New Profile")
+        title.setStyleSheet(f"font-size: 18px; font-weight: 700; ")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Choose a profile name and starting settings.")
+        subtitle.setStyleSheet(f" font-size: 12px;")
+        layout.addWidget(subtitle)
+
+        name_label = QLabel("Profile Name")
+        name_label.setStyleSheet(f"font-weight: 600; ")
+        layout.addWidget(name_label)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g., Quick Harvest / Medical / Batch Retry")
+        self.name_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.name_edit)
+
+        settings_frame = QFrame()
+        settings_frame.setProperty("class", "Card")
+        settings_layout = QVBoxLayout(settings_frame)
+        settings_layout.setContentsMargins(14, 14, 14, 14)
+        settings_layout.setSpacing(12)
+
+        settings_title = QLabel("Starting Settings")
+        settings_title.setStyleSheet(f"font-weight: 700; ")
+        settings_layout.addWidget(settings_title)
+
+        retry_row = QHBoxLayout()
+        retry_label = QLabel("Retry Interval")
+        retry_label.setStyleSheet("")
+        self.retry_spin = QSpinBox()
+        self.retry_spin.setRange(0, 365)
+        self.retry_spin.setSuffix(" days")
+        self.retry_spin.setFixedWidth(120)
+        self.retry_spin.setValue(int(self._initial_settings.get("retry_days", 7)))
+        retry_row.addWidget(retry_label)
+        retry_row.addStretch()
+        retry_row.addWidget(self.retry_spin)
+        settings_layout.addLayout(retry_row)
+
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Call Number Selection")
+        mode_label.setStyleSheet("")
+        self.mode_combo = QComboBox()
+        self.mode_combo.setFixedWidth(180)
+        self.mode_combo.addItem("LCCN only", "lccn")
+        self.mode_combo.addItem("NLMCN only", "nlmcn")
+        self.mode_combo.addItem("Both", "both")
+        initial_mode = self._initial_settings.get("call_number_mode", "lccn")
+        idx = self.mode_combo.findData(initial_mode)
+        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        mode_row.addWidget(mode_label)
+        mode_row.addStretch()
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addWidget(self.mode_combo)
+        settings_layout.addLayout(mode_row)
+
+        self.stop_rule_row = QHBoxLayout()
+        stop_rule_label = QLabel("Stop Rule")
+        stop_rule_label.setStyleSheet("")
+        self.stop_rule_combo = QComboBox()
+        self.stop_rule_combo.setFixedWidth(180)
+        self.stop_rule_combo.addItem("Stop if either found", "stop_either")
+        self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
+        self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")
+        self.stop_rule_combo.addItem("Continue until both found", "continue_both")
+        
+        initial_stop = self._initial_settings.get("stop_rule", "stop_either")
+        idx_stop = self.stop_rule_combo.findData(initial_stop)
+        self.stop_rule_combo.setCurrentIndex(idx_stop if idx_stop >= 0 else 0)
+        
+        self.stop_rule_row.addWidget(stop_rule_label)
+        self.stop_rule_row.addStretch()
+        self.stop_rule_row.addWidget(self.stop_rule_combo)
+        
+        # Only show stop rule if mode is 'both'
+        self._toggle_stop_rule_visibility()
+        self.mode_combo.currentTextChanged.connect(self._toggle_stop_rule_visibility)
+        
+        settings_layout.addLayout(self.stop_rule_row)
+
+        layout.addWidget(settings_frame)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Create Profile")
+        ok_btn.setProperty("class", "PrimaryButton")
+        cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_btn.setProperty("class", "SecondaryButton")
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Inherit app theme — no hardcoded colours
+
+    def _toggle_stop_rule_visibility(self):
+        is_both = self.mode_combo.currentData() == "both"
+        for i in range(self.stop_rule_row.count()):
+            widget = self.stop_rule_row.itemAt(i).widget()
+            if widget:
+                widget.setVisible(is_both)
+
+    def _validate_and_accept(self):
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, "Missing Name", "Please enter a profile name.")
+            self.name_edit.setFocus()
+            return
+        self.accept()
+
+    def profile_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def profile_settings(self) -> dict:
+        mode = self.mode_combo.currentData()
+        mode = mode if mode in {"lccn", "nlmcn", "both"} else "lccn"
+        return {
+            "retry_days": self.retry_spin.value(),
+            "call_number_mode": mode,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
+            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
+            "output_tsv": True,
+            "output_invalid_isbn_file": True,
+        }
+
 
 class ConfigTabV2(QWidget):
     config_changed = pyqtSignal(dict)
@@ -28,30 +173,12 @@ class ConfigTabV2(QWidget):
         self.has_unsaved_changes = False
         self._setup_ui()
         self._load_profile(self.current_profile_name)
+        self.refresh_targets_preview()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
         layout.setContentsMargins(20, 20, 20, 20)
-
-        # =========================================================================
-        # 1. Header
-        # =========================================================================
-        header_layout = QHBoxLayout()
-        title_block = QVBoxLayout()
-        title = QLabel("Configuration")
-        title.setProperty("class", "PageTitle")
-        title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {CATPPUCCIN_THEME['text']};")
-        
-        subtitle = QLabel("Manage profiles and global settings")
-        subtitle.setStyleSheet(f"font-size: 14px; color: {CATPPUCCIN_THEME['subtext0']};")
-        
-        title_block.addWidget(title)
-        title_block.addWidget(subtitle)
-        
-        header_layout.addLayout(title_block)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
 
         # =========================================================================
         # 2. Profile Section (Card)
@@ -60,29 +187,31 @@ class ConfigTabV2(QWidget):
         profile_frame.setProperty("class", "Card")
         profile_layout = QHBoxLayout(profile_frame)
         profile_layout.setSpacing(20)
-        profile_layout.setContentsMargins(20, 20, 20, 20)
+        profile_layout.setContentsMargins(20, 12, 20, 12)
         
         # Icon
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(get_pixmap(SVG_SETTINGS, CATPPUCCIN_THEME['blue']))
+        icon_lbl.setPixmap(get_pixmap(SVG_SETTINGS, CATPPUCCIN_THEME['primary']))
         profile_layout.addWidget(icon_lbl)
+
+        # Title
+        profile_title = QLabel("Profile Settings")
+        profile_title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        profile_layout.addWidget(profile_title)
         
         # Selector
         info_layout = QVBoxLayout()
-        lbl = QLabel("&Active Profile")
-        lbl.setStyleSheet(f"font-weight: bold; color: {CATPPUCCIN_THEME['text']};")
         
         self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(250)
+        self.profile_combo.setMinimumWidth(300)
         self.profile_combo.setProperty("class", "ComboBox")
         self.profile_combo.setAccessibleName("Active profile selector")
         self.profile_combo.setAccessibleDescription("Choose which saved profile is active.")
         self._refresh_profile_list()
         self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
-        lbl.setBuddy(self.profile_combo)
         
-        info_layout.addWidget(lbl)
         info_layout.addWidget(self.profile_combo)
+        
         profile_layout.addLayout(info_layout)
         
         profile_layout.addStretch()
@@ -126,28 +255,26 @@ class ConfigTabV2(QWidget):
         settings_frame = QFrame()
         settings_frame.setProperty("class", "Card")
         settings_layout = QVBoxLayout(settings_frame)
-        settings_layout.setSpacing(20)
-        settings_layout.setContentsMargins(25, 25, 25, 25)
-        
-        settings_title = QLabel("Global Settings")
-        settings_title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {CATPPUCCIN_THEME['text']}; margin-bottom: 10px;")
-        settings_layout.addWidget(settings_title)
+        settings_layout.setSpacing(0)
+        settings_layout.setContentsMargins(25, 14, 25, 14)
 
-        # Form Grid
-        form_layout = QVBoxLayout()
-        form_layout.setSpacing(15)
+        # Title + controls on one row
+        form_layout = QHBoxLayout()
+        form_layout.setSpacing(24)
+
+        harvest_icon_lbl = QLabel()
+        harvest_icon_lbl.setPixmap(get_pixmap(SVG_HARVEST, CATPPUCCIN_THEME['primary']))
+        form_layout.addWidget(harvest_icon_lbl)
+
+        harvest_title = QLabel("Harvest Settings")
+        harvest_title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        form_layout.addWidget(harvest_title)
+        form_layout.addSpacing(16)
 
         # Retry Days
-        retry_row = QHBoxLayout()
-        retry_lbl = QLabel("&Retry Interval (Days)")
-        retry_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
-        retry_desc = QLabel("Skip ISBNs that failed recently")
-        retry_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['subtext0']}; font-size: 12px;")
-        
-        desc_layout = QVBoxLayout()
-        desc_layout.addWidget(retry_lbl)
-        desc_layout.addWidget(retry_desc)
-        
+        retry_lbl = QLabel("&Retry Interval")
+        retry_lbl.setStyleSheet("")
+
         self.spin_retry = QSpinBox()
         self.spin_retry.setRange(0, 365)
         self.spin_retry.setValue(7)
@@ -157,29 +284,19 @@ class ConfigTabV2(QWidget):
         self.spin_retry.setToolTip("Days to wait before retrying recently failed ISBNs")
         self.spin_retry.valueChanged.connect(self._on_setting_changed)
         retry_lbl.setBuddy(self.spin_retry)
-        # Style spinbox? Maybe later. For now let stylesheet handle generic QSpinBox if any
-        
-        retry_row.addLayout(desc_layout)
-        retry_row.addStretch()
-        retry_row.addWidget(self.spin_retry)
-        
-        form_layout.addLayout(retry_row)
-        form_layout.addWidget(self._create_divider())
-        
-        # Call Number Mode
-        mode_row = QHBoxLayout()
-        mode_lbl = QLabel("Call Number &Mode")
-        mode_lbl.setStyleSheet(f"color: {CATPPUCCIN_THEME['text']};")
-        mode_desc = QLabel("Choose which call number type is accepted during harvest")
-        mode_desc.setStyleSheet(f"color: {CATPPUCCIN_THEME['subtext0']}; font-size: 12px;")
 
-        mode_desc_layout = QVBoxLayout()
-        mode_desc_layout.addWidget(mode_lbl)
-        mode_desc_layout.addWidget(mode_desc)
+        retry_pair = QHBoxLayout()
+        retry_pair.setSpacing(8)
+        retry_pair.addWidget(retry_lbl)
+        retry_pair.addWidget(self.spin_retry)
+
+        # Call Number Selection
+        mode_lbl = QLabel("Call Number &Selection")
+        mode_lbl.setStyleSheet("")
 
         self.call_number_combo = QComboBox()
         self.call_number_combo.setFixedWidth(180)
-        self.call_number_combo.setAccessibleName("Call number mode")
+        self.call_number_combo.setAccessibleName("Call number selection")
         self.call_number_combo.setAccessibleDescription("Choose whether to collect LCCN only, NLMCN only, or both.")
         self.call_number_combo.setToolTip("Select which call-number type is accepted during harvest")
         self.call_number_combo.addItem("LCCN only", "lccn")
@@ -188,23 +305,69 @@ class ConfigTabV2(QWidget):
         self.call_number_combo.currentTextChanged.connect(self._on_setting_changed)
         mode_lbl.setBuddy(self.call_number_combo)
 
-        mode_row.addLayout(mode_desc_layout)
-        mode_row.addStretch()
-        mode_row.addWidget(self.call_number_combo)
+        mode_pair = QHBoxLayout()
+        mode_pair.setSpacing(8)
+        mode_pair.addWidget(mode_lbl)
+        mode_pair.addWidget(self.call_number_combo)
 
-        form_layout.addLayout(mode_row)
+        form_layout.addLayout(retry_pair)
+        form_layout.addLayout(mode_pair)
+
+        # Stop Rule is shown in the Harvester tab, not here.
+        # Keep a hidden widget so _load_profile / get_config / _save_current_profile
+        # can still read/write the stop_rule setting without extra changes.
+        self.stop_rule_combo = QComboBox()
+        self.stop_rule_combo.addItem("Stop if either found", "stop_either")
+        self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
+        self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")
+        self.stop_rule_combo.addItem("Continue until both found", "continue_both")
+        self.stop_rule_combo.hide()  # not shown in the Config tab UI
+
+        form_layout.addStretch()
         
         settings_layout.addLayout(form_layout)
         layout.addWidget(settings_frame)
-        
+
         layout.addStretch()
+
+    def _toggle_stop_rule_visibility(self):
+        """No-op: Stop Rule is now shown in the Harvester tab."""
+        pass
+
+    def refresh_targets_preview(self, targets=None):
+        """No-op stub — targets are now shown in the live TargetsTabV2 below."""
+        pass
 
     def _create_divider(self):
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet(f"background-color: {CATPPUCCIN_THEME['surface1']}; max-height: 1px;")
+        line.setStyleSheet(f"background- max-height: 1px;")
         return line
+
+    def _comparable_settings(self, settings):
+        """Normalize settings for duplicate-content comparisons."""
+        if not isinstance(settings, dict):
+            return {}
+        mode = self._mode_from_settings(settings)
+        return {
+            "retry_days": int(settings.get("retry_days", 7)),
+            "call_number_mode": mode,
+            "collect_lccn": mode in {"lccn", "both"},
+            "collect_nlmcn": mode in {"nlmcn", "both"},
+        }
+
+    def _find_profile_with_same_settings(self, candidate_settings, exclude_name: str = ""):
+        """Return the first profile name whose comparable settings match *candidate_settings*."""
+        normalized_candidate = self._comparable_settings(candidate_settings)
+        for profile_name in self.profile_manager.list_profiles():
+            if profile_name == exclude_name:
+                continue
+            profile = self.profile_manager.load_profile(profile_name)
+            existing_settings = self._extract_profile_settings(profile)
+            if self._comparable_settings(existing_settings) == normalized_candidate:
+                return profile_name
+        return None
 
     # =========================================================================
     # Logic Methods (Adapted from original ConfigTab)
@@ -245,6 +408,10 @@ class ConfigTabV2(QWidget):
         mode = self._mode_from_settings(config)
         idx = self.call_number_combo.findData(mode)
         self.call_number_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        stop_rule = config.get("stop_rule", "stop_either")
+        idx_stop = self.stop_rule_combo.findData(stop_rule)
+        self.stop_rule_combo.setCurrentIndex(idx_stop if idx_stop >= 0 else 0)
         
         self.spin_retry.blockSignals(False)
         self.call_number_combo.blockSignals(False)
@@ -292,6 +459,7 @@ class ConfigTabV2(QWidget):
             "call_number_mode": mode,
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
+            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
         }
         self.profile_manager.save_profile(self.current_profile_name, config)
         self.has_unsaved_changes = False
@@ -300,19 +468,28 @@ class ConfigTabV2(QWidget):
         QMessageBox.information(self, "Saved", f"Profile '{self.current_profile_name}' saved.")
 
     def _create_new_profile(self):
-        name, ok = QInputDialog.getText(self, "New Profile", "Profile Name:")
-        if ok and name:
-            name = name.strip()
-            if not name:
-                return
-            if name in self.profile_manager.list_profiles():
-                QMessageBox.warning(self, "Error", "Profile already exists.")
-                return
-            
-            # Create from current visible settings (matches old tab "Save As" behavior).
-            self.profile_manager.save_profile(name, self.get_config())
-            self._refresh_profile_list()
-            self.profile_combo.setCurrentText(name) # Will trigger load
+        dialog = CreateProfileDialog(self, initial_settings=self.get_config())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name = dialog.profile_name()
+        if self.profile_manager.profile_name_exists(name):
+            QMessageBox.warning(self, "Duplicate Name", "A profile with that name already exists.")
+            return
+
+        new_settings = dialog.profile_settings()
+        matching_profile = self._find_profile_with_same_settings(new_settings)
+        if matching_profile:
+            QMessageBox.information(
+                self,
+                "Matching Settings Found",
+                f"These settings already exist under '{matching_profile}'.\n\n"
+                "You can still create this profile if you want a separate copy."
+            )
+
+        self.profile_manager.save_profile(name, new_settings)
+        self._refresh_profile_list()
+        self.profile_combo.setCurrentText(name) # Will trigger load
 
     def _delete_current_profile(self):
         if self.current_profile_name == "Default Settings":
@@ -331,6 +508,24 @@ class ConfigTabV2(QWidget):
             self._load_profile("Default Settings")
             # It will auto-select default or first available
 
+    def list_profile_names(self):
+        """Public accessor for available profile names."""
+        return self.profile_manager.list_profiles()
+
+    def select_profile(self, name: str) -> bool:
+        """Switch profiles through the existing UI flow (prompts included)."""
+        if not name:
+            return False
+        self._refresh_profile_list()
+        if name not in self.profile_manager.list_profiles():
+            return False
+        self.profile_combo.setCurrentText(name)
+        return self.current_profile_name == name
+
+    def create_new_profile(self):
+        """Open the standard new-profile dialog."""
+        self._create_new_profile()
+
     def get_config(self):
         """Public accessor for other tabs."""
         mode = self._current_call_number_mode()
@@ -340,6 +535,7 @@ class ConfigTabV2(QWidget):
             # Keep parity with legacy ConfigTab expected keys.
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
+            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
             "output_tsv": True,
             "output_invalid_isbn_file": True,
         }

@@ -10,6 +10,7 @@ from typing import Optional
 
 from src.harvester.orchestrator import TargetResult
 from src.utils import messages
+from src.utils.call_number_validators import validate_lccn, validate_nlmcn
 
 logger = logging.getLogger(__name__)
 
@@ -59,24 +60,22 @@ class Z3950Target:
                         error=messages.NetworkMessages.no_match.format(target=self.name)
                     )
 
-                # Extract LCCN from first record
-                record = records[0]
+                # Extract LCCN (MARC 050 $a+$b) and NLMCN (MARC 060 $a+$b)
+                # per project requirements: 050 = LC call number, 060 = NLM call number.
+                # Use the shared marc_decoder utility which normalises $a+$b and
+                # iterates all returned records until a call number is found.
+                from src.z3950.marc_decoder import extract_call_numbers_from_pymarc
+
                 lccn = None
                 nlmcn = None
+                for rec in records:
+                    raw_lccn, raw_nlmcn = extract_call_numbers_from_pymarc(rec)
+                    lccn = validate_lccn(raw_lccn)
+                    nlmcn = validate_nlmcn(raw_nlmcn)
+                    if lccn or nlmcn:
+                        break
 
-                # Try to get LCCN from field 010$a
-                if record['010']:
-                    lccn_field = record['010']['a']
-                    if lccn_field:
-                        lccn = lccn_field.strip()
-
-                # Try to get NLM from field 060$a (if it exists)
-                if record['060']:
-                    nlm_field = record['060']['a']
-                    if nlm_field:
-                        nlmcn = nlm_field.strip()
-
-                if lccn:
+                if lccn or nlmcn:
                     return TargetResult(
                         success=True,
                         lccn=lccn,

@@ -1,0 +1,11 @@
+ISBN	Note
+978-3-16-148410-0	Valid ISBN-13
+0-306-40615-2	Valid ISBN-10
+0 306 40615 2	Duplicate ISBN-10 with spaces
+9783161484100	Duplicate ISBN-13 without hyphens
+INVALID-ISBN-123	This is totally invalid
+# This is a comment, skipped
+1234567890	Valid ISBN-10 (fake checksum, just tests if stdnum validator handles it, maybe fails)
+978-0-13-110362-7	Valid ISBN-13 (C Programming Language)
+978-0-13-110362-7	Duplicate ISBN-13
+

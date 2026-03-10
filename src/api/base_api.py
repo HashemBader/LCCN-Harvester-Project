@@ -61,7 +61,7 @@ class BaseApiClient(ABC):
       should be handled by dedicated modules to avoid duplication.
     """
 
-    def __init__(self, timeout_seconds: int = 10, max_retries: int = 2) -> None:
+    def __init__(self, timeout_seconds: int = 10, max_retries: int = 0) -> None:
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
 

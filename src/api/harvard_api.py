@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.api.base_api import ApiResult, BaseApiClient
 from src.api.http_utils import urlopen_with_ca
+from src.utils.call_number_validators import validate_lccn, validate_nlmcn
 
 
 class HarvardApiClient(BaseApiClient):
@@ -213,6 +214,10 @@ class HarvardApiClient(BaseApiClient):
         lccn = candidates["lc"][0] if candidates["lc"] else None
         nlmcn = candidates["nlm"][0] if candidates["nlm"] else None
 
+        # Validate extracted call numbers
+        lccn = validate_lccn(lccn, source=self.source)
+        nlmcn = validate_nlmcn(nlmcn, source=self.source)
+
         if lccn or nlmcn:
             return ApiResult(
                 isbn=isbn,
@@ -241,7 +246,10 @@ class HarvardApiClient(BaseApiClient):
         nlm: List[str] = []
         other: List[str] = []
 
-        # Common field names in various metadata payloads
+        # Common field names that hold actual call numbers / shelf locators.
+        # Deliberately excludes "lccn", "number_lccn", "identifier-lccn" because
+        # those fields carry LC *control* numbers (MARC 010, e.g. "2007039987"),
+        # not LC *classification* call numbers (MARC 050).
         keys_of_interest = {
             "shelflocator",
             "shelf_locator",
@@ -250,21 +258,17 @@ class HarvardApiClient(BaseApiClient):
             "call_number",
             "callNumber",
             "classification",
-            "lccn",
-            "number_lccn",
-            "identifier-lccn",
         }
 
         def walk(x: Any) -> None:
             if isinstance(x, dict):
                 for k, v in x.items():
-                    if isinstance(k, str) and (k in keys_of_interest or "lccn" in k.lower()):
-                        force_lc = "lccn" in k.lower()
+                    if isinstance(k, str) and k in keys_of_interest:
                         if isinstance(v, list):
                             for item in v:
-                                self._bucket_candidate(str(item), lc, nlm, other, force="lc" if force_lc else None)
+                                self._bucket_candidate(str(item), lc, nlm, other)
                         else:
-                            self._bucket_candidate(str(v), lc, nlm, other, force="lc" if force_lc else None)
+                            self._bucket_candidate(str(v), lc, nlm, other)
                     walk(v)
             elif isinstance(x, list):
                 for it in x:
@@ -300,7 +304,9 @@ class HarvardApiClient(BaseApiClient):
                 continue
 
             if ident_type == "lccn":
-                self._bucket_candidate(text, lc, nlm, other, force="lc")
+                # This is the LC control number (MARC 010, e.g. "2007039987"),
+                # NOT an LC classification call number (MARC 050).  Skip it.
+                continue
             elif ident_type in {"isbn", "issn", "uri"}:
                 continue
             else:

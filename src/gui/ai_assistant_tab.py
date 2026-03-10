@@ -5,7 +5,8 @@ AI-powered assistant for intelligent automation and predictions.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QTextEdit, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QComboBox
+    QListWidget, QListWidgetItem, QProgressBar, QComboBox,
+    QScrollArea, QFrame
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
@@ -147,19 +148,30 @@ class AIAssistantTab(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
+        # Wrap content in a scroll area so widgets never get compressed on resize
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scr_content = QWidget()
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+        layout = QVBoxLayout(_scr_content)
 
         # Title
         title_layout = QHBoxLayout()
         title_label = QLabel("🤖 AI Assistant")
-        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7c3aed;")
+        title_label.setStyleSheet("font-size: 20px; font-weight: bold; ")
         title_layout.addWidget(title_label)
 
         # Beta badge
         beta_label = QLabel("BETA")
         beta_label.setStyleSheet("""
-            background-color: #7c3aed;
-            color: white;
+            background-color: white;
             font-size: 10px;
             font-weight: bold;
             padding: 4px 8px;
@@ -171,7 +183,7 @@ class AIAssistantTab(QWidget):
         layout.addLayout(title_layout)
 
         subtitle = QLabel("Intelligent automation powered by machine learning")
-        subtitle.setStyleSheet("font-size: 12px; color: #666666; margin-bottom: 10px;")
+        subtitle.setStyleSheet("font-size: 12px; margin-bottom: 10px;")
         layout.addWidget(subtitle)
 
         # AI Features Grid
@@ -183,7 +195,7 @@ class AIAssistantTab(QWidget):
 
         predict_desc = QLabel("Predict call numbers using ML analysis of ISBN patterns and historical data.")
         predict_desc.setWordWrap(True)
-        predict_desc.setStyleSheet("font-size: 11px; color: #666666;")
+        predict_desc.setStyleSheet("font-size: 11px; ")
         predict_layout.addWidget(predict_desc)
 
         self.predict_isbn_input = QLineEdit()
@@ -203,7 +215,7 @@ class AIAssistantTab(QWidget):
 
         patterns_desc = QLabel("Analyze harvest patterns to identify optimal targets and timings.")
         patterns_desc.setWordWrap(True)
-        patterns_desc.setStyleSheet("font-size: 11px; color: #666666;")
+        patterns_desc.setStyleSheet("font-size: 11px; ")
         patterns_layout.addWidget(patterns_desc)
 
         self.analyze_button = QPushButton("📈 Analyze Patterns")
@@ -224,7 +236,7 @@ class AIAssistantTab(QWidget):
         query_layout = QVBoxLayout()
 
         query_hint = QLabel("Ask questions in natural language:")
-        query_hint.setStyleSheet("font-size: 11px; color: #666666;")
+        query_hint.setStyleSheet("font-size: 11px; ")
         query_layout.addWidget(query_hint)
 
         query_input_layout = QHBoxLayout()
@@ -243,7 +255,7 @@ class AIAssistantTab(QWidget):
         # Example queries
         examples_layout = QHBoxLayout()
         examples_label = QLabel("Examples:")
-        examples_label.setStyleSheet("font-size: 10px; color: #999999;")
+        examples_label.setStyleSheet("font-size: 10px; ")
         examples_layout.addWidget(examples_label)
 
         for example_text in ["Best targets?", "Success rate?", "Optimize order?"]:
@@ -264,7 +276,7 @@ class AIAssistantTab(QWidget):
         layout.addWidget(self.progress_bar)
 
         self.progress_status = QLabel("")
-        self.progress_status.setStyleSheet("font-size: 10px; color: #666666; font-style: italic;")
+        self.progress_status.setStyleSheet("font-size: 10px; font-style: italic;")
         self.progress_status.setVisible(False)
         layout.addWidget(self.progress_status)
 
@@ -297,7 +309,6 @@ class AIAssistantTab(QWidget):
 
         layout.addLayout(actions_layout)
 
-        self.setLayout(layout)
         self.current_recommendations = None
 
     def _predict_lccn(self):

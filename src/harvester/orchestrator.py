@@ -74,7 +74,7 @@ class HarvestOrchestrator:
     - Optional progress callback hook
     """
 
-    DEFAULT_FLUSH_BATCH_SIZE = 50
+    DEFAULT_FLUSH_BATCH_SIZE = 1
 
     def __init__(
         self,
@@ -88,6 +88,7 @@ class HarvestOrchestrator:
         bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
         cancel_check: Optional[CancelCheck] = None,
+        stop_rule: str = "stop_either",
     ):
         self.db = db
         self.retry_days = retry_days
@@ -96,6 +97,7 @@ class HarvestOrchestrator:
         self.progress_cb = progress_cb
         self.cancel_check = cancel_check
         self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
+        self.stop_rule = stop_rule
         self.max_workers = max(1, int(max_workers))
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
 
@@ -145,13 +147,61 @@ class HarvestOrchestrator:
 
         return result
 
+    @staticmethod
+    def _classify_other_error_target(error_text: str) -> str:
+        e = (error_text or "").strip().lower()
+        if "z39.50 support not available" in e:
+            return "z3950_unsupported"
+        if (
+            "remote end closed connection without response" in e
+            or "timed out" in e
+            or "connection refused" in e
+            or "connection reset" in e
+            or "temporary failure in name resolution" in e
+            or "name or service not known" in e
+        ):
+            return "offline"
+        return "other"
+
+    def _build_failed_payload(
+        self,
+        *,
+        isbn: str,
+        last_target: Optional[str],
+        last_error: Optional[str],
+        not_found_targets: list[str],
+        other_errors: list[tuple[str, str]],
+    ) -> dict:
+        z3950_unsupported_targets: list[str] = []
+        offline_targets: list[str] = []
+        other_error_items: list[str] = []
+
+        for target_name, err in other_errors:
+            bucket = self._classify_other_error_target(err)
+            if bucket == "z3950_unsupported":
+                z3950_unsupported_targets.append(target_name)
+            elif bucket == "offline":
+                offline_targets.append(target_name)
+            else:
+                other_error_items.append(f"{target_name}: {err}")
+
+        return {
+            "isbn": isbn,
+            "last_target": last_target,
+            "last_error": last_error,
+            "not_found_targets": not_found_targets,
+            "z3950_unsupported_targets": z3950_unsupported_targets,
+            "offline_targets": offline_targets,
+            "other_errors": other_error_items,
+        }
+
     def process_isbn(
         self,
         isbn: str,
         *,
         dry_run: bool,
         pending_main: list[MainRecord],
-        pending_attempted: list[tuple[str, Optional[str], Optional[str], Optional[str]]],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> str:
 
         """
@@ -162,44 +212,75 @@ class HarvestOrchestrator:
         self._emit("isbn_start", {"isbn": isbn})
 
         # 1) cache check
-        if isbn not in self.bypass_cache_isbns and self.db.get_main(isbn) is not None:
-            self._emit("cached", {"isbn": isbn})
+        cached_rec = None
+        if isbn not in self.bypass_cache_isbns:
+            cached_rec = self.db.get_main(isbn)
+        if cached_rec is not None:
+            self._emit(
+                "cached",
+                {
+                    "isbn": isbn,
+                    "source": cached_rec.source,
+                    "lccn": cached_rec.lccn,
+                    "nlmcn": cached_rec.nlmcn,
+                },
+            )
             return "cached"
 
-        # 2) retry-skip check
-        if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
-            isbn, retry_days=self.retry_days
-        ):
-            self._emit("skip_retry", {"isbn": isbn, "retry_days": self.retry_days})
-            return "skip_retry"
-
-        # 3) try targets in order
+        # 2) try targets in order with target/type-specific retry checks
         last_error: Optional[str] = None
         last_target: Optional[str] = None
         not_found_targets: list[str] = []
-        other_errors: list[str] = []
+        other_errors: list[tuple[str, str]] = []
+        skipped_retry_targets: list[str] = []
+        
+        # Accumulate results for "both" mode
+        best_lccn: Optional[str] = None
+        best_nlmcn: Optional[str] = None
+        best_source: Optional[str] = None
 
         for target in self.targets:
             self._check_cancelled()
             last_target = getattr(target, "name", target.__class__.__name__)
+
+            if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
+                isbn,
+                last_target,
+                self.call_number_mode,
+                retry_days=self.retry_days,
+            ):
+                skipped_retry_targets.append(last_target)
+                continue
+
             self._emit("target_start", {"isbn": isbn, "target": last_target})
 
             result = self._filter_result_by_mode(target.lookup(isbn))
 
             if result.success:
-                self._emit("success", {"isbn": isbn, "target": last_target})
+                if result.lccn and not best_lccn:
+                    best_lccn = result.lccn
+                    if not best_source: best_source = result.source or last_target
+                if result.nlmcn and not best_nlmcn:
+                    best_nlmcn = result.nlmcn
+                    if not best_source: best_source = result.source or last_target
 
-                if not dry_run:
-                    rec = MainRecord(
-                        isbn=isbn,
-                        lccn=result.lccn,
-                        nlmcn=result.nlmcn,
-                        source=result.source or last_target,
-                    )
-                    pending_main.append(rec)
+                should_stop = False
+                
+                # Evaluate stop rule if in both mode, otherwise break immediately
+                if self.call_number_mode == "both":
+                    if self.stop_rule == "stop_either":
+                        should_stop = True
+                    elif self.stop_rule == "stop_lccn" and best_lccn:
+                        should_stop = True
+                    elif self.stop_rule == "stop_nlmcn" and best_nlmcn:
+                        should_stop = True
+                    elif self.stop_rule == "continue_both" and best_lccn and best_nlmcn:
+                        should_stop = True
+                else:
+                    should_stop = True
 
-
-                return "success"
+                if should_stop:
+                    break
 
             # failure from this target; continue
             last_error = result.error or "Unknown error"
@@ -207,9 +288,47 @@ class HarvestOrchestrator:
             if err.lower().startswith("no records found in"):
                 not_found_targets.append(last_target)
             elif err:
-                other_errors.append(f"{last_target}: {err}")
+                other_errors.append((last_target, err))
+            if not dry_run:
+                pending_attempted.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
 
-        # 4) all targets failed
+        # Check if we accumulated any success
+        if best_lccn or best_nlmcn:
+            self._emit(
+                "success",
+                {
+                    "isbn": isbn,
+                    "target": best_source,
+                    "source": best_source,
+                    "lccn": best_lccn,
+                    "nlmcn": best_nlmcn,
+                },
+            )
+
+            if not dry_run:
+                rec = MainRecord(
+                    isbn=isbn,
+                    lccn=best_lccn,
+                    nlmcn=best_nlmcn,
+                    source=best_source,
+                )
+                pending_main.append(rec)
+
+            return "success"
+
+        if skipped_retry_targets and not not_found_targets and not other_errors:
+            self._emit(
+                "skip_retry",
+                {
+                    "isbn": isbn,
+                    "retry_days": self.retry_days,
+                    "targets": skipped_retry_targets,
+                    "attempt_type": self.call_number_mode,
+                },
+            )
+            return "skip_retry"
+
+        # 3) all tried targets failed
         if not_found_targets and not other_errors:
             last_error = "Not found in: " + ", ".join(not_found_targets)
         elif not_found_targets and other_errors:
@@ -217,18 +336,18 @@ class HarvestOrchestrator:
                 "Not found in: "
                 + ", ".join(not_found_targets)
                 + " | Other errors: "
-                + " ; ".join(other_errors)
+                + " ; ".join(f"{t}: {e}" for t, e in other_errors)
             )
         elif other_errors:
-            last_error = " ; ".join(other_errors)
+            last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
 
-        self._emit(
-            "failed",
-            {"isbn": isbn, "last_target": last_target, "last_error": last_error},
-        )
-
-        if not dry_run:
-            pending_attempted.append((isbn, last_target, utc_now_iso(), last_error))
+        self._emit("failed", self._build_failed_payload(
+            isbn=isbn,
+            last_target=last_target,
+            last_error=last_error,
+            not_found_targets=not_found_targets,
+            other_errors=other_errors,
+        ))
 
         return "failed"
     def run(self, isbns: list[str], *, dry_run: bool) -> HarvestSummary:
@@ -240,12 +359,11 @@ class HarvestOrchestrator:
 
         # --- Sprint 5: batching buffers ---
         pending_main: list[MainRecord] = []
-        pending_attempted: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
 
         def flush() -> None:
             """Flush buffered DB writes in a single transaction."""
             wrote_main = len(pending_main)
-            wrote_attempted = len(pending_attempted)
             if dry_run:
                 pending_main.clear()
                 pending_attempted.clear()
@@ -254,9 +372,20 @@ class HarvestOrchestrator:
             if not pending_main and not pending_attempted:
                 return
 
+            # ISBNs that succeeded in this batch — don't write failure rows for them.
+            # upsert_main_many already clears old attempted rows via clear_attempted_on_success,
+            # but without this filter upsert_attempted_many would immediately re-insert the
+            # intermediate per-target failures recorded before the early-stop success hit.
+            successful_isbns = {r.isbn for r in pending_main}
+            filtered_attempted = [
+                row for row in pending_attempted if row[0] not in successful_isbns
+            ]
+
+            wrote_attempted = len(filtered_attempted)
+
             with self.db.transaction() as conn:
                 self.db.upsert_main_many(conn, pending_main, clear_attempted_on_success=True)
-                self.db.upsert_attempted_many(conn, pending_attempted)
+                self.db.upsert_attempted_many(conn, filtered_attempted)
 
             pending_main.clear()
             pending_attempted.clear()
@@ -311,44 +440,114 @@ class HarvestOrchestrator:
                 # Also: emitting progress from threads is okay only if your GUI callback is thread-safe.
                 self._emit("isbn_start", {"isbn": isbn})
 
-                if isbn not in self.bypass_cache_isbns and self.db.get_main(isbn) is not None:
-                    self._emit("cached", {"isbn": isbn})
+                cached_rec = None
+                if isbn not in self.bypass_cache_isbns:
+                    cached_rec = self.db.get_main(isbn)
+                if cached_rec is not None:
+                    self._emit("cached", {
+                        "isbn": isbn,
+                        "source": cached_rec.source,
+                        "lccn": cached_rec.lccn,
+                        "nlmcn": cached_rec.nlmcn,
+                    })
                     return ("cached", None, None)
-
-                if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(isbn, retry_days=self.retry_days):
-                    self._emit("skip_retry", {"isbn": isbn, "retry_days": self.retry_days})
-                    return ("skip_retry", None, None)
 
                 last_error = None
                 last_target = None
                 not_found_targets: list[str] = []
-                other_errors: list[str] = []
+                other_errors: list[tuple[str, str]] = []
+                skipped_retry_targets: list[str] = []
+                attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
+
+                # Accumulate best results and apply stop_rule (mirrors process_isbn)
+                best_lccn: Optional[str] = None
+                best_nlmcn: Optional[str] = None
+                best_source: Optional[str] = None
 
                 for target in self.targets:
                     self._check_cancelled()
                     last_target = getattr(target, "name", target.__class__.__name__)
+
+                    if isbn not in self.bypass_retry_isbns and self.db.should_skip_retry(
+                        isbn,
+                        last_target,
+                        self.call_number_mode,
+                        retry_days=self.retry_days,
+                    ):
+                        skipped_retry_targets.append(last_target)
+                        continue
+
                     self._emit("target_start", {"isbn": isbn, "target": last_target})
 
                     result = self._filter_result_by_mode(target.lookup(isbn))
                     if result.success:
-                        self._emit("success", {"isbn": isbn, "target": last_target})
+                        if result.lccn and not best_lccn:
+                            best_lccn = result.lccn
+                            if not best_source:
+                                best_source = result.source or last_target
+                        if result.nlmcn and not best_nlmcn:
+                            best_nlmcn = result.nlmcn
+                            if not best_source:
+                                best_source = result.source or last_target
 
-                        rec = None
-                        if not dry_run:
-                            rec = MainRecord(
-                                isbn=isbn,
-                                lccn=result.lccn,
-                                nlmcn=result.nlmcn,
-                                source=result.source or last_target,
-                            )
-                        return ("success", rec, None)
+                        should_stop = False
+                        if self.call_number_mode == "both":
+                            if self.stop_rule == "stop_either":
+                                should_stop = True
+                            elif self.stop_rule == "stop_lccn" and best_lccn:
+                                should_stop = True
+                            elif self.stop_rule == "stop_nlmcn" and best_nlmcn:
+                                should_stop = True
+                            elif self.stop_rule == "continue_both" and best_lccn and best_nlmcn:
+                                should_stop = True
+                        else:
+                            should_stop = True
+
+                        if should_stop:
+                            break
+
+                        # Not stopping yet — continue to next target for the missing counterpart.
+                        continue
 
                     last_error = result.error or "Unknown error"
                     err = (result.error or "").strip()
                     if err.lower().startswith("no records found in"):
                         not_found_targets.append(last_target)
                     elif err:
-                        other_errors.append(f"{last_target}: {err}")
+                        other_errors.append((last_target, err))
+                    if not dry_run:
+                        attempted_rows.append((isbn, last_target, self.call_number_mode, utc_now_iso(), last_error))
+
+                if best_lccn or best_nlmcn:
+                    self._emit("success", {
+                        "isbn": isbn,
+                        "target": best_source,
+                        "source": best_source,
+                        "lccn": best_lccn,
+                        "nlmcn": best_nlmcn,
+                    })
+                    rec = None
+                    if not dry_run:
+                        rec = MainRecord(
+                            isbn=isbn,
+                            lccn=best_lccn,
+                            nlmcn=best_nlmcn,
+                            source=best_source,
+                        )
+                    # Don't pass attempted_rows — successes drop intermediate failures
+                    return ("success", rec, None)
+
+                if skipped_retry_targets and not not_found_targets and not other_errors:
+                    self._emit(
+                        "skip_retry",
+                        {
+                            "isbn": isbn,
+                            "retry_days": self.retry_days,
+                            "targets": skipped_retry_targets,
+                            "attempt_type": self.call_number_mode,
+                        },
+                    )
+                    return ("skip_retry", None, None)
 
                 if not_found_targets and not other_errors:
                     last_error = "Not found in: " + ", ".join(not_found_targets)
@@ -357,17 +556,20 @@ class HarvestOrchestrator:
                         "Not found in: "
                         + ", ".join(not_found_targets)
                         + " | Other errors: "
-                        + " ; ".join(other_errors)
+                        + " ; ".join(f"{t}: {e}" for t, e in other_errors)
                     )
                 elif other_errors:
-                    last_error = " ; ".join(other_errors)
+                    last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
 
-                self._emit("failed", {"isbn": isbn, "last_target": last_target, "last_error": last_error})
+                self._emit("failed", self._build_failed_payload(
+                    isbn=isbn,
+                    last_target=last_target,
+                    last_error=last_error,
+                    not_found_targets=not_found_targets,
+                    other_errors=other_errors,
+                ))
 
-                att = None
-                if not dry_run:
-                    att = (isbn, last_target, utc_now_iso(), last_error)
-                return ("failed", None, att)
+                return ("failed", None, attempted_rows)
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
                 for status, rec, att in ex.map(worker, isbns):
@@ -375,8 +577,8 @@ class HarvestOrchestrator:
                     # main-thread batching writes
                     if rec is not None:
                         pending_main.append(rec)
-                    if att is not None:
-                        pending_attempted.append(att)
+                    if att:
+                        pending_attempted.extend(att)
 
                     if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
                         flush()

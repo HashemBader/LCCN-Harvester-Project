@@ -19,10 +19,11 @@ from .help_tab import HelpTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
+from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .icons import (
     get_icon, get_pixmap, 
-    SVG_DASHBOARD, SVG_INPUT, SVG_TARGETS, SVG_SETTINGS, 
+    SVG_DASHBOARD, SVG_TARGETS, SVG_SETTINGS, SVG_RESULTS,
     SVG_HARVEST, SVG_AI, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT,
     SVG_TOGGLE_ON, SVG_TOGGLE_OFF
 )
@@ -40,7 +41,7 @@ class ModernMainWindow(QMainWindow):
             # sidebar(240) + content-margins(60) + content(660) = 960 wide;
             # dashboard stacked content (profile panel 74 + KPI cards ~120 +
             # content split ~200 + headers/spacing ~100) + margins(60) = 660 tall.
-            self.setMinimumSize(1100, 660)
+            self.setMinimumSize(900, 660)
             # remove any accidental maximum constraint
             self.setMaximumSize(16777215, 16777215)
             # ensure title and min/max buttons are present
@@ -64,6 +65,7 @@ class ModernMainWindow(QMainWindow):
         # Data
         self.advanced_mode = False
         self.sidebar_collapsed = False
+        self._sidebar_auto_collapsed = False
         # In Qt/macOS key sequences: Ctrl maps to Command, Meta maps to physical Control.
         # Use Meta on macOS so shortcuts are truly Control+... as requested.
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
@@ -134,7 +136,7 @@ class ModernMainWindow(QMainWindow):
         self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
         self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
         self.btn_ai = self._create_nav_btn("AI Agent", SVG_AI, 3)
-        self.btn_help = self._create_nav_btn("Help", SVG_SETTINGS, 4)
+        self.btn_help = self._create_nav_btn("Help", SVG_RESULTS, 4)
 
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_configure)
@@ -280,50 +282,71 @@ class ModernMainWindow(QMainWindow):
     def _open_help_tab(self):
         self.btn_help.click()
 
+    def _show_accessibility_statement(self):
+        dialog = AccessibilityStatementDialog(self)
+        dialog.exec()
+
     def _toggle_sidebar(self):
-        self.sidebar_collapsed = not self.sidebar_collapsed
-        
-        width = 72 if self.sidebar_collapsed else 240
-        
-        # Animate width
-        self.anim = QPropertyAnimation(self.sidebar, b"minimumWidth")
-        self.anim.setDuration(300)
-        self.anim.setStartValue(self.sidebar.width())
-        self.anim.setEndValue(width)
-        self.anim.setEasingCurve(QEasingCurve.Type.InOutQuart)
-        
-        self.anim2 = QPropertyAnimation(self.sidebar, b"maximumWidth")
-        self.anim2.setDuration(300)
-        self.anim2.setStartValue(self.sidebar.width())
-        self.anim2.setEndValue(width)
-        
-        self.anim_group = QParallelAnimationGroup()
-        self.anim_group.addAnimation(self.anim)
-        self.anim_group.addAnimation(self.anim2)
-        self.anim_group.start()
-        
-        # Update Icon
-        icon = SVG_CHEVRON_RIGHT if self.sidebar_collapsed else SVG_CHEVRON_LEFT
+        self._sidebar_auto_collapsed = False
+        self._set_sidebar_collapsed(not self.sidebar_collapsed, animated=True)
+
+    def _set_sidebar_collapsed(self, collapsed: bool, animated: bool = True):
+        if self.sidebar_collapsed == collapsed and animated:
+            return
+
+        self.sidebar_collapsed = collapsed
+        width = 72 if collapsed else 240
+
+        if animated:
+            self.anim = QPropertyAnimation(self.sidebar, b"minimumWidth")
+            self.anim.setDuration(300)
+            self.anim.setStartValue(self.sidebar.width())
+            self.anim.setEndValue(width)
+            self.anim.setEasingCurve(QEasingCurve.Type.InOutQuart)
+
+            self.anim2 = QPropertyAnimation(self.sidebar, b"maximumWidth")
+            self.anim2.setDuration(300)
+            self.anim2.setStartValue(self.sidebar.width())
+            self.anim2.setEndValue(width)
+
+            self.anim_group = QParallelAnimationGroup()
+            self.anim_group.addAnimation(self.anim)
+            self.anim_group.addAnimation(self.anim2)
+            self.anim_group.start()
+        else:
+            self.sidebar.setMinimumWidth(width)
+            self.sidebar.setMaximumWidth(width)
+
+        icon = SVG_CHEVRON_RIGHT if collapsed else SVG_CHEVRON_LEFT
         self.toggle_btn.setIcon(get_icon(icon, "#8aadf4"))
         
         # Update Text Visibility
         self.title_label.setVisible(not self.sidebar_collapsed)
         
         for btn in self.nav_group.buttons():
-            if self.sidebar_collapsed:
-                btn.setText("") # Icon only
+            if collapsed:
+                btn.setText("")
                 btn.setToolTip(btn.property("full_text"))
             else:
                 btn.setText("  " + btn.property("full_text"))
                 btn.setToolTip("")
 
-        if not self.sidebar_collapsed:
-            # Dynamic text for Theme based on current mode
+        if not collapsed:
             try:
                 current_mode = self._theme_manager.get_theme()
                 self.btn_theme.setText("Theme: Light" if current_mode == "light" else "Theme: Dark")
             except:
                 self.btn_theme.setText("Toggle Theme")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        width = event.size().width()
+        if width < 1180 and not self.sidebar_collapsed:
+            self._sidebar_auto_collapsed = True
+            self._set_sidebar_collapsed(True, animated=False)
+        elif width >= 1280 and self._sidebar_auto_collapsed and self.sidebar_collapsed:
+            self._sidebar_auto_collapsed = False
+            self._set_sidebar_collapsed(False, animated=False)
 
     def _on_nav_clicked(self, btn):
         index = btn.property("page_index")
@@ -363,6 +386,7 @@ class ModernMainWindow(QMainWindow):
 
         # Keep tab state fresh when navigating
         self.stack.currentChanged.connect(self._on_page_changed)
+        self.help_tab.open_accessibility_requested.connect(self._show_accessibility_statement)
 
     def _on_live_result(self, payload: dict):
         """Pass real-time structured results directly into the dashboard table."""
@@ -581,6 +605,14 @@ class ModernMainWindow(QMainWindow):
                 app.setStyleSheet(qss)
             else:
                 self.setStyleSheet(qss)
+
+            # Notify tabs that use inline theme-specific styles
+            try:
+                colors = CATPPUCCIN_LIGHT if mode == "light" else CATPPUCCIN_DARK
+                if hasattr(self, "help_tab"):
+                    self.help_tab.refresh_theme(colors)
+            except Exception:
+                pass
 
             # Persist selection
             try:

@@ -105,6 +105,7 @@ class HarvestOrchestrator:
         self.progress_cb = progress_cb
         self.cancel_check = cancel_check
         self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
+        self.both_stop_policy = self._normalize_both_stop_policy(both_stop_policy)
         self.stop_rule = stop_rule
         self.max_workers = max(1, int(max_workers))
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
@@ -385,6 +386,7 @@ class HarvestOrchestrator:
 
                 if should_stop:
                     break
+                continue
 
             # failure from this target; continue
             last_error = result.error or "Unknown error"
@@ -416,6 +418,7 @@ class HarvestOrchestrator:
                 },
             )
 
+            rec = None
             if not dry_run:
                 rec = MainRecord(
                     isbn=isbn,
@@ -423,9 +426,8 @@ class HarvestOrchestrator:
                     nlmcn=best_nlmcn,
                     source=best_source,
                 )
-                pending_main.append(rec)
 
-            return "success"
+            return ProcessOutcome("success", rec, tuple())
 
         if skipped_retry_targets and not not_found_targets and not other_errors:
             self._emit(

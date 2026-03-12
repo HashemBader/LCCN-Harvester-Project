@@ -138,7 +138,7 @@ class InputTab(QWidget):
         drop_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_text.setStyleSheet("font-size: 14px; font-weight: bold; border: none; background: transparent;")
 
-        drop_hint = QLabel("Supports: .tsv, .txt, .csv files")
+        drop_hint = QLabel("Supports: .tsv, .txt, .csv, and Excel (.xlsx/.xls)")
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_hint.setStyleSheet("font-size: 11px; border: none; background: transparent;")
 
@@ -214,7 +214,7 @@ class InputTab(QWidget):
             self,
             "Select ISBN Input File",
             "",
-            "All Files (*.*);;TSV Files (*.tsv);;Text Files (*.txt);;CSV Files (*.csv)"
+            "All Files (*.*);;Excel Files (*.xlsx *.xls);;TSV Files (*.tsv);;Text Files (*.txt);;CSV Files (*.csv)"
         )
 
         if file_path:

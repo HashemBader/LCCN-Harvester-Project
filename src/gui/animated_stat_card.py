@@ -203,9 +203,8 @@ class CircularProgress(QWidget):
         if self._max_value > 0:
             percent = int((self._value / self._max_value) * 100)
             painter.setPen(QColor(50, 50, 50))
-            painter.setFont(painter.font())
             font = painter.font()
-            font.setPointSize(24)
+            font.setPixelSize(24)  # Use PixelSize instead of PointSize to fix DPI issues
             font.setBold(True)
             painter.setFont(font)
             painter.drawText(0, 0, width, height, Qt.AlignmentFlag.AlignCenter, f"{percent}%")

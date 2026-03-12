@@ -16,6 +16,22 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import DatabaseManager
+from .styles_v2 import CATPPUCCIN_THEME
+
+
+def _write_excel_autofit(df, path: str) -> None:
+    """Write a DataFrame to Excel with auto-fitted column widths."""
+    import pandas as pd
+    with pd.ExcelWriter(path, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+        ws = writer.sheets['Sheet1']
+        for col in ws.columns:
+            max_len = max(
+                (len(str(cell.value)) for cell in col if cell.value is not None),
+                default=0
+            )
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 80)
+
 
 class ResultsTabV2(QWidget):
     def __init__(self):
@@ -26,8 +42,9 @@ class ResultsTabV2(QWidget):
         self._load_all_results()
 
     def _setup_ui(self):
+        self.setMinimumWidth(700)
         layout = QVBoxLayout(self)
-        layout.setSpacing(20) # Spacious V2 layout
+        layout.setSpacing(20)
         layout.setContentsMargins(20, 20, 20, 20)
 
         # =========================================================================
@@ -104,6 +121,11 @@ class ResultsTabV2(QWidget):
         self.btn_export_csv.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_export_csv.clicked.connect(lambda: self._export_results("csv"))
         
+        self.btn_export_excel = QPushButton("Export Excel")
+        self.btn_export_excel.setProperty("class", "SecondaryButton")
+        self.btn_export_excel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_excel.clicked.connect(lambda: self._export_results("xlsx"))
+        
         # Assemble Controls
         controls_layout.addLayout(filter_layout)
         controls_layout.addWidget(self._create_divider())
@@ -111,6 +133,7 @@ class ResultsTabV2(QWidget):
         controls_layout.addWidget(self._create_divider())
         controls_layout.addWidget(self.btn_export_tsv)
         controls_layout.addWidget(self.btn_export_csv)
+        controls_layout.addWidget(self.btn_export_excel)
 
         layout.addWidget(controls_frame)
 
@@ -333,11 +356,16 @@ class ResultsTabV2(QWidget):
 
             rows = [list(row) for row in rows_raw]
 
-            delimiter = '\t' if format_type == 'tsv' else ','
-            with open(path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f, delimiter=delimiter)
-                writer.writerow(headers)
-                writer.writerows(rows)
+            if format_type == "xlsx":
+                import pandas as pd
+                df = pd.DataFrame(rows, columns=headers)
+                _write_excel_autofit(df, str(path))
+            else:
+                delimiter = '\t' if format_type == 'tsv' else ','
+                with open(path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f, delimiter=delimiter)
+                    writer.writerow(headers)
+                    writer.writerows(rows)
                 
             QMessageBox.information(self, "Export Successful", f"Exported {len(rows)} records to {path}")
             

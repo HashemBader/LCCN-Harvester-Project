@@ -5,7 +5,8 @@ V2 Configuration Tab with modern borderless design and clean form layout.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QComboBox,
-    QSpinBox, QMessageBox, QDialog, QDialogButtonBox, QLineEdit
+    QSpinBox, QMessageBox, QDialog, QDialogButtonBox, QLineEdit,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from pathlib import Path
@@ -176,7 +177,18 @@ class ConfigTabV2(QWidget):
         self.refresh_targets_preview()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scr_content = QWidget()
+        _scr_content.setMinimumWidth(600)
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+        layout = QVBoxLayout(_scr_content)
         layout.setSpacing(20)
         layout.setContentsMargins(20, 20, 20, 20)
 

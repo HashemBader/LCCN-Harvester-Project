@@ -47,46 +47,95 @@ class RunStats:
     skipped: int = 0
 
 def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
-    """Parse a TSV/CSV/TXT file and return structured statistics and deduplicated ISBNs."""
+    """Parse a TSV/CSV/TXT or Excel file and return structured statistics and deduplicated ISBNs."""
     valid_isbns: list[str] = []
     invalid_isbns: list[str] = []
     seen = set()
     total_nonempty = 0
     valid_count = 0
 
-    with input_path.open("r", encoding="utf-8-sig", newline="") as f:
-        delimiter = "," if input_path.suffix.lower() == ".csv" else "\t"
-        reader = csv.reader(f, delimiter=delimiter)
-        first_data_row_seen = False
+    suffix = input_path.suffix.lower()
 
-        for i, row in enumerate(reader, start=1):
-            if max_lines and i > max_lines:
-                break
+    if suffix in {".xlsx", ".xls"}:
+        try:
+            import pandas as pd
+            # Read first sheet, no headers assumed to get raw data
+            df = pd.read_excel(input_path, header=None, engine='openpyxl' if suffix == '.xlsx' else None)
+            first_data_row_seen = False
 
-            # Check if entirely empty
-            if not row or not "".join(row).strip():
-                continue
-            total_nonempty += 1
+            for i, row in df.iterrows():
+                if max_lines and i >= max_lines:
+                    break
+                
+                # Check entirely empty row
+                if row.isna().all():
+                    continue
 
-            raw_isbn = row[0].strip() if row else ""
-            if not raw_isbn or raw_isbn.startswith("#"):
-                continue
+                total_nonempty += 1
+                
+                # Assume first column contains ISBN
+                raw_val = row.iloc[0]
+                raw_isbn = str(raw_val).strip() if pd.notna(raw_val) else ""
+                
+                if not raw_isbn or raw_isbn.startswith("#"):
+                    continue
 
-            # Header skip
-            if not first_data_row_seen and raw_isbn.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
+                if not first_data_row_seen and raw_isbn.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
+                    first_data_row_seen = True
+                    continue
+
                 first_data_row_seen = True
-                continue
+                
+                # Remove '.0' if pandas parsed it as a float
+                if raw_isbn.endswith(".0"):
+                    raw_isbn = raw_isbn[:-2]
 
-            first_data_row_seen = True
-            normalized = isbn_validator.normalize_isbn(raw_isbn)
+                normalized = isbn_validator.normalize_isbn(raw_isbn)
 
-            if normalized:
-                valid_count += 1
-                if normalized not in seen:
-                    seen.add(normalized)
-                    valid_isbns.append(normalized)
-            else:
-                invalid_isbns.append(raw_isbn)
+                if normalized:
+                    valid_count += 1
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        valid_isbns.append(normalized)
+                else:
+                    invalid_isbns.append(raw_isbn)
+        except Exception as e:
+            logger.error(f"Failed parsing Excel file: {e}")
+
+    else:
+        with input_path.open("r", encoding="utf-8-sig", newline="") as f:
+            delimiter = "," if suffix == ".csv" else "\t"
+            reader = csv.reader(f, delimiter=delimiter)
+            first_data_row_seen = False
+
+            for i, row in enumerate(reader, start=1):
+                if max_lines and i > max_lines:
+                    break
+
+                # Check if entirely empty
+                if not row or not "".join(row).strip():
+                    continue
+                total_nonempty += 1
+
+                raw_isbn = row[0].strip() if row else ""
+                if not raw_isbn or raw_isbn.startswith("#"):
+                    continue
+
+                # Header skip
+                if not first_data_row_seen and raw_isbn.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
+                    first_data_row_seen = True
+                    continue
+
+                first_data_row_seen = True
+                normalized = isbn_validator.normalize_isbn(raw_isbn)
+
+                if normalized:
+                    valid_count += 1
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        valid_isbns.append(normalized)
+                else:
+                    invalid_isbns.append(raw_isbn)
 
     return ParsedISBNFile(
         unique_valid=valid_isbns,
@@ -111,6 +160,7 @@ def run_harvest(
     max_workers: int = 1,
     call_number_mode: str = "both",
     stop_rule: str = "stop_either",
+    both_stop_policy: str = "both",
     include_z3950: bool = False,
 ) -> HarvestSummary:
 
@@ -140,6 +190,7 @@ def run_harvest(
         max_workers=max_workers,
         call_number_mode=call_number_mode,
         stop_rule=stop_rule,
+        both_stop_policy=both_stop_policy,
     )
 
     orch_summary = orch.run(isbns, dry_run=dry_run)

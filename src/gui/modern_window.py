@@ -191,6 +191,13 @@ class ModernMainWindow(QMainWindow):
         self.stack.addWidget(self.help_tab)              # 4
 
         content_layout.addWidget(self.stack)
+
+        # Status pill — a small label at the bottom of the content area
+        self.status_pill = QLabel("Idle")
+        self.status_pill.setObjectName("StatusPill")
+        self.status_pill.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        content_layout.addWidget(self.status_pill)
+
         main_layout.addWidget(content_container)
 
         # --- Wire Up V2 Data Flow ---
@@ -524,7 +531,7 @@ class ModernMainWindow(QMainWindow):
             outcome = "Failed"
 
         # Update "Last Run" with a real timestamp
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.dashboard_tab.last_run_text = f"Last Run: {ts} – {outcome}"
         self.dashboard_tab.lbl_last_run.setText(self.dashboard_tab.last_run_text)
 

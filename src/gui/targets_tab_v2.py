@@ -435,7 +435,7 @@ class TargetsTabV2(QWidget):
 
         self.search_clear_btn = QToolButton()
         self.search_clear_btn.setText("×")
-        self.search_clear_btn.setFixedSize(28, 28)
+        self.search_clear_btn.setMinimumSize(24, 24)
         self.search_clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.search_clear_btn.setToolTip("Clear search")
         self.search_clear_btn.hide()
@@ -462,15 +462,11 @@ class TargetsTabV2(QWidget):
             ["Rank", "Active", "Target Name", "Host / IP", "Port", "Database", "Edit", "Server"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 120)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(1, 90)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(6, 60)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(7, 110)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(52)
         self.table.setShowGrid(False)
@@ -574,7 +570,7 @@ class TargetsTabV2(QWidget):
 
         for row, target in enumerate(targets):
             rank_combo = QComboBox()
-            rank_combo.setFixedHeight(36)
+            rank_combo.setMinimumHeight(32)
             rank_combo.setObjectName("RankCombo")
             for i in range(1, len(targets) + 1):
                 rank_combo.addItem(str(i), i)
@@ -595,10 +591,10 @@ class TargetsTabV2(QWidget):
 
             # Active toggle
             active_btn = QPushButton()
-            active_btn.setFixedHeight(36)
+            active_btn.setMinimumHeight(32)
             active_btn.setMinimumWidth(50)
             active_btn.setMaximumWidth(90)
-            active_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            active_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             active_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             active_btn.setObjectName("ActiveToggle")
@@ -633,8 +629,8 @@ class TargetsTabV2(QWidget):
 
             # Edit button (pencil icon)
             edit_btn = QPushButton()
-            edit_btn.setFixedHeight(36)
-            edit_btn.setFixedWidth(40)
+            edit_btn.setMinimumHeight(32)
+            edit_btn.setMinimumWidth(36)
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             edit_btn.setToolTip("Edit target")
@@ -647,7 +643,7 @@ class TargetsTabV2(QWidget):
 
             # Server status indicator
             server_btn = QPushButton()
-            server_btn.setFixedHeight(36)
+            server_btn.setMinimumHeight(32)
             server_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             server_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
             server_btn.setProperty("class", "StatusIndicator")

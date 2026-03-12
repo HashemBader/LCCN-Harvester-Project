@@ -115,6 +115,8 @@ class Z3950Client:
         """
         # Lazy import
         from pymarc import Record  # type: ignore
+        import logging
+        logging.getLogger('pymarc').setLevel(logging.CRITICAL)
         
         records = []
         try:
@@ -130,7 +132,7 @@ class Z3950Client:
                    # MARCReader expects a stream, but we can just parse the bytes directly if it's one record
                    # Or use Record(data=raw_data)
                    try:
-                       record = Record(data=raw_data)
+                       record = Record(data=raw_data, force_utf8=True, utf8_handling='replace')
                        records.append(record)
                    except Exception as parse_error:
                        self.logger.warning(f"Failed to parse MARC record: {parse_error}")

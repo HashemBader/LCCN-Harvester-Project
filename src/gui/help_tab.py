@@ -7,7 +7,7 @@ import sys
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFrame, QPushButton, QSizePolicy,
+    QFrame, QPushButton, QSizePolicy, QScrollArea,
 )
 
 from .icons import get_pixmap, SVG_RESULTS, SVG_SETTINGS, SVG_CHECK_CIRCLE, SVG_ACTIVITY
@@ -141,7 +141,19 @@ class HelpTab(QWidget):
     # Root layout
     # ──────────────────────────────────────────────────────────────────
     def _setup_ui(self) -> None:
-        root = QVBoxLayout(self)
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _scr_content = QWidget()
+        _scr_content.setMinimumWidth(620)
+        _scroll.setWidget(_scr_content)
+        _outer.addWidget(_scroll)
+
+        root = QVBoxLayout(_scr_content)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(14)
 
@@ -153,7 +165,7 @@ class HelpTab(QWidget):
         body.addWidget(self._build_shortcuts_panel(), 3)
         body.addWidget(self._build_right_panel(), 2)
 
-        root.addLayout(body, 1)   # stretch=1 → consumes all remaining height
+        root.addLayout(body, 1)
 
     # ──────────────────────────────────────────────────────────────────
     # Header

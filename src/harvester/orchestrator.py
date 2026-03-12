@@ -427,7 +427,7 @@ class HarvestOrchestrator:
                     source=best_source,
                 )
 
-            return ProcessOutcome("success", rec, tuple())
+            return ProcessOutcome("success", rec, tuple(attempted_rows))
 
         if skipped_retry_targets and not not_found_targets and not other_errors:
             self._emit(

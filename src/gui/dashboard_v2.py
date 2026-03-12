@@ -19,6 +19,20 @@ from .icons import (
 )
 
 
+def _write_excel_autofit(df, path: str) -> None:
+    """Write a DataFrame to Excel with auto-fitted column widths."""
+    import pandas as pd
+    with pd.ExcelWriter(path, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+        ws = writer.sheets['Sheet1']
+        for col in ws.columns:
+            max_len = max(
+                (len(str(cell.value)) for cell in col if cell.value is not None),
+                default=0
+            )
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 80)
+
+
 def _safe_filename(s: str) -> str:
     cleaned = "".join("_" if c in '\\/:*?"<>| ' else c for c in (s or "").strip())
     cleaned = cleaned.strip("_")
@@ -333,7 +347,7 @@ class DashboardTabV2(QWidget):
         self.btn_open_profile_folder = QPushButton()
         self.btn_open_profile_folder.setIcon(get_icon(SVG_FOLDER_OPEN, "#f4c542"))
         self.btn_open_profile_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_open_profile_folder.setFixedSize(42, 42)
+        self.btn_open_profile_folder.setMinimumSize(36, 36)
         self.btn_open_profile_folder.setToolTip("Open this profile's results folder")
         self.btn_open_profile_folder.setProperty("class", "IconButton")
         self.btn_open_profile_folder.clicked.connect(self._open_profile_folder)
@@ -439,7 +453,7 @@ class DashboardTabV2(QWidget):
             try:
                 import pandas as pd
                 df = pd.read_csv(str(path), sep='\t', dtype=str)
-                df.to_excel(str(target_path), index=False, engine='openpyxl')
+                _write_excel_autofit(df, str(target_path))
             except Exception as e:
                 QMessageBox.warning(self, "Excel Not Ready", f"Could not generate live Excel view:\n{e}")
                 return
@@ -561,7 +575,7 @@ class DashboardTabV2(QWidget):
         self._render_session_stats()
 
     def _append_recent_result(self, isbn: str, status: str, detail: str):
-        status_label = "Successful" if status in ("found", "cached") else "Failed"
+        status_label = "Successful" if status.lower() in ("found", "cached", "successful") else "Failed"
         self.session_recent.insert(
             0,
             {

@@ -158,6 +158,7 @@ class AIAssistantTab(QWidget):
         _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         _scr_content = QWidget()
+        _scr_content.setMinimumWidth(560)
         _scroll.setWidget(_scr_content)
         _outer.addWidget(_scroll)
         layout = QVBoxLayout(_scr_content)

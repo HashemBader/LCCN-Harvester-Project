@@ -524,7 +524,7 @@ class ModernMainWindow(QMainWindow):
             outcome = "Failed"
 
         # Update "Last Run" with a real timestamp
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.dashboard_tab.last_run_text = f"Last Run: {ts} – {outcome}"
         self.dashboard_tab.lbl_last_run.setText(self.dashboard_tab.last_run_text)
 

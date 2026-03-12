@@ -16,6 +16,22 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import DatabaseManager
+from .styles_v2 import CATPPUCCIN_THEME
+
+
+def _write_excel_autofit(df, path: str) -> None:
+    """Write a DataFrame to Excel with auto-fitted column widths."""
+    import pandas as pd
+    with pd.ExcelWriter(path, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+        ws = writer.sheets['Sheet1']
+        for col in ws.columns:
+            max_len = max(
+                (len(str(cell.value)) for cell in col if cell.value is not None),
+                default=0
+            )
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 80)
+
 
 class ResultsTabV2(QWidget):
     def __init__(self):
@@ -26,8 +42,9 @@ class ResultsTabV2(QWidget):
         self._load_all_results()
 
     def _setup_ui(self):
+        self.setMinimumWidth(700)
         layout = QVBoxLayout(self)
-        layout.setSpacing(20) # Spacious V2 layout
+        layout.setSpacing(20)
         layout.setContentsMargins(20, 20, 20, 20)
 
         # =========================================================================
@@ -342,7 +359,7 @@ class ResultsTabV2(QWidget):
             if format_type == "xlsx":
                 import pandas as pd
                 df = pd.DataFrame(rows, columns=headers)
-                df.to_excel(path, index=False, engine='openpyxl')
+                _write_excel_autofit(df, str(path))
             else:
                 delimiter = '\t' if format_type == 'tsv' else ','
                 with open(path, 'w', newline='', encoding='utf-8') as f:

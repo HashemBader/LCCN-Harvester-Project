@@ -77,8 +77,8 @@ def test_search_by_isbn_success(mock_zoom_connection, mock_record):
     # We assume it's the right object type
     
     assert len(results) == 1
-    # Verify Record was called
-    mock_record.assert_called_with(data=b'some_bytes')
+    # Verify Record was called with UTF-8 safety flags
+    mock_record.assert_called_with(data=b'some_bytes', force_utf8=True, utf8_handling='replace')
     # Verify result is the mock instance return by mock_record class
     assert results[0] == mock_record.return_value
 
@@ -100,9 +100,9 @@ def test_search_handles_string_data(mock_zoom_connection, mock_record):
     results = client.search_by_isbn("12345")
     
     assert len(results) == 1
-    # Should have been encoded to bytes passed to Record
-    mock_record.assert_called_with(data=b'some_string')
-    
+    # Should have been encoded to bytes passed to Record with UTF-8 safety flags
+    mock_record.assert_called_with(data=b'some_string', force_utf8=True, utf8_handling='replace')
+
 def test_close(mock_zoom_connection):
     _, mock_conn_instance = mock_zoom_connection
     

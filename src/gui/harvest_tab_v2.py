@@ -866,6 +866,7 @@ class HarvestTabV2(QWidget):
 
         self._setup_ui()
         self._setup_shortcuts()
+        self._update_scrollbar_policy()
 
     def set_data_sources(self, config_getter, targets_getter, profile_getter=None, db_path_getter=None):
         """Set callbacks to retrieve config, targets, active profile name, and db path."""
@@ -892,22 +893,22 @@ class HarvestTabV2(QWidget):
         _outer.setContentsMargins(0, 0, 0, 0)
         _outer.setSpacing(0)
 
-        _scroll = QScrollArea()
-        _scroll.setWidgetResizable(True)
-        _scroll.setFrameShape(QFrame.Shape.NoFrame)
-        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         _scr_content = QWidget()
         _scr_content.setMinimumWidth(780)   # never compress below this
-        _scroll.setWidget(_scr_content)
-        _outer.addWidget(_scroll)
+        self._scroll.setWidget(_scr_content)
+        _outer.addWidget(self._scroll)
 
         # All content goes into this inner layout
         layout = QVBoxLayout(_scr_content)
-        layout.setSpacing(16)
-        layout.setContentsMargins(30, 24, 30, 24)
+        layout.setSpacing(10)
+        layout.setContentsMargins(24, 16, 24, 16)
 
         # ── 1. Header ──────────────────────────────────────────────────────────
         header_layout = QHBoxLayout()
@@ -927,9 +928,8 @@ class HarvestTabV2(QWidget):
         self.banner_frame = QFrame()
         self.banner_frame.setObjectName("HarvestBanner")
         self.banner_frame.setProperty("class", "Card")
-        self.banner_frame.setMinimumHeight(48)
         banner_layout = QHBoxLayout(self.banner_frame)
-        banner_layout.setContentsMargins(16, 12, 16, 12)
+        banner_layout.setContentsMargins(16, 8, 16, 8)
         self.lbl_banner_title = QLabel("READY")
         self.lbl_banner_title.setProperty("class", "CardTitle")
         self.lbl_banner_stats = QLabel("")
@@ -945,8 +945,8 @@ class HarvestTabV2(QWidget):
         self.input_card = DroppableGroupBox("Run Setup")
         self.input_card.file_dropped.connect(self.set_input_file)
         input_layout = QVBoxLayout(self.input_card)
-        input_layout.setContentsMargins(16, 16, 16, 16)
-        input_layout.setSpacing(12)
+        input_layout.setContentsMargins(16, 12, 16, 12)
+        input_layout.setSpacing(8)
 
         # File input row
         setup_grid = QGridLayout()
@@ -1077,8 +1077,8 @@ class HarvestTabV2(QWidget):
         # Prevent the preview from expanding vertically to fill leftover space
         preview_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         preview_frame_layout = QVBoxLayout(preview_frame)
-        preview_frame_layout.setContentsMargins(12, 10, 12, 10)
-        preview_frame_layout.setSpacing(8)
+        preview_frame_layout.setContentsMargins(12, 8, 12, 8)
+        preview_frame_layout.setSpacing(6)
 
         # Toolbar row: title + filename + copy button
         preview_toolbar = QHBoxLayout()
@@ -1111,7 +1111,8 @@ class HarvestTabV2(QWidget):
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setProperty("class", "TerminalViewport")
-        self.preview_text.setFixedHeight(130)
+        self.preview_text.setMinimumHeight(60)
+        self.preview_text.setMaximumHeight(130)
         self.preview_text.setStyleSheet("font-size: 13px; font-family: 'Consolas', monospace;")
         preview_frame_layout.addWidget(self.preview_text)
         layout.addWidget(preview_frame)
@@ -1140,7 +1141,7 @@ class HarvestTabV2(QWidget):
             }
         """)
         action_layout = QHBoxLayout(action_frame)
-        action_layout.setContentsMargins(20, 14, 20, 14)
+        action_layout.setContentsMargins(20, 10, 20, 10)
         action_layout.setSpacing(0)
 
         # ── Left: progress + status info ────────────────────────────────────
@@ -1396,6 +1397,24 @@ class HarvestTabV2(QWidget):
         QShortcut(QKeySequence(f"{mod}+O"), self, activated=self._browse_file)
         QShortcut(QKeySequence(f"{mod}+Return"), self, activated=self._on_start_clicked)
         QShortcut(QKeySequence(f"{mod}+."), self, activated=self._stop_harvest)
+
+    def _update_scrollbar_policy(self):
+        """Hide vertical scrollbar when the window is maximized/fullscreen."""
+        win = self.window()
+        if win and (win.isMaximized() or win.isFullScreen()):
+            policy = Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        else:
+            policy = Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        self._scroll.setVerticalScrollBarPolicy(policy)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scrollbar_policy()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == event.Type.WindowStateChange:
+            self._update_scrollbar_policy()
 
     def set_input_file(self, path):
         if not path:

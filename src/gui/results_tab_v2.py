@@ -16,6 +16,7 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import DatabaseManager
+from .combo_boxes import ConsistentComboBox
 from .styles_v2 import CATPPUCCIN_THEME
 
 
@@ -86,11 +87,10 @@ class ResultsTabV2(QWidget):
 
         # --- Filter Group ---
         filter_layout = QHBoxLayout()
-        self.table_selector = QComboBox()
+        self.table_selector = ConsistentComboBox()
         self.table_selector.addItems(["Main Results (Successful)", "Failed Attempts"])
         self.table_selector.currentIndexChanged.connect(self._on_table_changed)
         self.table_selector.setMinimumWidth(220)
-        self.table_selector.setProperty("class", "ComboBox") # Ensure style applies
         filter_layout.addWidget(QLabel("View:"))
         filter_layout.addWidget(self.table_selector)
         

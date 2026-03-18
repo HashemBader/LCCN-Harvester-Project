@@ -74,6 +74,19 @@ class ProfileManager:
         """
         return self.app_root / "data" / self._profile_slug(name)
 
+    def get_db_path(self, name: str) -> Path:
+        """Return the profile-specific SQLite database path.
+
+        Default Settings keeps the legacy root path for backward compatibility.
+        All other profiles use ``data/<slug>/lccn_harvester.sqlite3`` so their
+        results are fully isolated from every other profile.
+        """
+        if name == "Default Settings":
+            return self.app_root / "data" / "lccn_harvester.sqlite3"
+        data_dir = self.get_profile_data_dir(name)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir / "lccn_harvester.sqlite3"
+
     def get_targets_file(self, name: str) -> Path:
         """Return the Path to the targets TSV file for the given profile.
 

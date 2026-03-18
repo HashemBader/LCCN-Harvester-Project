@@ -206,6 +206,9 @@ class ModernMainWindow(QMainWindow):
             config_getter=self.config_tab.get_config,
             targets_getter=self.targets_tab.get_targets,
             profile_getter=self._profile_manager.get_active_profile,
+            db_path_getter=lambda: self._profile_manager.get_db_path(
+                self._profile_manager.get_active_profile()
+            ),
         )
 
         self._connect_signals()
@@ -486,6 +489,7 @@ class ModernMainWindow(QMainWindow):
         self._profile_manager.set_active_profile(profile_name)
         self._refresh_dashboard_profile_controls()
         self._refresh_targets_profile_controls()
+        self.harvest_tab.reset_for_profile_switch()
         self.dashboard_tab.refresh_data()
 
     def _on_page_changed(self, index):

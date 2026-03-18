@@ -326,8 +326,43 @@ QComboBox QAbstractItemView {{
     background-color: {t['bg']};
     border: 1px solid {t['border']};
     selection-background-color: {t['hover']};
-    selection-color: {t['focus']};
-    border-radius: 4px;
+    selection-color: {t['text']};
+    border-radius: 8px;
+    outline: none;
+    padding: 6px;
+}}
+QComboBox QAbstractItemView::item {{
+    min-height: 24px;
+    padding: 8px 12px;
+    margin: 2px 0;
+    border-radius: 8px;
+    color: {t['text']};
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {t['hover']};
+    color: {t['text']};
+}}
+QComboBox#ResultFormatCombo {{
+    min-width: 168px;
+    padding: 10px 38px 10px 14px;
+}}
+QComboBox#ResultFormatCombo QAbstractItemView {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border_strong']};
+    border-radius: 12px;
+    padding: 6px;
+    outline: none;
+}}
+QComboBox#ResultFormatCombo QAbstractItemView::item {{
+    min-height: 24px;
+    padding: 8px 12px;
+    margin: 2px 0;
+    border-radius: 8px;
+    color: {t['text']};
+}}
+QComboBox#ResultFormatCombo QAbstractItemView::item:selected {{
+    background-color: {t['hover']};
+    color: {t['text']};
 }}
 QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -349,7 +384,9 @@ QComboBox::down-arrow:on, QComboBox::down-arrow:hover, QComboBox::down-arrow:foc
 
 /* Rank column combo — tighter vertical padding so the number isn't clipped */
 QComboBox#RankCombo {{
-    padding: 4px 32px 4px 8px;
+    padding: 4px 24px 4px 8px;
+    min-width: 52px;
+    max-width: 64px;
 }}
 
 /* Clean up QSpinBox arrows to avoid dark system patches */
@@ -841,27 +878,33 @@ QPushButton#ActiveToggle[state="inactive"]:hover {{
 
 QPushButton[class="StatusIndicator"][state="online"] {{
     background-color: {t['success']};
-    border: none;
+    border: 1px solid {t['success']};
     border-radius: 6px;
     font-weight: bold;
-    font-size: 11px;
-    color: white;
+    font-size: 12px;
+    color: #ffffff;
+    min-width: 92px;
+    padding: 0 12px;
 }}
 QPushButton[class="StatusIndicator"][state="offline"] {{
     background-color: {t['danger']};
-    border: none;
+    border: 1px solid {t['danger']};
     border-radius: 6px;
     font-weight: bold;
-    font-size: 11px;
-    color: white;
+    font-size: 12px;
+    color: #ffffff;
+    min-width: 92px;
+    padding: 0 12px;
 }}
 QPushButton[class="StatusIndicator"][state="unknown"] {{
-    background-color: {t['surface2']};
-    border: none;
+    background-color: {hex_to_rgba(t['border_strong'], 0.16)};
+    border: 1px solid {t['border_strong']};
     border-radius: 6px;
     font-weight: bold;
-    font-size: 11px;
-    color: {t['text_muted']};
+    font-size: 12px;
+    color: {t['text']};
+    min-width: 92px;
+    padding: 0 12px;
 }}
 /* --- Shortcuts Dialog --- */
 QFrame[class="ShortcutItem"] {{

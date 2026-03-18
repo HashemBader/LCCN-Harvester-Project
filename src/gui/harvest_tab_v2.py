@@ -38,6 +38,7 @@ import re
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.isbn_validator import normalize_isbn
 
+from .combo_boxes import ConsistentComboBox
 from .icons import SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
 from .input_tab import ClickableDropZone
 
@@ -96,10 +97,12 @@ class HarvestWorkerV2(QThread):
         advanced_settings=None,
         bypass_retry_isbns=None,
         live_paths=None,
+        db_path="data/lccn_harvester.sqlite3",
     ):
         super().__init__()
         self.input_file = input_file
         self.config = config
+        self.db_path = db_path
         self.targets = targets
         self.advanced_settings = advanced_settings or {}
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
@@ -318,7 +321,7 @@ class HarvestWorkerV2(QThread):
             summary = run_harvest(
                 input_path=Path(self.input_file),
                 dry_run=False,
-                db_path="data/lccn_harvester.sqlite3",
+                db_path=self.db_path,
                 retry_days=retry_days,
                 targets=targets,
                 bypass_retry_isbns=self.bypass_retry_isbns,
@@ -666,7 +669,7 @@ class HarvestWorkerV2(QThread):
             return
 
         try:
-            db = DatabaseManager("data/lccn_harvester.sqlite3")
+            db = DatabaseManager(self.db_path)
             with db.transaction() as conn:
                 for raw_isbn in invalid_list:
                     # Upsert into attempted with 'Invalid' error
@@ -831,6 +834,7 @@ class HarvestTabV2(QWidget):
         self._config_getter = None
         self._targets_getter = None
         self._profile_getter = None
+        self._db_path_getter = None
 
         self.processed_count = 0
         self.total_count = 0
@@ -839,11 +843,12 @@ class HarvestTabV2(QWidget):
         self._setup_ui()
         self._setup_shortcuts()
 
-    def set_data_sources(self, config_getter, targets_getter, profile_getter=None):
-        """Set callbacks to retrieve config, targets, and active profile name."""
+    def set_data_sources(self, config_getter, targets_getter, profile_getter=None, db_path_getter=None):
+        """Set callbacks to retrieve config, targets, active profile name, and db path."""
         self._config_getter = config_getter
         self._targets_getter = targets_getter
         self._profile_getter = profile_getter
+        self._db_path_getter = db_path_getter
 
     def on_targets_changed(self, targets):
         """Handle target selection changes from TargetsTab."""
@@ -866,8 +871,8 @@ class HarvestTabV2(QWidget):
         _scroll = QScrollArea()
         _scroll.setWidgetResizable(True)
         _scroll.setFrameShape(QFrame.Shape.NoFrame)
-        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         _scr_content = QWidget()
@@ -949,7 +954,7 @@ class HarvestTabV2(QWidget):
         # Run mode row
         lbl_run_mode = QLabel("Run Mode:")
         lbl_run_mode.setProperty("class", "HelperText")
-        self.combo_run_mode = QComboBox()
+        self.combo_run_mode = ConsistentComboBox()
         self.combo_run_mode.setProperty("class", "ComboBox")
         self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)"])
         self.combo_run_mode.setToolTip("Select the type of call numbers to harvest")
@@ -970,7 +975,7 @@ class HarvestTabV2(QWidget):
         # Stop rule row (conditionally visible)
         self.lbl_stop_rule = QLabel("Stop Rule:")
         self.lbl_stop_rule.setProperty("class", "HelperText")
-        self.combo_stop_rule = QComboBox()
+        self.combo_stop_rule = ConsistentComboBox()
         self.combo_stop_rule.setProperty("class", "ComboBox")
         self.combo_stop_rule.addItems([
             "Stop if either found", 
@@ -1509,6 +1514,15 @@ class HarvestTabV2(QWidget):
         except Exception as e:
             self.preview_text.setPlainText(f"Error reading file preview: {str(e)}")
 
+    def reset_for_profile_switch(self):
+        """Reset the harvest tab when the user switches profiles.
+
+        No-op while a harvest is actively running so we never disrupt live work.
+        """
+        if self.current_state == UIState.RUNNING:
+            return
+        self._clear_input()
+
     def _clear_input(self):
         """Reset input state."""
         self.input_file = None
@@ -1719,6 +1733,13 @@ class HarvestTabV2(QWidget):
         # Notify dashboard of new live file paths
         self.result_files_ready.emit(self._run_live_paths)
 
+        db_path = "data/lccn_harvester.sqlite3"
+        if self._db_path_getter:
+            try:
+                db_path = str(self._db_path_getter())
+            except Exception:
+                pass
+
         self.worker = HarvestWorkerV2(
             self.input_file,
             config,
@@ -1726,6 +1747,7 @@ class HarvestTabV2(QWidget):
             advanced_settings=self._load_advanced_settings(),
             bypass_retry_isbns=bypass_retry_isbns,
             live_paths=self._run_live_paths,
+            db_path=db_path,
         )
         self.worker.progress_update.connect(self._on_progress)
         self.worker.harvest_complete.connect(self._on_complete)
@@ -1811,7 +1833,12 @@ class HarvestTabV2(QWidget):
             return set()
 
         try:
-            db = DatabaseManager("data/lccn_harvester.sqlite3")
+            _db_path = (
+                str(self._db_path_getter())
+                if self._db_path_getter
+                else "data/lccn_harvester.sqlite3"
+            )
+            db = DatabaseManager(_db_path)
             db.init_db()
             recent = []
             for isbn in self._iter_normalized_input_isbns():

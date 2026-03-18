@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
 from utils.targets_manager import TargetsManager, Target
 from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
+from gui.combo_boxes import ConsistentComboBox
 from gui.theme_manager import ThemeManager
 
 
@@ -416,10 +417,9 @@ class TargetsTabV2(QWidget):
         profile_label = QLabel("Profile:")
         profile_label.setObjectName("FormLabel")
 
-        self.profile_combo = QComboBox()
+        self.profile_combo = ConsistentComboBox()
         self.profile_combo.setMinimumWidth(150)
         self.profile_combo.setMaximumWidth(220)
-        self.profile_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.profile_combo.installEventFilter(self)
         self.profile_combo.currentTextChanged.connect(self._on_profile_combo_changed)
 
@@ -569,7 +569,7 @@ class TargetsTabV2(QWidget):
         self.table.blockSignals(True)
 
         for row, target in enumerate(targets):
-            rank_combo = QComboBox()
+            rank_combo = ConsistentComboBox(max_visible_items=min(len(targets), 12) or 1)
             rank_combo.setMinimumHeight(32)
             rank_combo.setObjectName("RankCombo")
             for i in range(1, len(targets) + 1):
@@ -642,30 +642,42 @@ class TargetsTabV2(QWidget):
             self.table.setCellWidget(row, 6, edit_btn)
 
             # Server status indicator
-            server_btn = QPushButton()
+            is_online = self.server_status.get(target.target_id, None)
+
+            if is_online is None:
+                btn_text = "UNKNOWN"
+                btn_color = "#6b7280"  # grey
+            elif is_online:
+                btn_text = "ONLINE"
+                btn_color = "#16a34a"  # green
+            else:
+                btn_text = "OFFLINE"
+                btn_color = "#dc2626"  # red
+
+            server_btn = QPushButton(btn_text)
             server_btn.setMinimumHeight(32)
+            server_btn.setMinimumWidth(104)
             server_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             server_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
-            server_btn.setProperty("class", "StatusIndicator")
+            server_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {btn_color};
+                    color: #ffffff;
+                    border: none;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 12px;
+                    padding: 0 12px;
+                }}
+            """)
 
-            is_online = self.server_status.get(target.target_id, None)
-            
-            if is_online is None:
-                server_btn.setProperty("state", "unknown")
-                server_btn.setText("UNKNOWN")
-            elif is_online:
-                server_btn.setProperty("state", "online")
-                server_btn.setText("ONLINE")
-            else:
-                server_btn.setProperty("state", "offline")
-                server_btn.setText("OFFLINE")
-
-            server_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             server_container = QWidget()
+            server_container.setStyleSheet("background: transparent;")
             server_layout = QHBoxLayout(server_container)
             server_layout.setContentsMargins(4, 0, 4, 0)
             server_layout.setSpacing(0)
-            server_layout.addWidget(server_btn)
+            server_layout.addWidget(server_btn, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            server_layout.addStretch()
             self.table.setCellWidget(row, 7, server_container)
 
         self.table.blockSignals(False)
@@ -872,7 +884,5 @@ class TargetsTabV2(QWidget):
             name = name_item.text().lower() if name_item else ""
             visible = text in name
             self.table.setRowHidden(row, not visible)
-
-
 
 

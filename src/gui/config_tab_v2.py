@@ -15,6 +15,7 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.profile_manager import ProfileManager
+from .combo_boxes import ConsistentComboBox
 from .icons import get_pixmap, SVG_SETTINGS, SVG_HARVEST
 from .styles_v2 import CATPPUCCIN_THEME
 
@@ -78,7 +79,7 @@ class CreateProfileDialog(QDialog):
         mode_row = QHBoxLayout()
         mode_label = QLabel("Call Number Selection")
         mode_label.setStyleSheet("")
-        self.mode_combo = QComboBox()
+        self.mode_combo = ConsistentComboBox()
         self.mode_combo.setFixedWidth(180)
         self.mode_combo.addItem("LCCN only", "lccn")
         self.mode_combo.addItem("NLMCN only", "nlmcn")
@@ -89,32 +90,8 @@ class CreateProfileDialog(QDialog):
         mode_row.addWidget(mode_label)
         mode_row.addStretch()
         mode_row.addWidget(self.mode_combo)
-        mode_row.addWidget(self.mode_combo)
         settings_layout.addLayout(mode_row)
 
-        self.stop_rule_row = QHBoxLayout()
-        stop_rule_label = QLabel("Stop Rule")
-        stop_rule_label.setStyleSheet("")
-        self.stop_rule_combo = QComboBox()
-        self.stop_rule_combo.setFixedWidth(180)
-        self.stop_rule_combo.addItem("Stop if either found", "stop_either")
-        self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
-        self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")
-        self.stop_rule_combo.addItem("Continue until both found", "continue_both")
-        
-        initial_stop = self._initial_settings.get("stop_rule", "stop_either")
-        idx_stop = self.stop_rule_combo.findData(initial_stop)
-        self.stop_rule_combo.setCurrentIndex(idx_stop if idx_stop >= 0 else 0)
-        
-        self.stop_rule_row.addWidget(stop_rule_label)
-        self.stop_rule_row.addStretch()
-        self.stop_rule_row.addWidget(self.stop_rule_combo)
-        
-        # Only show stop rule if mode is 'both'
-        self._toggle_stop_rule_visibility()
-        self.mode_combo.currentTextChanged.connect(self._toggle_stop_rule_visibility)
-        
-        settings_layout.addLayout(self.stop_rule_row)
 
         layout.addWidget(settings_frame)
 
@@ -131,13 +108,6 @@ class CreateProfileDialog(QDialog):
         layout.addWidget(buttons)
 
         # Inherit app theme — no hardcoded colours
-
-    def _toggle_stop_rule_visibility(self):
-        is_both = self.mode_combo.currentData() == "both"
-        for i in range(self.stop_rule_row.count()):
-            widget = self.stop_rule_row.itemAt(i).widget()
-            if widget:
-                widget.setVisible(is_both)
 
     def _validate_and_accept(self):
         if not self.name_edit.text().strip():
@@ -157,7 +127,7 @@ class CreateProfileDialog(QDialog):
             "call_number_mode": mode,
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
-            "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
+            "stop_rule": "stop_either",
             "output_tsv": True,
             "output_invalid_isbn_file": True,
         }
@@ -214,9 +184,8 @@ class ConfigTabV2(QWidget):
         # Selector
         info_layout = QVBoxLayout()
         
-        self.profile_combo = QComboBox()
+        self.profile_combo = ConsistentComboBox()
         self.profile_combo.setMinimumWidth(300)
-        self.profile_combo.setProperty("class", "ComboBox")
         self.profile_combo.setAccessibleName("Active profile selector")
         self.profile_combo.setAccessibleDescription("Choose which saved profile is active.")
         self._refresh_profile_list()
@@ -306,7 +275,7 @@ class ConfigTabV2(QWidget):
         mode_lbl = QLabel("Call Number &Selection")
         mode_lbl.setStyleSheet("")
 
-        self.call_number_combo = QComboBox()
+        self.call_number_combo = ConsistentComboBox()
         self.call_number_combo.setFixedWidth(180)
         self.call_number_combo.setAccessibleName("Call number selection")
         self.call_number_combo.setAccessibleDescription("Choose whether to collect LCCN only, NLMCN only, or both.")
@@ -328,7 +297,7 @@ class ConfigTabV2(QWidget):
         # Stop Rule is shown in the Harvester tab, not here.
         # Keep a hidden widget so _load_profile / get_config / _save_current_profile
         # can still read/write the stop_rule setting without extra changes.
-        self.stop_rule_combo = QComboBox()
+        self.stop_rule_combo = ConsistentComboBox()
         self.stop_rule_combo.addItem("Stop if either found", "stop_either")
         self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
         self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")

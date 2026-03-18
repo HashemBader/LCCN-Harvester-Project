@@ -13,24 +13,34 @@ from pathlib import Path
 from PyQt6.QtGui import QColor, QPainter, QPen, QDesktopServices
 
 from database import DatabaseManager
+from .combo_boxes import ConsistentComboBox
 from .icons import (
     get_icon, get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE,
     SVG_X_CIRCLE, SVG_DASHBOARD, SVG_FOLDER_OPEN
 )
 
 
-def _write_excel_autofit(df, path: str) -> None:
-    """Write a DataFrame to Excel with auto-fitted column widths."""
-    import pandas as pd
-    with pd.ExcelWriter(path, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Sheet1')
-        ws = writer.sheets['Sheet1']
-        for col in ws.columns:
-            max_len = max(
-                (len(str(cell.value)) for cell in col if cell.value is not None),
-                default=0
-            )
-            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 80)
+def _write_excel_autofit(tsv_path: str, xlsx_path: str) -> None:
+    """Convert a TSV file to Excel with auto-fitted column widths using openpyxl only."""
+    import csv
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+
+    col_widths: dict[int, int] = {}
+    with open(tsv_path, newline="", encoding="utf-8") as f:
+        for row_idx, row in enumerate(csv.reader(f, delimiter="\t"), start=1):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
+                col_widths[col_idx] = max(col_widths.get(col_idx, 0), len(str(value)))
+
+    for col_idx, width in col_widths.items():
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(width + 4, 80)
+
+    wb.save(xlsx_path)
 
 
 def _safe_filename(s: str) -> str:
@@ -337,9 +347,9 @@ class DashboardTabV2(QWidget):
         header.addStretch()
 
         # Format Switch
-        self.format_combo = QComboBox()
+        self.format_combo = ConsistentComboBox(popup_object_name="ResultFormatComboPopup", max_visible_items=2)
+        self.format_combo.setObjectName("ResultFormatCombo")
         self.format_combo.addItems(["TSV (.tsv)", "Excel (.xlsx)"])
-        self.format_combo.setProperty("class", "ComboBox")
         self.format_combo.setToolTip("Select the file format to open")
         self.format_combo.currentTextChanged.connect(self._refresh_result_file_buttons)
         header.addWidget(self.format_combo)
@@ -451,9 +461,7 @@ class DashboardTabV2(QWidget):
         # Generate on the fly if it's Excel mid-harvest
         if is_excel and not target_path.exists() and path.exists():
             try:
-                import pandas as pd
-                df = pd.read_csv(str(path), sep='\t', dtype=str)
-                _write_excel_autofit(df, str(target_path))
+                _write_excel_autofit(str(path), str(target_path))
             except Exception as e:
                 QMessageBox.warning(self, "Excel Not Ready", f"Could not generate live Excel view:\n{e}")
                 return
@@ -595,7 +603,18 @@ class DashboardTabV2(QWidget):
         self.card_invalid.set_data(self.session_stats["invalid"], "Invalid ISBNs in this run")
 
     def set_profile_options(self, profiles, current_profile):
-        self.current_profile = current_profile or "default"
+        incoming = current_profile or "default"
+        profile_changed = incoming != self.current_profile
+        self.current_profile = incoming
+        if profile_changed:
+            self.reset_dashboard_stats()
+            self.result_files = {
+                "successful": None,
+                "invalid": None,
+                "failed": None,
+                "problems": None,
+                "profile_dir": None,
+            }
         self.result_files["profile_dir"] = self._profile_dir_path()
         self._refresh_result_file_buttons()
 

@@ -153,6 +153,8 @@ class ModernMainWindow(QMainWindow):
         self.sidebar_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sidebar_status.setContentsMargins(10, 4, 10, 4)
         sidebar_layout.addWidget(self.sidebar_status)
+        self.sidebar_status.setText("Idle")
+        self.status_pill = self.sidebar_status
 
         # Theme toggle button (bottom, like Accessibility)
         self.btn_theme = QPushButton("Toggle Theme")
@@ -568,6 +570,8 @@ class ModernMainWindow(QMainWindow):
 
     def _set_sidebar_status(self, text: str, state: str):
         """Update the sidebar status pill to mirror harvester state."""
+        if hasattr(self, "status_pill"):
+            self.status_pill.setText(text)
         self.sidebar_status.setText(f"● {text}")
         self.sidebar_status.setProperty("state", state)
         self.sidebar_status.style().unpolish(self.sidebar_status)

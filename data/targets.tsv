@@ -1,14 +1,20 @@
 target_id	name	target_type	host	port	database	record_syntax	rank	selected	username	password
 10	Harvard Library API	API					1	True		
 8	OpenLibrary API	API					2	True		
-16	UAlberta	Z3950	ualapp.library.ualberta.ca	2200	unicorn	USMARC	3	True		
-20	Toronto	Z3950	utoronto.alma.exlibrisgroup.com	1921	01UTORONTO_INST	USMARC	4	False		
-5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	5	False		
-19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	6	False		
-13	aass	Z3950	ss	210	ss	USMARC	7	True		
-9	Library of Congress API	API					8	True		
-15	sss	Z3950	s	210	s	USMARC	9	False		
-21	aaaaa	Z3950	aaaaa	210	aaaaaa	USMARC	10	False		
-17	xx	Z3950	xx	210	xx	USMARC	11	False		
-18	tt	Z3950	tt	210	tt	USMARC	12	False		
-14	s	Z3950	s	210	s	USMARC	13	False		
+9	Library of Congress API	API					3	True		
+16	UAlberta	Z3950	ualapp.library.ualberta.ca	2200	unicorn	USMARC	4	True		
+20	Toronto	Z3950	utoronto.alma.exlibrisgroup.com	1921	01UTORONTO_INST	USMARC	5	True		
+5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	6	True		
+19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	7	True		
+21	UCLA	Z3950	z3950.library.ucla.edu	1921	01UCS_LAL	USMARC	8	True		
+22	Yale	Z3950	z3950.library.yale.edu	7090	voyager	USMARC	9	True		
+23	UBC	Z3950	ils.library.ubc.ca	7090	Voyager	USMARC	10	True		
+24	UVa	Z3950	virgo.lib.virginia.edu	2200	unicorn	USMARC	11	True		
+25	UCB	Z3950	berkeley.alma.exlibrisgroup.com	1921	01UCS_BER/UCB	USMARC	12	True		
+26	NLA	Z3950	catalogue.nla.gov.au	7090	voyager	USMARC	13	True		
+27	NCSU	Z3950	sirsi.lib.ncsu.edu	2200	UNICORN	USMARC	14	True		
+28	NLAus	Z3950	catalogue.nla.gov.au	7090	voyager	USMARC	15	True		
+29	IUCAT	Z3950	libprd.uits.indiana.edu	2200	UNICORN	USMARC	16	True		
+30	QUEENS	Z3950	ocul-qu.alma.exlibrisgroup.com	210	01OCUL_QU	USMARC	17	True		
+31	UPenn	Z3950	na03.alma.exlibrisgroup.com	1921	UPENN_INST	USMARC	18	True		
+32	NYPL	Z3950	nyst.sirsi.net	8419	unicorn	USMARC	19	True		

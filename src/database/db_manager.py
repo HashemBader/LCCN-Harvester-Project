@@ -24,6 +24,35 @@ def today_yyyymmdd() -> int:
     return int(datetime.now().strftime("%Y%m%d"))
 
 
+def normalize_to_yyyymmdd(value: Optional[int | str]) -> Optional[int]:
+    """Convert supported date values to a yyyymmdd integer."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) == 8 and text.isdigit():
+        return int(text)
+
+    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return int(dt.strftime("%Y%m%d"))
+
+
+def yyyymmdd_to_iso_date(value: Optional[int | str]) -> Optional[str]:
+    """Convert yyyymmdd storage values into an ISO date string."""
+    if value in (None, ""):
+        return None
+
+    text = str(value).strip()
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+
+    return text
+
+
 def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
     """
     Best-effort: derive LoC classification letters (1-3 leading letters) from an LCCN.
@@ -51,7 +80,7 @@ class MainRecord:
     nlmcn_source: Optional[str] = None
     classification: Optional[str] = None
     source: Optional[str] = None
-    date_added: Optional[int] = None  # yyyymmdd integer (e.g. 20260317)
+    date_added: Optional[int | str] = None  # stored as yyyymmdd, returned compatibly for callers
 
 
 @dataclass(frozen=True)
@@ -355,7 +384,7 @@ class DatabaseManager:
             nlmcn_source=row["nlmcn_source"] if "nlmcn_source" in row.keys() else row["source"],
             classification=row["classification"],
             source=row["source"],
-            date_added=row["date_added"],
+            date_added=yyyymmdd_to_iso_date(row["date_added"]),
         )
 
     def upsert_main(self, record: MainRecord, *, clear_attempted_on_success: bool = True) -> None:
@@ -376,7 +405,7 @@ class DatabaseManager:
         rows: list[tuple] = []
         isbns: list[str] = []
         for r in records:
-            date_added = r.date_added or today_yyyymmdd()
+            date_added = normalize_to_yyyymmdd(r.date_added) or today_yyyymmdd()
             classification = r.classification or classification_from_lccn(r.lccn)
             rows.append(
                 (
@@ -418,7 +447,7 @@ class DatabaseManager:
         *,
         clear_attempted_on_success: bool,
     ) -> None:
-        date_added = record.date_added or today_yyyymmdd()
+        date_added = normalize_to_yyyymmdd(record.date_added) or today_yyyymmdd()
         classification = record.classification or classification_from_lccn(record.lccn)
         source = self._combine_sources(
             record.lccn_source or record.source,

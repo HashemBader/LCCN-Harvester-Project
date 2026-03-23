@@ -1,12 +1,13 @@
 {
-  "profile_name": "ashal",
-  "created_at": "2026-03-03T01:29:26.072616",
+  "profile_name": "Abdel",
+  "created_at": "2026-03-23T16:02:00.362584",
   "description": "",
   "settings": {
     "retry_days": 3,
     "call_number_mode": "both",
     "collect_lccn": true,
     "collect_nlmcn": true,
+    "stop_rule": "stop_either",
     "output_tsv": true,
     "output_invalid_isbn_file": true
   }

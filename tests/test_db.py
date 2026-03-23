@@ -2,6 +2,7 @@
 Module: test_db.py
 Part of the LCCN Harvester Project.
 """
+import sqlite3
 from pathlib import Path
 
 from src.database.db_manager import DatabaseManager, MainRecord
@@ -145,3 +146,54 @@ def test_should_skip_retry(tmp_path: Path):
     # Different target/type should not be skipped by that record.
     assert db.should_skip_retry("1111111111", "OtherTarget", "both", retry_days=7) is False
     assert db.should_skip_retry("1111111111", "Test", "lccn", retry_days=7) is False
+
+
+def test_init_db_recovers_from_legacy_main_table_before_index_creation(tmp_path: Path):
+    db_path = tmp_path / "legacy.sqlite3"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE main (
+                isbn TEXT PRIMARY KEY,
+                lccn TEXT,
+                lccn_source TEXT,
+                nlmcn TEXT,
+                nlmcn_source TEXT,
+                classification TEXT,
+                date_added TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO main (isbn, lccn, lccn_source, nlmcn, nlmcn_source, classification, date_added)
+            VALUES ('9780132350884', 'QA76.76', 'LoC', 'W1 100', 'NLM', 'QA', '2026-03-23')
+            """
+        )
+
+    db = DatabaseManager(db_path)
+    db.init_db()
+
+    got = db.get_main("9780132350884")
+    assert got is not None
+    assert got.lccn == "QA76.76"
+    assert got.lccn_source == "LoC"
+    assert got.nlmcn == "W1 100"
+    assert got.nlmcn_source == "NLM"
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT call_number_type, call_number, source, typeof(date_added)
+            FROM main
+            WHERE isbn = ?
+            ORDER BY call_number_type
+            """,
+            ("9780132350884",),
+        ).fetchall()
+
+    assert rows == [
+        ("lccn", "QA76.76", "LoC", "integer"),
+        ("nlmcn", "W1 100", "NLM", "integer"),
+    ]

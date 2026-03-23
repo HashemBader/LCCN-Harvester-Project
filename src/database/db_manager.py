@@ -184,7 +184,18 @@ class DatabaseManager:
         schema_sql = schema_path.read_text(encoding="utf-8")
 
         with self.connect() as conn:
-            conn.executescript(schema_sql)
+            try:
+                conn.executescript(schema_sql)
+            except sqlite3.OperationalError as exc:
+                # Older deployments may already have a legacy ``main`` table whose
+                # columns do not match the current schema. In that case the schema
+                # script can fail while creating indexes before our Python
+                # migrations get a chance to run.
+                if "no such column" not in str(exc).lower():
+                    raise
+                self._migrate_main_schema_if_needed(conn)
+                self._migrate_attempted_schema_if_needed(conn)
+                conn.executescript(schema_sql)
             self._migrate_main_schema_if_needed(conn)
             self._migrate_attempted_schema_if_needed(conn)
             self._migrate_dates_to_yyyymmdd(conn)
@@ -217,17 +228,20 @@ class DatabaseManager:
             """
         )
 
+        def _legacy_select(name: str) -> str:
+            return name if name in col_names else f"NULL AS {name}"
+
         legacy_rows = conn.execute(
-            """
+            f"""
             SELECT
-                isbn,
-                lccn,
-                lccn_source,
-                nlmcn,
-                nlmcn_source,
-                classification,
-                source,
-                date_added
+                {_legacy_select("isbn")},
+                {_legacy_select("lccn")},
+                {_legacy_select("lccn_source")},
+                {_legacy_select("nlmcn")},
+                {_legacy_select("nlmcn_source")},
+                {_legacy_select("classification")},
+                {_legacy_select("source")},
+                {_legacy_select("date_added")}
             FROM main_legacy
             """
         ).fetchall()

@@ -28,3 +28,18 @@ def normalize_call_number(subfield_a: list[str], subfield_b: list[str] | None = 
             parts.append(b)
 
     return " ".join(parts)
+
+
+def normalize_isbn_subfield(subfield_a_value: str | None) -> str:
+    """
+    Normalize MARC 020 $a ISBN content.
+
+    - Trims surrounding whitespace using the shared normalizer utility style
+    - Removes non ISBN characters (hyphens, spaces, punctuation)
+    - Preserves digits and X checksum, uppercased
+    """
+    normalized = normalize_call_number([subfield_a_value or ""])
+    if not normalized:
+        return ""
+
+    return "".join(ch.upper() for ch in normalized if ch.isdigit() or ch in "Xx")

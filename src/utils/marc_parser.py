@@ -29,7 +29,7 @@ import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 import logging
 
-from src.utils.call_number_normalizer import normalize_call_number
+from src.utils.call_number_normalizer import normalize_call_number, normalize_isbn_subfield
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ def extract_marc_fields_from_json(record: Dict) -> Dict[str, Dict[str, List[str]
     - Strips whitespace from extracted values
     """
     result = {
+        "020": {"a": []},
         "050": {"a": [], "b": []},
         "060": {"a": [], "b": []},
     }
@@ -78,7 +79,7 @@ def extract_marc_fields_from_json(record: Dict) -> Dict[str, Dict[str, List[str]
     fields = record.get("fields", [])
 
     for field in fields:
-        for tag in ("050", "060"):
+        for tag in ("020", "050", "060"):
             if tag in field:
                 subfields = field[tag].get("subfields", [])
                 for sf in subfields:
@@ -86,7 +87,7 @@ def extract_marc_fields_from_json(record: Dict) -> Dict[str, Dict[str, List[str]
                         text = sf["a"]
                         if isinstance(text, str):
                             result[tag]["a"].append(text.strip())
-                    elif "b" in sf:
+                    elif tag != "020" and "b" in sf:
                         text = sf["b"]
                         if isinstance(text, str):
                             result[tag]["b"].append(text.strip())
@@ -143,6 +144,7 @@ def extract_marc_fields_from_xml(
         namespaces = {"marc": "http://www.loc.gov/MARC21/slim"}
 
     result = {
+        "020": {"a": []},
         "050": {"a": [], "b": []},
         "060": {"a": [], "b": []},
     }
@@ -220,4 +222,65 @@ def extract_call_numbers_from_xml(
     nlmcn = normalize_call_number(fields["060"]["a"], fields["060"]["b"]) or None
 
     return lccn, nlmcn
+
+
+def extract_isbns_from_json(record: Dict) -> List[str]:
+    """
+    Extract ISBNs from MARC 020 $a subfields in a MARC-JSON record.
+
+    Extracts all $a subfields from 020 fields and normalizes them:
+    - Removes hyphens, spaces, and other non-alphanumeric characters
+    - Handles 10/13-digit ISBNs
+    - Preserves leading zeros
+
+    Parameters
+    ----------
+    record : dict
+        A MARC-JSON record object.
+
+    Returns
+    -------
+    list[str]
+        List of normalized ISBN strings, or empty list if none found.
+    """
+    fields = extract_marc_fields_from_json(record)
+    isbns = []
+    for isbn_raw in fields["020"]["a"]:
+        normalized = normalize_isbn_subfield(isbn_raw)
+        if len(normalized) in (10, 13):
+            isbns.append(normalized)
+    return isbns
+
+
+def extract_isbns_from_xml(
+    xml_element: ET.Element,
+    namespaces: Optional[Dict[str, str]] = None,
+) -> List[str]:
+    """
+    Extract ISBNs from MARC 020 $a subfields in a MARCXML record.
+
+    Extracts all $a subfields from 020 fields and normalizes them:
+    - Removes hyphens, spaces, and other non-alphanumeric characters
+    - Handles 10/13-digit ISBNs
+    - Preserves leading zeros
+
+    Parameters
+    ----------
+    xml_element : ET.Element
+        Root element of a MARCXML record.
+    namespaces : dict[str, str] | None
+        XML namespace mapping. Uses standard MARCXML namespace if None.
+
+    Returns
+    -------
+    list[str]
+        List of normalized ISBN strings, or empty list if none found.
+    """
+    fields = extract_marc_fields_from_xml(xml_element, namespaces)
+    isbns = []
+    for isbn_raw in fields["020"]["a"]:
+        normalized = normalize_isbn_subfield(isbn_raw)
+        if len(normalized) in (10, 13):
+            isbns.append(normalized)
+    return isbns
 

@@ -41,6 +41,13 @@ certifi_d, certifi_b, certifi_h = collect_all("certifi")
 pymarc_d,  pymarc_b,  pymarc_h  = collect_all("pymarc")
 requests_d, requests_b, requests_h = collect_all("requests")
 
+
+def add_data_if_exists(path: Path, target: str) -> tuple[str, str] | None:
+    """Return a PyInstaller data tuple only when the source path exists."""
+    if not path.exists():
+        return None
+    return (str(path), target)
+
 # ---------------------------------------------------------------------------
 # Data files bundled into the executable
 # ---------------------------------------------------------------------------
@@ -51,7 +58,6 @@ datas = [
     (str(DATA_DIR / "targets.tsv"),     "data"),
     (str(DATA_DIR / "targets.json"),    "data"),
     (str(DATA_DIR / "gui_settings.json"), "data"),
-    (str(DATA_DIR / "sample"),          "data/sample"),
     # SVG icons used by the GUI
     (str(ICONS_DIR),                    "gui/icons"),
     # Database SQL schema (db_manager.py reads it at runtime)
@@ -68,6 +74,12 @@ datas = [
     (str(SRC_DIR / "database"),         "database"),
     (str(SRC_DIR / "utils"),            "utils"),
 ]
+
+optional_data = [
+    add_data_if_exists(DATA_DIR / "sample", "data/sample"),
+]
+
+datas.extend(item for item in optional_data if item is not None)
 
 datas += pyz3950_d + stdnum_d + certifi_d + pymarc_d + requests_d
 

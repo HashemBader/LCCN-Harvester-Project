@@ -64,6 +64,7 @@ def test_export_attempted(tmp_path, populated_db):
         content = f.read()
         assert "333" in content
         assert "Err1" in content
+        assert "2023-01-03" in content
 
 def test_export_both(tmp_path, populated_db):
     manager = ExportManager(populated_db)
@@ -131,3 +132,40 @@ def test_export_main_json(tmp_path, populated_db):
     assert isinstance(data, list)
     assert data[0]["ISBN"] == "111"
     assert data[0]["LCCN"] == "A1"
+
+
+def test_export_formats_storage_dates_for_display(tmp_path, populated_db):
+    manager = ExportManager(populated_db)
+    output_path = tmp_path / "dated.tsv"
+
+    main_result = manager.export(
+        {
+            "source": "main",
+            "format": "tsv",
+            "columns": ["ISBN", "Date Added"],
+            "output_path": str(output_path),
+            "include_header": True,
+        }
+    )
+    assert main_result["success"]
+    main_lines = output_path.read_text(encoding="utf-8").strip().splitlines()
+    assert main_lines == [
+        "ISBN\tDate Added",
+        "111\t2023-01-01",
+        "222\t2023-01-02",
+    ]
+
+    attempted_path = tmp_path / "attempted.tsv"
+    attempted_result = manager.export(
+        {
+            "source": "attempted",
+            "format": "tsv",
+            "columns": [],
+            "output_path": str(attempted_path),
+            "include_header": True,
+        }
+    )
+    assert attempted_result["success"]
+    attempted_lines = attempted_path.read_text(encoding="utf-8").strip().splitlines()
+    assert attempted_lines[0] == "ISBN\tLast Target\tLast Attempted\tFail Count\tLast Error"
+    assert attempted_lines[1] == "333\tLoC\t2023-01-03\t1\tErr1"

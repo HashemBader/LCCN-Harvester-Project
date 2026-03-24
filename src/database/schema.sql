@@ -41,11 +41,14 @@ CREATE INDEX IF NOT EXISTS idx_attempted_isbn ON attempted(isbn);
 -- Stretch: Linked ISBNs
 -- =========================
 CREATE TABLE IF NOT EXISTS linked_isbns (
-    isbn             TEXT PRIMARY KEY,
-    canonical_isbn   TEXT NOT NULL
+    lowest_isbn      TEXT NOT NULL,
+    other_isbn       TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (lowest_isbn, other_isbn),
+    CHECK (lowest_isbn <> other_isbn)
 );
 
-CREATE INDEX IF NOT EXISTS idx_linked_canonical ON linked_isbns(canonical_isbn);
+CREATE INDEX IF NOT EXISTS idx_linked_lowest ON linked_isbns(lowest_isbn);
+CREATE INDEX IF NOT EXISTS idx_linked_other ON linked_isbns(other_isbn);
 
 -- =========================
 -- Stretch: Subjects harvested from MARC 6XX fields

@@ -4,13 +4,13 @@ target_id	name	target_type	host	port	database	record_syntax	rank	selected	userna
 9	Library of Congress API	API					3	True		
 16	UAlberta	Z3950	ualapp.library.ualberta.ca	2200	unicorn	USMARC	4	True		
 20	Toronto	Z3950	utoronto.alma.exlibrisgroup.com	1921	01UTORONTO_INST	USMARC	5	True		
-5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	6	True		
-19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	7	True		
-21	UCLA	Z3950	z3950.library.ucla.edu	1921	01UCS_LAL	USMARC	8	True		
-22	Yale	Z3950	z3950.library.yale.edu	7090	voyager	USMARC	9	True		
-23	UBC	Z3950	ils.library.ubc.ca	7090	Voyager	USMARC	10	True		
-24	UVa	Z3950	virgo.lib.virginia.edu	2200	unicorn	USMARC	11	True		
-25	UCB	Z3950	berkeley.alma.exlibrisgroup.com	1921	01UCS_BER/UCB	USMARC	12	True		
+25	UCB	Z3950	berkeley.alma.exlibrisgroup.com	1921	01UCS_BER/UCB	USMARC	6	True		
+23	UBC	Z3950	ils.library.ubc.ca	7090	Voyager	USMARC	7	True		
+5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	8	True		
+19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	9	True		
+21	UCLA	Z3950	z3950.library.ucla.edu	1921	01UCS_LAL	USMARC	10	True		
+22	Yale	Z3950	z3950.library.yale.edu	7090	voyager	USMARC	11	True		
+24	UVa	Z3950	virgo.lib.virginia.edu	2200	unicorn	USMARC	12	True		
 26	NLA	Z3950	catalogue.nla.gov.au	7090	voyager	USMARC	13	True		
 27	NCSU	Z3950	sirsi.lib.ncsu.edu	2200	UNICORN	USMARC	14	True		
 28	NLAus	Z3950	catalogue.nla.gov.au	7090	voyager	USMARC	15	True		

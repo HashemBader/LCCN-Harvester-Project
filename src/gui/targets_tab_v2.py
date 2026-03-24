@@ -531,7 +531,10 @@ class TargetsTabV2(QWidget):
         self.table.blockSignals(True)
 
         for row, target in enumerate(targets):
-            rank_combo = ConsistentComboBox(max_visible_items=min(len(targets), 12) or 1)
+            rank_combo = ConsistentComboBox(
+                popup_object_name="RankComboPopup",
+                max_visible_items=min(len(targets), 12) or 1,
+            )
             rank_combo.setMinimumHeight(32)
             rank_combo.setObjectName("RankCombo")
             for i in range(1, len(targets) + 1):
@@ -846,5 +849,4 @@ class TargetsTabV2(QWidget):
             name = name_item.text().lower() if name_item else ""
             visible = text in name
             self.table.setRowHidden(row, not visible)
-
 

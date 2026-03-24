@@ -307,6 +307,7 @@ QComboBox {{
     background-color: {t['bg']}; 
     border: 1px solid {t['border_strong']}; 
     border-radius: 8px;
+    combobox-popup: 0;
     padding: 12px;
     color: {t['text']};
     font-size: 14px;
@@ -342,11 +343,36 @@ QComboBox QAbstractItemView::item:selected {{
     background-color: {t['hover']};
     color: {t['text']};
 }}
+QListView#ComboPopup {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border_strong']};
+    border-radius: 12px;
+    padding: 6px;
+    outline: none;
+}}
+QListView#ComboPopup::item {{
+    min-height: 24px;
+    padding: 8px 12px;
+    margin: 2px 0;
+    border-radius: 8px;
+    color: {t['text']};
+}}
+QListView#ComboPopup::item:selected {{
+    background-color: {t['hover']};
+    color: {t['text']};
+}}
 QComboBox#ResultFormatCombo {{
     min-width: 168px;
     padding: 10px 38px 10px 14px;
 }}
 QComboBox#ResultFormatCombo QAbstractItemView {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border_strong']};
+    border-radius: 12px;
+    padding: 6px;
+    outline: none;
+}}
+QListView#ResultFormatComboPopup {{
     background-color: {t['surface']};
     border: 1px solid {t['border_strong']};
     border-radius: 12px;
@@ -360,7 +386,18 @@ QComboBox#ResultFormatCombo QAbstractItemView::item {{
     border-radius: 8px;
     color: {t['text']};
 }}
+QListView#ResultFormatComboPopup::item {{
+    min-height: 24px;
+    padding: 8px 12px;
+    margin: 2px 0;
+    border-radius: 8px;
+    color: {t['text']};
+}}
 QComboBox#ResultFormatCombo QAbstractItemView::item:selected {{
+    background-color: {t['hover']};
+    color: {t['text']};
+}}
+QListView#ResultFormatComboPopup::item:selected {{
     background-color: {t['hover']};
     color: {t['text']};
 }}
@@ -387,6 +424,24 @@ QComboBox#RankCombo {{
     padding: 4px 24px 4px 8px;
     min-width: 52px;
     max-width: 64px;
+}}
+QListView#RankComboPopup {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border_strong']};
+    border-radius: 12px;
+    padding: 4px;
+    outline: none;
+}}
+QListView#RankComboPopup::item {{
+    min-height: 22px;
+    padding: 6px 10px;
+    margin: 1px 0;
+    border-radius: 8px;
+    color: {t['text']};
+}}
+QListView#RankComboPopup::item:selected {{
+    background-color: {t['hover']};
+    color: {t['text']};
 }}
 
 /* Clean up QSpinBox arrows to avoid dark system patches */

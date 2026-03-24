@@ -8,10 +8,13 @@ from pathlib import Path
 import re
 
 try:
-    from stdnum import isbn as stdnum_isbn
-    STDNUM_AVAILABLE = True
+    from stdnum import isbn as _stdnum_isbn
 except ImportError:
     STDNUM_AVAILABLE = False
+    stdnum_isbn = None
+else:
+    STDNUM_AVAILABLE = True
+    stdnum_isbn = _stdnum_isbn
 
 try:
     from . import messages
@@ -65,6 +68,45 @@ def normalize_isbn(isbn_str: str) -> str:
         if not result:
             log_invalid_isbn(isbn_str, messages.GuiMessages.warn_title_invalid)
         return result
+
+
+def _simple_isbn13_checksum(first_twelve: str) -> str:
+    """Compute the ISBN-13 checksum digit for a 12-digit prefix."""
+    total = 0
+    for index, char in enumerate(first_twelve):
+        digit = int(char)
+        total += digit if index % 2 == 0 else digit * 3
+    return str((10 - (total % 10)) % 10)
+
+
+def _canonical_linked_isbn(isbn_str: str) -> str:
+    """Return a canonical ISBN-13 form suitable for linked/equality comparison."""
+    if STDNUM_AVAILABLE:
+        try:
+            validated = stdnum_isbn.validate(isbn_str)
+            return stdnum_isbn.to_isbn13(validated)
+        except Exception:
+            return ""
+
+    cleaned = _simple_normalize_isbn(isbn_str)
+    if not cleaned:
+        return ""
+    if len(cleaned) == 13:
+        return cleaned
+    if len(cleaned) == 10:
+        prefix = "978" + cleaned[:-1]
+        return prefix + _simple_isbn13_checksum(prefix)
+    return ""
+
+
+def linked_isbns_match(left: str, right: str) -> bool:
+    """Return True when two ISBN values refer to the same linked book identifier."""
+    left_canonical = _canonical_linked_isbn(left)
+    right_canonical = _canonical_linked_isbn(right)
+    return bool(left_canonical) and left_canonical == right_canonical
+
+
+compare_linked_isbns = linked_isbns_match
 
 
 def validate_isbn(isbn_str: str) -> bool:

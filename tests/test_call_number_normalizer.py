@@ -7,9 +7,7 @@ Tests verify the exact MARC 050 and 060 $a/$b normalization rules:
 - Both handle multiple $a (first only), multiple $b (all concatenated), whitespace, etc.
 """
 
-import pytest
-
-from src.utils.call_number_normalizer import normalize_call_number
+from src.utils.call_number_normalizer import normalize_call_number, normalize_isbn_subfield
 
 
 # ---------------------------------------------------------------------------
@@ -376,4 +374,31 @@ def test_normalize_exact_spacing_060():
     assert result == "WG 120.5 C65 2010"
     # Verify spacing is exactly one space between components
     assert "  " not in result  # No double spaces
+
+
+# ---------------------------------------------------------------------------
+# 020 ISBN Normalization - Shared Utility for marc_parser
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_020_isbn_hyphenated():
+    """Hyphenated ISBNs are compacted to 10/13-char candidate strings."""
+    assert normalize_isbn_subfield("978-0-393-04002-9") == "9780393040029"
+
+
+def test_normalize_020_isbn_strips_outer_whitespace():
+    """Surrounding whitespace is trimmed consistently with call-number normalization."""
+    assert normalize_isbn_subfield(" 0471117099 ") == "0471117099"
+
+
+def test_normalize_020_isbn_empty_input():
+    """Missing/blank 020 $a values normalize to empty string."""
+    assert normalize_isbn_subfield(None) == ""
+    assert normalize_isbn_subfield("   ") == ""
+
+
+def test_normalize_020_isbn_preserves_x_and_drops_punctuation():
+    """Lowercase x is normalized and non-ISBN punctuation is removed without regex."""
+    assert normalize_isbn_subfield("0-8044-2957-x (pbk.)") == "080442957X"
+
 

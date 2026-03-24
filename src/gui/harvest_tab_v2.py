@@ -50,45 +50,6 @@ from src.database import DatabaseManager, today_yyyymmdd
 from src.utils import messages
 
 
-def _col_letter(n: int) -> str:
-    result = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
-
-
-def _write_excel_autofit(rows_with_header: list, path: str) -> None:
-    """Write rows to a valid .xlsx using only Python stdlib — no openpyxl/pandas needed."""
-    import zipfile
-
-    def esc(s: str) -> str:
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-    sheet_rows_xml = []
-    for r_idx, row in enumerate(rows_with_header, 1):
-        cells = "".join(
-            f'<c r="{_col_letter(c_idx)}{r_idx}" t="inlineStr"><is><t>{esc(str(val) if val is not None else "")}</t></is></c>'
-            for c_idx, val in enumerate(row, 1)
-        )
-        sheet_rows_xml.append(f'<row r="{r_idx}">{cells}</row>')
-
-    content_types = ('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>')
-    rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
-    workbook = ('<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
-    workbook_rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
-    styles = ('<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts><font><sz val="11"/></font></fonts><fills><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>')
-    sheet = (f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{"".join(sheet_rows_xml)}</sheetData></worksheet>')
-
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("[Content_Types].xml", content_types)
-        zf.writestr("_rels/.rels", rels)
-        zf.writestr("xl/workbook.xml", workbook)
-        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        zf.writestr("xl/styles.xml", styles)
-        zf.writestr("xl/worksheets/sheet1.xml", sheet)
-
-
 def _write_csv_rows(rows_with_header: list, path: str) -> None:
     """Write rows to a UTF-8 CSV file for Excel and Google Sheets."""
     with open(path, "w", newline="", encoding="utf-8-sig") as handle:
@@ -967,7 +928,7 @@ class HarvestTabV2(QWidget):
 
         file_input_layout = QHBoxLayout()
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("No file selected... (drag & drop TSV/CSV/TXT here)")
+        self.file_path_edit.setPlaceholderText("No file selected... (drag & drop TSV/CSV/TXT/Excel here)")
         self.file_path_edit.setReadOnly(True)
         self.file_path_edit.setProperty("class", "LineEdit")
         self.btn_browse = QPushButton("Choose file…")
@@ -1638,21 +1599,6 @@ class HarvestTabV2(QWidget):
         self.log_output.style().polish(self.log_output)
 
         self._transition_state(UIState.ERROR)
-
-    def _show_sample_format(self):
-        QMessageBox.information(
-            self,
-            "Expected Format",
-            "The input file should be a TSV (Tab-Separated Values) or simple Text file.\n\n"
-            "Format:\n"
-            "• One ISBN per line\n"
-            "• First column is used\n"
-            "• Headers allowed (if line starts with 'ISBN')\n\n"
-            "Example:\n"
-            "978-3-16-148410-0\n"
-            "0-306-40615-2\n"
-            "9780306406157",
-        )
 
     def _browse_file(self):
         """Open file picker (mimicking InputTab's filtering)."""

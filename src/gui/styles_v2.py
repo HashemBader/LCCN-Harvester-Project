@@ -876,36 +876,6 @@ QPushButton#ActiveToggle[state="inactive"]:hover {{
     background-color: {t['focus']};
 }}
 
-QPushButton[class="StatusIndicator"][state="online"] {{
-    background-color: {t['success']};
-    border: 1px solid {t['success']};
-    border-radius: 6px;
-    font-weight: bold;
-    font-size: 12px;
-    color: #ffffff;
-    min-width: 92px;
-    padding: 0 12px;
-}}
-QPushButton[class="StatusIndicator"][state="offline"] {{
-    background-color: {t['danger']};
-    border: 1px solid {t['danger']};
-    border-radius: 6px;
-    font-weight: bold;
-    font-size: 12px;
-    color: #ffffff;
-    min-width: 92px;
-    padding: 0 12px;
-}}
-QPushButton[class="StatusIndicator"][state="unknown"] {{
-    background-color: {hex_to_rgba(t['border_strong'], 0.16)};
-    border: 1px solid {t['border_strong']};
-    border-radius: 6px;
-    font-weight: bold;
-    font-size: 12px;
-    color: {t['text']};
-    min-width: 92px;
-    padding: 0 12px;
-}}
 /* --- Shortcuts Dialog --- */
 QFrame[class="ShortcutItem"] {{
     background: {t['surface']};

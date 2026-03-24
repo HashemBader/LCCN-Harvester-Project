@@ -386,7 +386,7 @@ class TargetsTabV2(QWidget):
         layout.setContentsMargins(16, 10, 16, 10)
         layout.setSpacing(10)
 
-        # Action buttons row (includes profile selector)
+        # Action buttons row
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
@@ -399,15 +399,6 @@ class TargetsTabV2(QWidget):
         self.btn_check_servers.setObjectName("SecondaryButton")
         self.btn_check_servers.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_check_servers.clicked.connect(self.check_all_servers)
-
-        profile_label = QLabel("Profile:")
-        profile_label.setObjectName("FormLabel")
-
-        self.profile_combo = ConsistentComboBox()
-        self.profile_combo.setMinimumWidth(150)
-        self.profile_combo.setMaximumWidth(220)
-        self.profile_combo.installEventFilter(self)
-        self.profile_combo.currentTextChanged.connect(self._on_profile_combo_changed)
 
         self.search_container = QWidget()
         self.search_container.setProperty("class", "SearchContainer")
@@ -433,9 +424,6 @@ class TargetsTabV2(QWidget):
 
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_check_servers)
-        btn_layout.addSpacing(16)
-        btn_layout.addWidget(profile_label)
-        btn_layout.addWidget(self.profile_combo)
         btn_layout.addStretch()
         btn_layout.addWidget(self.search_container)
 
@@ -470,20 +458,8 @@ class TargetsTabV2(QWidget):
         layout.addWidget(self.table)
 
     def set_profile_options(self, profiles: list, current: str):
-        """Populate the profile combo box without triggering a profile switch."""
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.clear()
-        for p in profiles:
-            self.profile_combo.addItem(p)
-        idx = self.profile_combo.findText(current)
-        if idx >= 0:
-            self.profile_combo.setCurrentIndex(idx)
-        self.profile_combo.blockSignals(False)
-
-    def _on_profile_combo_changed(self, name: str):
-        """Emit profile_selected when the user picks a different profile."""
-        if name:
-            self.profile_selected.emit(name)
+        """Compatibility no-op: profile selection lives in the settings card above."""
+        return None
 
     def _emit_targets_changed(self):
         self.targets_changed.emit(self.get_targets())

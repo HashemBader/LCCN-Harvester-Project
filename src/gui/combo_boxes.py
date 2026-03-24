@@ -3,7 +3,7 @@ Shared combo box helpers for the PyQt6 GUI.
 """
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QComboBox, QListView
+from PyQt6.QtWidgets import QComboBox, QListView, QFrame
 
 
 class ConsistentComboBox(QComboBox):
@@ -22,6 +22,8 @@ class ConsistentComboBox(QComboBox):
 
         popup_view = QListView(self)
         popup_view.setUniformItemSizes(True)
+        popup_view.setFrameShape(QFrame.Shape.NoFrame)
+        popup_view.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         if popup_object_name:
             popup_view.setObjectName(popup_object_name)
         self.setView(popup_view)
@@ -38,4 +40,3 @@ class ConsistentComboBox(QComboBox):
             super().wheelEvent(event)
             return
         event.ignore()
-

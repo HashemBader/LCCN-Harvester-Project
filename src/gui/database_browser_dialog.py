@@ -1,16 +1,14 @@
 """
 Module: database_browser_dialog.py
 Full database browser — shows all rows across main, attempted, linked_isbns,
-and subjects tables with live search, pagination, and MARC file import.
+and subjects tables with live search and pagination.
 """
 import sqlite3
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QTabWidget, QWidget, QSizePolicy, QFileDialog, QTextEdit,
-    QFormLayout, QFrame, QMessageBox, QComboBox
+    QTabWidget, QWidget, QSizePolicy, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -233,162 +231,8 @@ class _TableTab(QWidget):
             self._render_page()
 
 
-class _MarcImportTab(QWidget):
-    """Tab for importing MARC JSON or MARCXML files into the database."""
-
-    def __init__(self, db_path: str, on_import_done=None, parent=None):
-        super().__init__(parent)
-        self.db_path = db_path
-        self._on_import_done = on_import_done
-        self._selected_file: str = ""
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 12, 0, 0)
-        layout.setSpacing(12)
-
-        # Description
-        desc = QLabel(
-            "Import MARC records from a JSON or MARCXML file directly into the database. "
-            "Records with a call number go into <b>main</b>; records without go into <b>attempted</b>."
-        )
-        desc.setProperty("class", "HelperText")
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
-
-        # Divider
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(line)
-
-        # Form
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        # File picker
-        file_row = QHBoxLayout()
-        file_row.setSpacing(8)
-        self.lbl_file = QLabel("No file selected")
-        self.lbl_file.setProperty("class", "HelperText")
-        self.lbl_file.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.lbl_file.setWordWrap(False)
-
-        btn_browse = QPushButton("Browse…")
-        btn_browse.setProperty("class", "SecondaryButton")
-        btn_browse.setMinimumHeight(36)
-        btn_browse.setMinimumWidth(100)
-        btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_browse.clicked.connect(self._pick_file)
-        file_row.addWidget(self.lbl_file, stretch=1)
-        file_row.addWidget(btn_browse)
-        form.addRow("MARC File:", file_row)
-
-        # Source name
-        self.source_input = QLineEdit()
-        self.source_input.setPlaceholderText("e.g. WorldCat, Manual MARC Import…")
-        self.source_input.setMinimumHeight(36)
-        form.addRow("Source Name:", self.source_input)
-
-        layout.addLayout(form)
-
-        # Import button
-        self.btn_import = QPushButton("Import MARC File")
-        self.btn_import.setProperty("class", "PrimaryButton")
-        self.btn_import.setMinimumHeight(42)
-        self.btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_import.setEnabled(False)
-        self.btn_import.clicked.connect(self._run_import)
-        layout.addWidget(self.btn_import)
-
-        # Results log
-        lbl_log = QLabel("IMPORT LOG")
-        lbl_log.setProperty("class", "CardTitle")
-        layout.addWidget(lbl_log)
-
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setPlaceholderText("Import results appear here…")
-        self.log.setProperty("class", "TerminalViewport")
-        self.log.setMinimumHeight(160)
-        layout.addWidget(self.log, stretch=1)
-
-    def _pick_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select MARC File",
-            "",
-            "MARC Files (*.json *.xml *.mrc);;JSON Files (*.json);;XML Files (*.xml);;All Files (*)"
-        )
-        if path:
-            self._selected_file = path
-            self.lbl_file.setText(Path(path).name)
-            self.lbl_file.setToolTip(path)
-            self.btn_import.setEnabled(True)
-
-    def _run_import(self):
-        if not self._selected_file:
-            return
-
-        import sys
-        import xml.etree.ElementTree as ET
-
-        file_path = Path(self._selected_file)
-        source = self.source_input.text().strip() or file_path.stem
-        self.log.clear()
-        self.log.append(f"Importing: {file_path.name}")
-        self.log.append(f"Source:    {source}")
-        self.log.append("")
-
-        try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-            from harvester.marc_import import MarcImportService
-            import json
-
-            service = MarcImportService(db_path=self.db_path)
-            suffix = file_path.suffix.lower()
-
-            if suffix == ".json":
-                raw = json.loads(file_path.read_text(encoding="utf-8"))
-                records_list = raw if isinstance(raw, list) else raw.get("records", [raw])
-                summary = service.import_json_records(records_list, source_name=source, save_source_to_active_profile=False)
-            elif suffix in (".xml", ".mrc"):
-                tree = ET.parse(str(file_path))
-                root = tree.getroot()
-                # Support both bare <record> lists and wrapped collections
-                ns = {}
-                tag = root.tag
-                if tag.endswith("collection") or tag.endswith("Collection"):
-                    records_elements = list(root)
-                elif tag.endswith("record") or tag.endswith("Record"):
-                    records_elements = [root]
-                else:
-                    # Try to find record children regardless of namespace
-                    records_elements = [
-                        child for child in root
-                        if child.tag.endswith("record") or child.tag.endswith("Record")
-                    ] or list(root)
-                summary = service.import_xml_records(records_elements, source_name=source, save_source_to_active_profile=False)
-            else:
-                self.log.append("Unsupported file type. Use .json or .xml")
-                return
-
-            self.log.append(f"Written to main table:      {summary.main_rows}")
-            self.log.append(f"Written to attempted table: {summary.attempted_rows}")
-            self.log.append(f"Skipped (no ISBN):          {summary.skipped_records}")
-            self.log.append("")
-            self.log.append("Import complete. Click Refresh on other tabs to see new rows.")
-
-            if self._on_import_done:
-                self._on_import_done()
-
-        except Exception as exc:
-            self.log.append(f"Error: {exc}")
-
-
 class DatabaseBrowserDialog(QDialog):
-    """Full database browser — one tab per table, plus MARC import."""
+    """Full database browser — one tab per database table."""
 
     def __init__(self, parent=None, db: DatabaseManager | None = None):
         super().__init__(parent)
@@ -429,12 +273,6 @@ class DatabaseBrowserDialog(QDialog):
             self._tabs[tbl] = tab
             self.tab_widget.addTab(tab, tbl)
 
-        marc_tab = _MarcImportTab(
-            db_path=self._db_path,
-            on_import_done=self._refresh_all_table_tabs,
-            parent=self,
-        )
-        self.tab_widget.addTab(marc_tab, "MARC Import")
         root.addWidget(self.tab_widget, stretch=1)
 
         # Close button
@@ -457,8 +295,3 @@ class DatabaseBrowserDialog(QDialog):
             tab = self._tabs.get(tbl_name)
             if tab and not tab._all_rows and not tab.search_box.text():
                 tab.load_data()
-
-    def _refresh_all_table_tabs(self):
-        """Reload all table tabs (called after MARC import)."""
-        for tab in self._tabs.values():
-            tab.load_data()

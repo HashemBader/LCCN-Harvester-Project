@@ -337,6 +337,7 @@ class HarvestWorkerV2(QThread):
                 call_number_mode=call_number_mode,
                 stop_rule=self.config.get("stop_rule", "stop_either"),
                 both_stop_policy=self.config.get("both_stop_policy", "both"),
+                db_only=self.config.get("db_only", False),
             )
 
             # Final stats
@@ -960,7 +961,7 @@ class HarvestTabV2(QWidget):
         lbl_run_mode.setProperty("class", "HelperText")
         self.combo_run_mode = ConsistentComboBox()
         self.combo_run_mode.setProperty("class", "ComboBox")
-        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)"])
+        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)", "MARC Import Only"])
         self.combo_run_mode.setToolTip("Select the type of call numbers to harvest")
         if hasattr(self, "_config_getter") and callable(self._config_getter):
             config = self._config_getter() or {}
@@ -969,6 +970,8 @@ class HarvestTabV2(QWidget):
                 self.combo_run_mode.setCurrentText("NLM Only")
             elif saved_mode == "both":
                 self.combo_run_mode.setCurrentText("Both (LCCN & NLM)")
+            elif saved_mode == "marc_only":
+                self.combo_run_mode.setCurrentText("MARC Import Only")
             else:
                 self.combo_run_mode.setCurrentText("LCCN Only")
         else:
@@ -1308,6 +1311,7 @@ class HarvestTabV2(QWidget):
             mode_text = self.combo_run_mode.currentText()
 
         is_both = mode_text == "Both (LCCN & NLM)"
+        is_marc_only = mode_text == "MARC Import Only"
         self.lbl_stop_rule.setEnabled(is_both)
         self.combo_stop_rule.setEnabled(is_both)
 
@@ -1332,6 +1336,7 @@ class HarvestTabV2(QWidget):
             self.lbl_stop_rule.setStyleSheet(muted_label)
             self.combo_stop_rule.setStyleSheet(muted_combo)
             self.combo_stop_rule.setCursor(Qt.CursorShape.ForbiddenCursor)
+
 
     def _transition_state(self, state: UIState, **kwargs):
         """Unified UI state machine handling buttons, banners, and status."""
@@ -1768,8 +1773,10 @@ class HarvestTabV2(QWidget):
         if mode_text == "NLM Only":
             config["call_number_mode"] = "nlmcn"
             config["both_stop_policy"] = "nlmcn"
+            config["db_only"] = False
         elif mode_text == "Both (LCCN & NLM)":
             config["call_number_mode"] = "both"
+            config["db_only"] = False
             stop_text = self.combo_stop_rule.currentText()
 
             # Read stop rule from the UI combo (no popup needed — user already chose)
@@ -1782,14 +1789,18 @@ class HarvestTabV2(QWidget):
             stop_rule_val, both_policy_val = stop_mapping.get(stop_text, ("stop_either", "either"))
             config["stop_rule"] = stop_rule_val
             config["both_stop_policy"] = both_policy_val
+        elif mode_text == "MARC Import Only":
+            config["call_number_mode"] = "both"
+            config["db_only"] = True
         else:
             config["call_number_mode"] = "lccn"
             config["both_stop_policy"] = "lccn"
+            config["db_only"] = False
 
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
         selected_targets = [t for t in targets if t.get("selected", True)]
-        if not selected_targets:
+        if not selected_targets and not config.get("db_only", False):
             QMessageBox.warning(
                 self,
                 "No Targets",

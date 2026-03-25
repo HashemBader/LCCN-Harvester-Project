@@ -18,6 +18,7 @@ from src.z3950.marc_decoder import (
     extract_call_numbers_from_pymarc,
     pymarc_record_to_json,
 )
+from src.utils.marc_parser import extract_isbns_from_json
 
 
 def _field(tag: str, ind2: str, *pairs: tuple) -> Field:
@@ -355,3 +356,107 @@ def test_extract_call_numbers_three_a_values_uses_first():
     # Only first $a
     assert lccn == "QA76.73 P38"
 
+
+# --------------------------------------------------------------------------- 
+# extract_isbns_from_json
+# ---------------------------------------------------------------------------
+
+
+def test_extract_isbns_from_json_single_isbn10():
+    """Extract single ISBN-10 from 020 $a."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "0471117099"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["0471117099"]
+
+
+def test_extract_isbns_from_json_single_isbn13():
+    """Extract single ISBN-13 from 020 $a."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "9780393040029"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["9780393040029"]
+
+
+def test_extract_isbns_from_json_hyphenated():
+    """Extract ISBN with hyphens removed."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "978-0-393-04002-9"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["9780393040029"]
+
+
+def test_extract_isbns_from_json_leading_zeros():
+    """Extract ISBN with leading zeros preserved."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "0123456789"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["0123456789"]
+
+
+def test_extract_isbns_from_json_multiple_isbns():
+    """Extract multiple ISBNs from multiple 020 fields."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "0471117099"}]}},
+            {"020": {"subfields": [{"a": "9780393040029"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["0471117099", "9780393040029"]
+
+
+def test_extract_isbns_from_json_invalid_length():
+    """Skip ISBNs that are not 10 or 13 digits after normalization."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "12345"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == []
+
+
+def test_extract_isbns_from_json_with_x():
+    """Extract ISBN-10 with X checksum."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": "0306406152"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["0306406152"]
+
+
+def test_extract_isbns_from_json_no_020():
+    """Return empty list when no 020 fields."""
+    record = {
+        "fields": [
+            {"050": {"subfields": [{"a": "QA76.73"}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == []
+
+
+def test_extract_isbns_from_json_whitespace():
+    """Strip whitespace from ISBN values."""
+    record = {
+        "fields": [
+            {"020": {"subfields": [{"a": " 9780393040029 "}]}}
+        ]
+    }
+    isbns = extract_isbns_from_json(record)
+    assert isbns == ["9780393040029"]

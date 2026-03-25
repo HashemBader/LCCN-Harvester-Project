@@ -241,9 +241,11 @@ class DatabaseManager:
                     raise
                 self._migrate_main_schema_if_needed(conn)
                 self._migrate_attempted_schema_if_needed(conn)
+                self._migrate_linked_isbns_schema_if_needed(conn)
                 conn.executescript(schema_sql)
             self._migrate_main_schema_if_needed(conn)
             self._migrate_attempted_schema_if_needed(conn)
+            self._migrate_linked_isbns_schema_if_needed(conn)
             self._migrate_dates_to_yyyymmdd(conn)
 
     def _migrate_main_schema_if_needed(self, conn: sqlite3.Connection) -> None:
@@ -376,6 +378,77 @@ class DatabaseManager:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_last_attempted ON attempted(last_attempted)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_last_target ON attempted(last_target)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_isbn ON attempted(isbn)")
+
+    def _migrate_linked_isbns_schema_if_needed(self, conn: sqlite3.Connection) -> None:
+        """Ensure linked_isbns uses lowest/other columns and preserves legacy mappings."""
+        cols = conn.execute("PRAGMA table_info(linked_isbns)").fetchall()
+        if not cols:
+            return
+
+        col_names = {row["name"] for row in cols}
+        pk_cols = [row["name"] for row in sorted(cols, key=lambda row: int(row["pk"])) if int(row["pk"]) > 0]
+        desired_pk = ["lowest_isbn", "other_isbn"]
+        has_other_unique = False
+        for idx in conn.execute("PRAGMA index_list(linked_isbns)").fetchall():
+            if int(idx["unique"]) != 1:
+                continue
+            index_name = idx["name"]
+            indexed_cols = [
+                row["name"]
+                for row in conn.execute(f"PRAGMA index_info({index_name})").fetchall()
+            ]
+            if indexed_cols == ["other_isbn"]:
+                has_other_unique = True
+                break
+
+        if {"lowest_isbn", "other_isbn"}.issubset(col_names) and pk_cols == desired_pk and has_other_unique:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_lowest ON linked_isbns(lowest_isbn)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_other ON linked_isbns(other_isbn)")
+            return
+
+        conn.execute("ALTER TABLE linked_isbns RENAME TO linked_isbns_legacy")
+        conn.execute(
+            """
+            CREATE TABLE linked_isbns (
+                lowest_isbn      TEXT NOT NULL,
+                other_isbn       TEXT NOT NULL UNIQUE,
+                PRIMARY KEY (lowest_isbn, other_isbn),
+                CHECK (lowest_isbn <> other_isbn)
+            )
+            """
+        )
+
+        def _legacy_select(name: str) -> str:
+            return name if name in col_names else f"NULL AS {name}"
+
+        legacy_rows = conn.execute(
+            f"""
+            SELECT
+                {_legacy_select("lowest_isbn")},
+                {_legacy_select("other_isbn")},
+                {_legacy_select("isbn")},
+                {_legacy_select("canonical_isbn")}
+            FROM linked_isbns_legacy
+            """
+        ).fetchall()
+        for row in legacy_rows:
+            lowest_isbn = (row["lowest_isbn"] or row["canonical_isbn"] or "").strip()
+            other_isbn = (row["other_isbn"] or row["isbn"] or "").strip()
+            if not lowest_isbn or not other_isbn or lowest_isbn == other_isbn:
+                continue
+            conn.execute(
+                """
+                INSERT INTO linked_isbns (lowest_isbn, other_isbn)
+                VALUES (?, ?)
+                ON CONFLICT(other_isbn) DO UPDATE SET
+                    lowest_isbn = excluded.lowest_isbn
+                """,
+                (lowest_isbn, other_isbn),
+            )
+
+        conn.execute("DROP TABLE linked_isbns_legacy")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_lowest ON linked_isbns(lowest_isbn)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_other ON linked_isbns(other_isbn)")
 
     def _migrate_dates_to_yyyymmdd(self, conn: sqlite3.Connection) -> None:
         """
@@ -622,6 +695,172 @@ class DatabaseManager:
         clear_attempted_on_success: bool,
     ) -> None:
         self.upsert_main_many(conn, [record], clear_attempted_on_success=clear_attempted_on_success)
+
+    # -------------------------
+    # LINKED ISBN HELPERS
+    # -------------------------
+    def get_lowest_isbn(self, isbn: str) -> str:
+        """Return the canonical lowest ISBN for *isbn*, or the ISBN itself if unlinked."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT lowest_isbn
+                FROM linked_isbns
+                WHERE other_isbn = ?
+                LIMIT 1
+                """,
+                (isbn,),
+            ).fetchone()
+        if row and row["lowest_isbn"]:
+            return str(row["lowest_isbn"])
+        return isbn
+
+    def get_linked_isbns(self, lowest_isbn: str) -> list[str]:
+        """Return all ISBNs linked to the supplied canonical lowest ISBN."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT other_isbn
+                FROM linked_isbns
+                WHERE lowest_isbn = ?
+                ORDER BY other_isbn
+                """,
+                (lowest_isbn,),
+            ).fetchall()
+        return [str(row["other_isbn"]) for row in rows]
+
+    def upsert_linked_isbn(self, *, lowest_isbn: str, other_isbn: str) -> None:
+        """Insert or update a linked ISBN mapping."""
+        with self.transaction() as conn:
+            self._upsert_linked_isbn_conn(conn, lowest_isbn=lowest_isbn, other_isbn=other_isbn)
+
+    def _upsert_linked_isbn_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        lowest_isbn: str,
+        other_isbn: str,
+    ) -> None:
+        lowest_isbn = (lowest_isbn or "").strip()
+        other_isbn = (other_isbn or "").strip()
+        if not lowest_isbn or not other_isbn:
+            raise ValueError("lowest_isbn and other_isbn are required")
+        if lowest_isbn == other_isbn:
+            raise ValueError("lowest_isbn and other_isbn must be different")
+
+        conn.execute(
+            """
+            INSERT INTO linked_isbns (lowest_isbn, other_isbn)
+            VALUES (?, ?)
+            ON CONFLICT(other_isbn) DO UPDATE SET
+                lowest_isbn = excluded.lowest_isbn
+            """,
+            (lowest_isbn, other_isbn),
+        )
+
+    def rewrite_to_lowest_isbn(self, *, lowest_isbn: str, other_isbn: str) -> None:
+        """Move main/attempted rows from *other_isbn* to *lowest_isbn* and record the link."""
+        lowest_isbn = (lowest_isbn or "").strip()
+        other_isbn = (other_isbn or "").strip()
+        if not lowest_isbn or not other_isbn:
+            raise ValueError("lowest_isbn and other_isbn are required")
+        if lowest_isbn == other_isbn:
+            return
+
+        with self.connect() as conn:
+            # ``subjects`` still uses a legacy FK against ``main(isbn)`` while
+            # ``main`` now has a composite primary key. Temporarily disabling FK
+            # enforcement for this connection avoids a false mismatch during the
+            # row rewrite; the connection is short-lived and closes immediately
+            # after the rewrite completes.
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            moved_main_rows = conn.execute(
+                """
+                SELECT call_number, call_number_type, classification, source, date_added
+                FROM main
+                WHERE isbn = ?
+                ORDER BY call_number_type
+                """,
+                (other_isbn,),
+            ).fetchall()
+            for row in moved_main_rows:
+                existing = conn.execute(
+                    """
+                    SELECT classification, source, date_added
+                    FROM main
+                    WHERE isbn = ? AND call_number_type = ?
+                    LIMIT 1
+                    """,
+                    (lowest_isbn, row["call_number_type"]),
+                ).fetchone()
+                merged_source = self._combine_sources(
+                    existing["source"] if existing else None,
+                    row["source"],
+                )
+                merged_classification = (
+                    existing["classification"]
+                    if existing and existing["classification"]
+                    else row["classification"]
+                )
+                merged_date = max(
+                    normalize_to_yyyymmdd(existing["date_added"]) if existing else None or 0,
+                    normalize_to_yyyymmdd(row["date_added"]) or 0,
+                ) or today_yyyymmdd()
+                conn.execute(
+                    """
+                    INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(isbn, call_number_type) DO UPDATE SET
+                        classification = excluded.classification,
+                        source = excluded.source,
+                        date_added = excluded.date_added
+                    """,
+                    (
+                        lowest_isbn,
+                        row["call_number"],
+                        row["call_number_type"],
+                        merged_classification,
+                        merged_source,
+                        merged_date,
+                    ),
+                )
+            conn.execute("DELETE FROM main WHERE isbn = ?", (other_isbn,))
+
+            conn.execute(
+                """
+                INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
+                SELECT ?, last_target, attempt_type, last_attempted, fail_count, last_error
+                FROM attempted
+                WHERE isbn = ?
+                ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET
+                    last_attempted = CASE
+                        WHEN excluded.last_attempted > attempted.last_attempted
+                        THEN excluded.last_attempted
+                        ELSE attempted.last_attempted
+                    END,
+                    fail_count = attempted.fail_count + excluded.fail_count,
+                    last_error = CASE
+                        WHEN excluded.last_attempted >= attempted.last_attempted
+                        THEN excluded.last_error
+                        ELSE attempted.last_error
+                    END
+                """,
+                (lowest_isbn, other_isbn),
+            )
+            conn.execute("DELETE FROM attempted WHERE isbn = ?", (other_isbn,))
+
+            conn.execute("DELETE FROM linked_isbns WHERE other_isbn = ?", (lowest_isbn,))
+            conn.execute("DELETE FROM linked_isbns WHERE lowest_isbn = ? AND other_isbn = ?", (other_isbn, lowest_isbn))
+            conn.execute(
+                """
+                UPDATE linked_isbns
+                SET lowest_isbn = ?
+                WHERE lowest_isbn = ?
+                  AND other_isbn <> ?
+                """,
+                (lowest_isbn, other_isbn, lowest_isbn),
+            )
+            self._upsert_linked_isbn_conn(conn, lowest_isbn=lowest_isbn, other_isbn=other_isbn)
 
     # -------------------------
     # ATTEMPTED TABLE HELPERS

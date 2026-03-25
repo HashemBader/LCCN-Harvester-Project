@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QDialog,
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
@@ -52,6 +53,7 @@ from src.harvester.run_harvest import run_harvest, parse_isbn_file, RunStats
 from src.harvester.targets import create_target_from_config
 from src.harvester.orchestrator import HarvestCancelled
 from src.database import DatabaseManager, today_yyyymmdd
+from src.database.db_manager import yyyymmdd_to_iso_date
 from src.utils import messages
 
 
@@ -73,6 +75,11 @@ def _extract_lc_classification(lccn: str) -> str:
 def _safe_filename(s: str) -> str:
     """Strip characters that are invalid in file names."""
     return re.sub(r'[\\/:*?"<>|\s]+', "_", s).strip("_") or "default"
+
+
+def _display_date(value) -> str:
+    """Format storage dates for TSV/live display."""
+    return yyyymmdd_to_iso_date(value) or ""
 
 
 class HarvestWorkerV2(QThread):
@@ -459,7 +466,7 @@ class HarvestWorkerV2(QThread):
         nlmcn_source=None,
     ):
         classification = _extract_lc_classification(lccn or "")
-        date_added = today_yyyymmdd()
+        date_added = _display_date(today_yyyymmdd())
         normalized_isbn = str(isbn or "").replace("-", "").strip()
         mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
         if mode == "nlmcn":
@@ -553,7 +560,7 @@ class HarvestWorkerV2(QThread):
 
     def _append_failed_attempt_row(self, isbn, attempt_type, target, reason, attempted_date=None):
         normalized_isbn = str(isbn or "").replace("-", "").strip()
-        attempt_value = attempted_date or today_yyyymmdd()
+        attempt_value = _display_date(attempted_date or today_yyyymmdd())
         for label in self._failed_type_labels(attempt_type):
             row = [label, normalized_isbn, target or "-", attempt_value, reason or "Unknown error"]
             self._session_failed.append(row)
@@ -561,7 +568,7 @@ class HarvestWorkerV2(QThread):
 
     def _append_retry_skip_rows(self, isbn, targets, attempt_type, reason):
         normalized_isbn = str(isbn or "").replace("-", "").strip()
-        attempt_value = today_yyyymmdd()
+        attempt_value = _display_date(today_yyyymmdd())
         for target_name in targets or ["RetryRule"]:
             for label in self._failed_type_labels(attempt_type):
                 row = [label, normalized_isbn, target_name or "RetryRule", attempt_value, reason]
@@ -881,6 +888,7 @@ class HarvestTabV2(QWidget):
         header_col.addWidget(subtitle)
         header_layout.addLayout(header_col)
         header_layout.addStretch()
+
         layout.addLayout(header_layout)
 
         # ── 2. Status Banner ───────────────────────────────────────────────────
@@ -1294,8 +1302,6 @@ class HarvestTabV2(QWidget):
         layout.addWidget(action_frame)
 
         self._transition_state(UIState.IDLE)
-
-
 
     def _toggle_stop_rule_visibility(self, mode_text=None):
         if not mode_text:

@@ -215,6 +215,56 @@ class ProfileManager:
 
         return True
 
+    def update_profile_settings(self, name: str, updates: Dict) -> bool:
+        """Merge setting updates into an existing profile, creating it if needed."""
+        if not isinstance(updates, dict):
+            raise TypeError("updates must be a dictionary")
+
+        if name == "Default Settings":
+            file_path = self.default_profile_path
+            profile_data = self._load_json(file_path) if file_path.exists() else self._create_profile_data(name, {}, "")
+        else:
+            slug = self._profile_slug(name)
+            profile_dir = self.get_profile_dir(name)
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            file_path = profile_dir / f"{slug}.json"
+            if file_path.exists():
+                profile_data = self._load_json(file_path)
+            else:
+                loaded = self.load_profile(name)
+                profile_data = loaded if loaded else self._create_profile_data(name, {}, "")
+
+        settings = profile_data.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+        settings.update(updates)
+        profile_data["settings"] = settings
+        profile_data["profile_name"] = name
+        profile_data["last_modified"] = datetime.now().isoformat()
+
+        with open(file_path, 'w') as f:
+            json.dump(profile_data, f, indent=2)
+
+        return True
+
+    def get_profile_setting(self, name: str, key: str, default=None):
+        """Return a single profile setting value."""
+        profile = self.load_profile(name)
+        if not profile:
+            return default
+        settings = profile.get("settings", {})
+        if not isinstance(settings, dict):
+            return default
+        return settings.get(key, default)
+
+    def set_active_profile_setting(self, key: str, value) -> bool:
+        """Persist a single setting into the currently active profile."""
+        return self.update_profile_settings(self.get_active_profile(), {key: value})
+
+    def get_active_profile_setting(self, key: str, default=None):
+        """Read a single setting from the currently active profile."""
+        return self.get_profile_setting(self.get_active_profile(), key, default)
+
     def _create_profile_data(self, name: str, settings: Dict, description: str) -> Dict:
         """Create new profile data structure."""
         return {

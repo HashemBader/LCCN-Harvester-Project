@@ -5,7 +5,8 @@ Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QBoxLayout, QLabel, QFrame,
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QPushButton, QSizePolicy, QMessageBox
+    QComboBox, QPushButton, QSizePolicy, QMessageBox, QStackedWidget,
+    QLineEdit, QTextEdit, QFormLayout
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QUrl
 from datetime import datetime
@@ -18,6 +19,7 @@ from .icons import (
     get_icon, get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE,
     SVG_X_CIRCLE, SVG_DASHBOARD, SVG_FOLDER_OPEN
 )
+from .database_browser_dialog import DatabaseBrowserDialog
 
 
 def _write_csv_copy(tsv_path: str, csv_path: str) -> None:
@@ -176,6 +178,7 @@ class ProfileSwitchCombo(QComboBox):
 class DashboardTabV2(QWidget):
     profile_selected = pyqtSignal(str)
     create_profile_requested = pyqtSignal()
+    page_title_changed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -216,10 +219,20 @@ class DashboardTabV2(QWidget):
         self.refresh_data()
 
     def _setup_ui(self):
-        # Wrap content in a scroll area so widgets never get compressed on resize
         _outer = QVBoxLayout(self)
         _outer.setContentsMargins(0, 0, 0, 0)
         _outer.setSpacing(0)
+
+        # Top-level stack: 0 = dashboard, 1 = Linked ISBNs panel
+        self._main_stack = QStackedWidget()
+        _outer.addWidget(self._main_stack)
+
+        # ── Page 0: Dashboard ──────────────────────────────────────
+        _dash_page = QWidget()
+        _dash_layout = QVBoxLayout(_dash_page)
+        _dash_layout.setContentsMargins(0, 0, 0, 0)
+        _dash_layout.setSpacing(0)
+
         _scroll = QScrollArea()
         _scroll.setWidgetResizable(True)
         _scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -229,7 +242,10 @@ class DashboardTabV2(QWidget):
         _scr_content = QWidget()
         _scr_content.setMinimumWidth(700)  # cards never compress below this
         _scroll.setWidget(_scr_content)
-        _outer.addWidget(_scroll)
+        _dash_layout.addWidget(_scroll)
+        self._main_stack.addWidget(_dash_page)
+
+        # Page 1 built after the dashboard content so self.db is ready
         main_layout = QVBoxLayout(_scr_content)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(16)
@@ -288,9 +304,11 @@ class DashboardTabV2(QWidget):
         main_layout.addLayout(self.content_split)
         
         main_layout.addStretch()
-        # Use actual widget width; fall back to wide default on first paint
         self._apply_responsive_layout(self.width() or 1200)
         self._refresh_result_file_buttons()
+
+        # ── Page 1: Linked ISBNs full panel ───────────────────────
+        self._main_stack.addWidget(self._build_linked_isbn_page())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -384,6 +402,22 @@ class DashboardTabV2(QWidget):
         )
         self.btn_open_linked_isbns.clicked.connect(self._export_linked_isbns)
         layout.addWidget(self.btn_open_linked_isbns)
+
+        self.btn_browse_db = QPushButton("Browse Database")
+        self.btn_browse_db.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_browse_db.setMinimumHeight(42)
+        self.btn_browse_db.setProperty("class", "SecondaryButton")
+        self.btn_browse_db.setToolTip("Browse all records in the harvester database")
+        self.btn_browse_db.clicked.connect(self._open_database_browser)
+        layout.addWidget(self.btn_browse_db)
+
+        self.btn_linked_isbns = QPushButton("Linked ISBNs")
+        self.btn_linked_isbns.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_linked_isbns.setMinimumHeight(42)
+        self.btn_linked_isbns.setProperty("class", "SecondaryButton")
+        self.btn_linked_isbns.setToolTip("Query, link, or merge linked ISBN rows")
+        self.btn_linked_isbns.clicked.connect(self._go_to_linked_isbn_page)
+        layout.addWidget(self.btn_linked_isbns)
 
         self.btn_reset_stats = QPushButton("Reset Dashboard Stats")
         self.btn_reset_stats.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -551,6 +585,261 @@ class DashboardTabV2(QWidget):
         self.reset_dashboard_stats()
         self.refresh_data()
         self.set_idle(None)
+
+    def _open_database_browser(self):
+        dialog = DatabaseBrowserDialog(parent=self, db=self.db)
+        dialog.exec()
+
+    def _go_to_linked_isbn_page(self):
+        self._main_stack.setCurrentIndex(1)
+        self.page_title_changed.emit("Linked ISBNs")
+
+    def _go_to_dashboard(self):
+        self._main_stack.setCurrentIndex(0)
+        self.page_title_changed.emit("Dashboard")
+
+    # ------------------------------------------------------------------
+    # Linked ISBNs sub-page (embedded in the dashboard stack)
+    # ------------------------------------------------------------------
+    def _build_linked_isbn_page(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 16)
+        root.setSpacing(16)
+
+        # ── Back button (replaces the page title row) ──────────────
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(0, 0, 0, 0)
+        btn_back = QPushButton("← Back to Dashboard")
+        btn_back.setProperty("class", "SecondaryButton")
+        btn_back.setMinimumHeight(36)
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_back.clicked.connect(self._go_to_dashboard)
+        hdr.addWidget(btn_back)
+        hdr.addStretch()
+        root.addLayout(hdr)
+
+        sub = QLabel(
+            "Query which ISBNs are linked together, manually link two ISBNs, "
+            "or consolidate existing rows under the lowest ISBN."
+        )
+        sub.setProperty("class", "HelperText")
+        sub.setWordWrap(True)
+        root.addWidget(sub)
+
+        # ── Two-column layout: Query left | Link+Rewrite right ─────
+        cols = QHBoxLayout()
+        cols.setSpacing(24)
+
+        # Left column — Query
+        left = QFrame()
+        left.setProperty("class", "Card")
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(20, 20, 20, 20)
+        left_layout.setSpacing(10)
+
+        lbl_q = QLabel("QUERY")
+        lbl_q.setProperty("class", "CardTitle")
+        left_layout.addWidget(lbl_q)
+
+        q_row = QHBoxLayout()
+        q_row.setSpacing(8)
+        self._li_query_input = QLineEdit()
+        self._li_query_input.setPlaceholderText("Enter any ISBN…")
+        self._li_query_input.setMinimumHeight(36)
+        self._li_query_input.setMaximumHeight(36)
+        self._li_query_input.setStyleSheet("QLineEdit { padding: 4px 10px; }")
+        self._li_query_input.returnPressed.connect(self._li_run_query)
+        q_row.addWidget(self._li_query_input, stretch=1)
+        btn_q = QPushButton("Look Up")
+        btn_q.setProperty("class", "PrimaryButton")
+        btn_q.setMinimumHeight(36)
+        btn_q.setMinimumWidth(90)
+        btn_q.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_q.clicked.connect(self._li_run_query)
+        q_row.addWidget(btn_q)
+        left_layout.addLayout(q_row)
+
+        self._li_query_result = QTextEdit()
+        self._li_query_result.setReadOnly(True)
+        self._li_query_result.setPlaceholderText("Results appear here…")
+        self._li_query_result.setProperty("class", "TerminalViewport")
+        left_layout.addWidget(self._li_query_result, stretch=1)
+        cols.addWidget(left, stretch=1)
+
+        # Right column — Link + Rewrite
+        right = QFrame()
+        right.setProperty("class", "Card")
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(20, 20, 20, 20)
+        right_layout.setSpacing(14)
+
+        # Link section
+        lbl_link = QLabel("LINK TWO ISBNs")
+        lbl_link.setProperty("class", "CardTitle")
+        right_layout.addWidget(lbl_link)
+
+        hint_link = QLabel(
+            "Mark <b>Other</b> as a variant of <b>Lowest</b>. "
+            "Only the mapping is stored — no rows are moved."
+        )
+        hint_link.setProperty("class", "HelperText")
+        hint_link.setWordWrap(True)
+        right_layout.addWidget(hint_link)
+
+        link_form = QFormLayout()
+        link_form.setSpacing(8)
+        link_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        link_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        _isbn_style = "QLineEdit { padding: 4px 10px; }"
+        self._li_link_lowest = QLineEdit()
+        self._li_link_lowest.setPlaceholderText("Canonical / lowest ISBN")
+        self._li_link_lowest.setMinimumHeight(34)
+        self._li_link_lowest.setMaximumHeight(34)
+        self._li_link_lowest.setStyleSheet(_isbn_style)
+        link_form.addRow("Lowest ISBN:", self._li_link_lowest)
+        self._li_link_other = QLineEdit()
+        self._li_link_other.setPlaceholderText("Variant / higher ISBN")
+        self._li_link_other.setMinimumHeight(34)
+        self._li_link_other.setMaximumHeight(34)
+        self._li_link_other.setStyleSheet(_isbn_style)
+        link_form.addRow("Other ISBN:", self._li_link_other)
+        right_layout.addLayout(link_form)
+
+        btn_link_row = QHBoxLayout()
+        btn_link_row.addStretch()
+        btn_link = QPushButton("Save Link")
+        btn_link.setProperty("class", "SecondaryButton")
+        btn_link.setMinimumHeight(36)
+        btn_link.setMinimumWidth(120)
+        btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_link.clicked.connect(self._li_run_link)
+        btn_link_row.addWidget(btn_link)
+        right_layout.addLayout(btn_link_row)
+
+        # Divider
+        div = QFrame()
+        div.setFrameShape(QFrame.Shape.HLine)
+        right_layout.addWidget(div)
+
+        # Rewrite section
+        lbl_rw = QLabel("REWRITE TO LOWEST ISBN")
+        lbl_rw.setProperty("class", "CardTitle")
+        right_layout.addWidget(lbl_rw)
+
+        hint_rw = QLabel(
+            "Move all <b>main</b> and <b>attempted</b> rows from Other onto Lowest, "
+            "merging call numbers and fail counts."
+        )
+        hint_rw.setProperty("class", "HelperText")
+        hint_rw.setWordWrap(True)
+        right_layout.addWidget(hint_rw)
+
+        rw_form = QFormLayout()
+        rw_form.setSpacing(8)
+        rw_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        rw_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        self._li_rw_lowest = QLineEdit()
+        self._li_rw_lowest.setPlaceholderText("Keep this ISBN")
+        self._li_rw_lowest.setMinimumHeight(34)
+        self._li_rw_lowest.setMaximumHeight(34)
+        self._li_rw_lowest.setStyleSheet(_isbn_style)
+        rw_form.addRow("Lowest ISBN:", self._li_rw_lowest)
+        self._li_rw_other = QLineEdit()
+        self._li_rw_other.setPlaceholderText("Merge this ISBN into lowest")
+        self._li_rw_other.setMinimumHeight(34)
+        self._li_rw_other.setMaximumHeight(34)
+        self._li_rw_other.setStyleSheet(_isbn_style)
+        rw_form.addRow("Other ISBN:", self._li_rw_other)
+        right_layout.addLayout(rw_form)
+
+        btn_rw_row = QHBoxLayout()
+        btn_rw_row.addStretch()
+        btn_rw = QPushButton("Rewrite && Merge")
+        btn_rw.setProperty("class", "DangerButton")
+        btn_rw.setMinimumHeight(36)
+        btn_rw.setMinimumWidth(150)
+        btn_rw.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_rw.setToolTip("Moves rows in the database — cannot be undone.")
+        btn_rw.clicked.connect(self._li_run_rewrite)
+        btn_rw_row.addWidget(btn_rw)
+        right_layout.addLayout(btn_rw_row)
+
+        right_layout.addStretch()
+        cols.addWidget(right, stretch=1)
+        root.addLayout(cols, stretch=1)
+
+        # Status bar
+        self._li_status = QLabel("")
+        self._li_status.setProperty("class", "HelperText")
+        self._li_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self._li_status)
+
+        return page
+
+    def _li_set_status(self, msg: str, error: bool = False):
+        color = "#ef4444" if error else "#22c55e"
+        self._li_status.setText(msg)
+        self._li_status.setStyleSheet(f"color: {color};")
+
+    def _li_run_query(self):
+        isbn = self._li_query_input.text().strip()
+        if not isbn:
+            self._li_set_status("Please enter an ISBN.", error=True)
+            return
+        try:
+            lowest = self.db.get_lowest_isbn(isbn)
+            linked = self.db.get_linked_isbns(isbn)
+            lines = []
+            if lowest != isbn:
+                lines.append(f"Canonical lowest ISBN for '{isbn}':  {lowest}")
+            else:
+                lines.append(f"'{isbn}' is already the canonical lowest (or unlinked).")
+            if linked:
+                lines.append(f"\nISBNs linked under '{isbn}':")
+                for other in linked:
+                    lines.append(f"  • {other}")
+            else:
+                lines.append(f"\nNo other ISBNs are linked under '{isbn}'.")
+            self._li_query_result.setPlainText("\n".join(lines))
+            self._li_set_status("Query complete.")
+        except Exception as exc:
+            self._li_query_result.setPlainText(f"Error: {exc}")
+            self._li_set_status(str(exc), error=True)
+
+    def _li_run_link(self):
+        lowest = self._li_link_lowest.text().strip()
+        other = self._li_link_other.text().strip()
+        if not lowest or not other:
+            self._li_set_status("Both fields are required.", error=True)
+            return
+        if lowest == other:
+            self._li_set_status("ISBNs must be different.", error=True)
+            return
+        try:
+            self.db.upsert_linked_isbn(lowest_isbn=lowest, other_isbn=other)
+            self._li_link_lowest.clear()
+            self._li_link_other.clear()
+            self._li_set_status(f"Linked: '{other}'  →  '{lowest}'")
+        except Exception as exc:
+            self._li_set_status(str(exc), error=True)
+
+    def _li_run_rewrite(self):
+        lowest = self._li_rw_lowest.text().strip()
+        other = self._li_rw_other.text().strip()
+        if not lowest or not other:
+            self._li_set_status("Both fields are required.", error=True)
+            return
+        if lowest == other:
+            self._li_set_status("ISBNs must be different.", error=True)
+            return
+        try:
+            self.db.rewrite_to_lowest_isbn(lowest_isbn=lowest, other_isbn=other)
+            self._li_rw_lowest.clear()
+            self._li_rw_other.clear()
+            self._li_set_status(f"Rewritten: '{other}' merged into '{lowest}'.")
+        except Exception as exc:
+            self._li_set_status(str(exc), error=True)
 
     def refresh_data(self):
         """Refresh dashboard-only state without repopulating cleared results."""

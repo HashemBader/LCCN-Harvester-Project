@@ -1,8 +1,8 @@
 import os
 import sys
 import pytest
-from unittest.mock import patch, MagicMock, mock_open
-from src.utils.isbn_validator import validate_isbn, log_invalid_isbn, INVALID_ISBN_LOG
+from unittest.mock import patch, mock_open
+from src.utils.isbn_validator import validate_isbn, log_invalid_isbn, linked_isbns_match
 
 # Add src to path so we can import modules from the project source
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -70,3 +70,25 @@ def test_log_invalid_isbn_file_write():
     written_content = handle.write.call_args[0][0]
     # Expect: timestamp\tbad-isbn\n
     assert f"\t{test_isbn}\n" in written_content
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        (VALID_ISBN10_CLEAN, VALID_ISBN13_CLEAN),
+        (VALID_ISBN10_HYPHENS, VALID_ISBN13_HYPHENS),
+        (VALID_ISBN13_HYPHENS, VALID_ISBN13_CLEAN),
+        ("0123456789", "9780123456786"),
+        ("0-8044-2957-X", "9780804429573"),
+    ],
+)
+def test_linked_isbns_match_equivalent_forms(left, right):
+    """Linked ISBN comparison treats equivalent ISBN-10/13 forms as the same book."""
+    assert linked_isbns_match(left, right) is True
+    assert linked_isbns_match(right, left) is True
+
+
+def test_linked_isbns_match_rejects_different_books():
+    """Different ISBN values do not compare equal just because they normalize cleanly."""
+    assert linked_isbns_match(VALID_ISBN10_CLEAN, "9780804429573") is False
+

@@ -197,3 +197,132 @@ def test_init_db_recovers_from_legacy_main_table_before_index_creation(tmp_path:
         ("lccn", "QA76.76", "LoC", "integer"),
         ("nlmcn", "W1 100", "NLM", "integer"),
     ]
+
+
+def test_linked_isbn_helpers_insert_query_and_update(tmp_path: Path):
+    db_path = tmp_path / "test.sqlite3"
+    db = DatabaseManager(db_path)
+    db.init_db()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(linked_isbns)").fetchall()]
+        index_names = {row[1] for row in conn.execute("PRAGMA index_list(linked_isbns)").fetchall()}
+
+    assert columns == ["lowest_isbn", "other_isbn"]
+    assert "idx_linked_lowest" in index_names
+    assert "idx_linked_other" in index_names
+
+    db.upsert_linked_isbn(lowest_isbn="9780000000001", other_isbn="9780000000002")
+
+    assert db.get_lowest_isbn("9780000000002") == "9780000000001"
+    assert db.get_linked_isbns("9780000000001") == ["9780000000002"]
+
+    db.upsert_linked_isbn(lowest_isbn="9780000000000", other_isbn="9780000000002")
+
+    assert db.get_lowest_isbn("9780000000002") == "9780000000000"
+    assert db.get_linked_isbns("9780000000001") == []
+    assert db.get_linked_isbns("9780000000000") == ["9780000000002"]
+
+
+def test_init_db_migrates_legacy_linked_isbn_schema(tmp_path: Path):
+    db_path = tmp_path / "legacy_linked.sqlite3"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE linked_isbns (
+                isbn TEXT PRIMARY KEY,
+                canonical_isbn TEXT NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO linked_isbns (isbn, canonical_isbn) VALUES (?, ?)",
+            [
+                ("9780000000001", "9780000000001"),
+                ("9780000000002", "9780000000001"),
+                ("9780000000003", "9780000000001"),
+            ],
+        )
+
+    db = DatabaseManager(db_path)
+    db.init_db()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(linked_isbns)").fetchall()]
+        rows = conn.execute(
+            "SELECT lowest_isbn, other_isbn FROM linked_isbns ORDER BY other_isbn"
+        ).fetchall()
+
+    assert columns == ["lowest_isbn", "other_isbn"]
+    assert rows == [
+        ("9780000000001", "9780000000002"),
+        ("9780000000001", "9780000000003"),
+    ]
+
+
+def test_rewrite_to_lowest_isbn_moves_main_attempted_and_linked_rows(tmp_path: Path):
+    db_path = tmp_path / "rewrite.sqlite3"
+    db = DatabaseManager(db_path)
+    db.init_db()
+
+    lowest_isbn = "9780000000001"
+    other_isbn = "9780000000002"
+
+    db.upsert_main(
+        MainRecord(
+            isbn=lowest_isbn,
+            nlmcn="W1 100",
+            nlmcn_source="NLM",
+            date_added=20260320,
+        )
+    )
+    db.upsert_main(
+        MainRecord(
+            isbn=other_isbn,
+            lccn="QA76.76",
+            lccn_source="LoC",
+            date_added=20260321,
+        )
+    )
+
+    db.upsert_attempted(
+        isbn=lowest_isbn,
+        last_target="Harvard",
+        attempt_type="both",
+        last_error="Earlier failure",
+        attempted_time=20260320,
+    )
+    db.upsert_attempted(
+        isbn=other_isbn,
+        last_target="Harvard",
+        attempt_type="both",
+        last_error="Later failure",
+        attempted_time=20260321,
+    )
+    db.upsert_attempted(
+        isbn=other_isbn,
+        last_target="Harvard",
+        attempt_type="both",
+        last_error="Latest failure",
+        attempted_time=20260322,
+    )
+
+    db.rewrite_to_lowest_isbn(lowest_isbn=lowest_isbn, other_isbn=other_isbn)
+
+    moved = db.get_main(lowest_isbn)
+    assert moved is not None
+    assert moved.isbn == lowest_isbn
+    assert moved.lccn == "QA76.76"
+    assert moved.nlmcn == "W1 100"
+    assert db.get_main(other_isbn) is None
+
+    attempted = db.get_attempted_for(lowest_isbn, "Harvard", "both")
+    assert attempted is not None
+    assert attempted.fail_count == 3
+    assert attempted.last_attempted == 20260322
+    assert attempted.last_error == "Latest failure"
+    assert db.get_attempted_for(other_isbn, "Harvard", "both") is None
+
+    assert db.get_lowest_isbn(other_isbn) == lowest_isbn
+    assert db.get_linked_isbns(lowest_isbn) == [other_isbn]

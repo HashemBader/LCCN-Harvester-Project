@@ -394,6 +394,7 @@ class ModernMainWindow(QMainWindow):
         # Dashboard profile dock controls
         self.dashboard_tab.profile_selected.connect(self._on_dashboard_profile_selected)
         self.dashboard_tab.create_profile_requested.connect(self._open_profile_settings)
+        self.dashboard_tab.page_title_changed.connect(self.page_title.setText)
 
         # Keep tab state fresh when navigating
         self.stack.currentChanged.connect(self._on_page_changed)

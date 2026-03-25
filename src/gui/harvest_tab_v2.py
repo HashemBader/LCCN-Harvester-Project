@@ -17,14 +17,19 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QMessageBox,
     QFileDialog,
+    QInputDialog,
     QLineEdit,
     QScrollArea,
     QSizePolicy,
     QComboBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
-from PyQt6.QtGui import QShortcut, QKeySequence, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QShortcut, QKeySequence, QDragEnterEvent, QDropEvent, QColor, QBrush
 from pathlib import Path
 from enum import Enum, auto
 from itertools import islice
@@ -859,27 +864,10 @@ class HarvestTabV2(QWidget):
         self._check_start_conditions()
 
     def _setup_ui(self):
-        # Wrap everything in a scroll area so the layout never compresses on resize
-        _outer = QVBoxLayout(self)
-        _outer.setContentsMargins(0, 0, 0, 0)
-        _outer.setSpacing(0)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-
-        _scr_content = QWidget()
-        _scr_content.setMinimumWidth(780)   # never compress below this
-        self._scroll.setWidget(_scr_content)
-        _outer.addWidget(self._scroll)
-
-        # All content goes into this inner layout
-        layout = QVBoxLayout(_scr_content)
-        layout.setSpacing(10)
-        layout.setContentsMargins(24, 16, 24, 16)
+        # Direct layout — no scroll area; everything must fit in one screen
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(20, 12, 20, 12)
 
         # ── 1. Header ──────────────────────────────────────────────────────────
         header_layout = QHBoxLayout()
@@ -895,12 +883,12 @@ class HarvestTabV2(QWidget):
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
-        # ── 2. Status Banner (hidden until a file is loaded / harvest runs) ────
+        # ── 2. Status Banner ───────────────────────────────────────────────────
         self.banner_frame = QFrame()
         self.banner_frame.setObjectName("HarvestBanner")
         self.banner_frame.setProperty("class", "Card")
         banner_layout = QHBoxLayout(self.banner_frame)
-        banner_layout.setContentsMargins(16, 8, 16, 8)
+        banner_layout.setContentsMargins(16, 6, 16, 6)
         self.lbl_banner_title = QLabel("READY")
         self.lbl_banner_title.setProperty("class", "CardTitle")
         self.lbl_banner_stats = QLabel("")
@@ -912,31 +900,45 @@ class HarvestTabV2(QWidget):
         banner_layout.addWidget(self.lbl_banner_stats)
         layout.addWidget(self.banner_frame)
 
-        # ── 3. Run Setup + File Stats in one card ──────────────────────────────
+        # ── 3. 2×2 grid: [Run Setup | File Statistics] / [MARC Import | File Preview]
+        middle_row = QGridLayout()
+        middle_row.setSpacing(12)
+        middle_row.setColumnStretch(0, 1)
+        middle_row.setColumnStretch(1, 1)
+        middle_row.setRowStretch(0, 1)
+        middle_row.setRowStretch(1, 1)
+
+        # ── LEFT: Run Setup card ───────────────────────────────────────────────
         self.input_card = DroppableGroupBox("Run Setup")
         self.input_card.file_dropped.connect(self.set_input_file)
+        self.input_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         input_layout = QVBoxLayout(self.input_card)
-        input_layout.setContentsMargins(16, 12, 16, 12)
-        input_layout.setSpacing(8)
+        input_layout.setContentsMargins(16, 10, 16, 10)
+        input_layout.setSpacing(6)
 
-        # File input row
         setup_grid = QGridLayout()
+        setup_grid.setSpacing(6)
         setup_grid.setColumnStretch(1, 1)
 
         lbl_input = QLabel("Input file:")
         lbl_input.setProperty("class", "HelperText")
-
         file_input_layout = QHBoxLayout()
+        file_input_layout.setSpacing(6)
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("No file selected... (drag & drop TSV/CSV/TXT/Excel here)")
+        self.file_path_edit.setPlaceholderText("No file selected… drag & drop or browse")
         self.file_path_edit.setReadOnly(True)
         self.file_path_edit.setProperty("class", "LineEdit")
-        self.btn_browse = QPushButton("Choose file…")
+        self.btn_browse = QPushButton("Browse…")
         self.btn_browse.setProperty("class", "PrimaryButton")
         self.btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_browse.clicked.connect(self._browse_file)
         self.btn_clear_file = QPushButton("Clear")
-        self.btn_clear_file.setProperty("class", "DangerButton")
+        self.btn_clear_file.setProperty("class", "PrimaryButton")
+        self.btn_clear_file.setStyleSheet(
+            "QPushButton { background: transparent; color: #94a3b8;"
+            " border: 1.5px solid #e2e8f0; }"
+            " QPushButton:hover { color: #475569; border-color: #cbd5e1; background: #f8fafc; }"
+        )
         self.btn_clear_file.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_file.clicked.connect(self._clear_input)
         self.btn_clear_file.setVisible(False)
@@ -946,7 +948,6 @@ class HarvestTabV2(QWidget):
         setup_grid.addWidget(lbl_input, 0, 0)
         setup_grid.addLayout(file_input_layout, 0, 1)
 
-        # Run mode row
         lbl_run_mode = QLabel("Run Mode:")
         lbl_run_mode.setProperty("class", "HelperText")
         self.combo_run_mode = ConsistentComboBox()
@@ -967,159 +968,260 @@ class HarvestTabV2(QWidget):
         setup_grid.addWidget(lbl_run_mode, 1, 0)
         setup_grid.addWidget(self.combo_run_mode, 1, 1)
 
-        # Stop rule row (conditionally visible)
         self.lbl_stop_rule = QLabel("Stop Rule:")
         self.lbl_stop_rule.setProperty("class", "HelperText")
         self.combo_stop_rule = ConsistentComboBox()
         self.combo_stop_rule.setProperty("class", "ComboBox")
         self.combo_stop_rule.addItems([
-            "Stop if either found", 
-            "Stop if LCCN found", 
-            "Stop if NLMCN found", 
-            "Continue until both found"
+            "Stop if either found",
+            "Stop if LCCN found",
+            "Stop if NLMCN found",
+            "Continue until both found",
         ])
-        
-        # Load from config, default to Stop if either
         if hasattr(self, "_config_getter") and callable(self._config_getter):
             saved_stop = config.get("stop_rule", "stop_either")
             mapping = {
                 "stop_either": "Stop if either found",
                 "stop_lccn": "Stop if LCCN found",
                 "stop_nlmcn": "Stop if NLMCN found",
-                "continue_both": "Continue until both found"
+                "continue_both": "Continue until both found",
             }
             self.combo_stop_rule.setCurrentText(mapping.get(saved_stop, "Stop if either found"))
-            
         setup_grid.addWidget(self.lbl_stop_rule, 2, 0)
         setup_grid.addWidget(self.combo_stop_rule, 2, 1)
 
         self.combo_run_mode.currentTextChanged.connect(self._toggle_stop_rule_visibility)
         self._toggle_stop_rule_visibility(self.combo_run_mode.currentText())
-
-        # Add the grid (file input + run mode + stop rule) to the card layout
         input_layout.addLayout(setup_grid)
+        input_layout.addStretch()
 
-        # Thin separator between setup and stats
-        sep_line = QFrame()
-        sep_line.setFrameShape(QFrame.Shape.HLine)
-        sep_line.setStyleSheet("QFrame { color: rgba(128,128,128,0.2); }")
-        input_layout.addWidget(sep_line)
+        # ── MARC Import card (bottom-left) ────────────────────────────────────
+        marc_card = QGroupBox("MARC Import")
+        marc_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        marc_vbox = QVBoxLayout(marc_card)
+        marc_vbox.setContentsMargins(14, 12, 14, 14)
+        marc_vbox.setSpacing(10)
 
-        # File Stats strip (inside the same card)
-        stats_row = QHBoxLayout()
-        stats_row.setContentsMargins(0, 4, 0, 4)
-        stats_row.setSpacing(0)
-        stat_defs = [
-            ("Valid (unique)",  "lbl_val_loaded"),
-            ("Valid rows",      "lbl_val_rows_valid"),
-            ("Duplicates",      "lbl_val_duplicates"),
-            ("Invalid rows",    "lbl_val_invalid"),
-            ("Total rows",      "lbl_val_rows"),
-            ("File size",       "lbl_val_size"),
+        # 1. Status banner
+        self._marc_status_label = QLabel("Select a MARC file (.mrc / .xml) to extract call numbers.")
+        self._marc_status_label.setWordWrap(True)
+        self._marc_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._marc_status_label.setStyleSheet(
+            "background: #f1f5f9; border-radius: 6px; padding: 8px 12px;"
+            " font-size: 12px; color: #475569;"
+        )
+        marc_vbox.addWidget(self._marc_status_label)
+
+        # 2. Four stat tiles in a row
+        marc_stat_row = QHBoxLayout()
+        marc_stat_row.setSpacing(8)
+        marc_stat_defs = [
+            ("Records Found", "_marc_stat_records"),
+            ("Call Numbers",  "_marc_stat_callnums"),
+            ("Matched",       "_marc_stat_matched"),
+            ("Unmatched",     "_marc_stat_unmatched"),
         ]
-        for i, (label_text, attr_name) in enumerate(stat_defs):
-            if i > 0:
-                vsep = QFrame()
-                vsep.setFrameShape(QFrame.Shape.VLine)
-                vsep.setFixedWidth(1)
-                vsep.setFixedHeight(38)
-                vsep.setStyleSheet("QFrame { background: rgba(128,128,128,0.15); }")
-                stats_row.addWidget(vsep, 0, Qt.AlignmentFlag.AlignVCenter)
-            col = QWidget()
-            col_layout = QVBoxLayout(col)
-            col_layout.setContentsMargins(16, 0, 16, 0)
-            col_layout.setSpacing(2)
+        for label_text, attr_name in marc_stat_defs:
+            tile = QWidget()
+            tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            tile.setStyleSheet(
+                "background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;"
+            )
+            tile_vbox = QVBoxLayout(tile)
+            tile_vbox.setContentsMargins(10, 10, 10, 10)
+            tile_vbox.setSpacing(3)
+            tile_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl_val = QLabel("—")
-            lbl_val.setStyleSheet("font-size: 18px; font-weight: 600;")
+            lbl_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_val.setStyleSheet(
+                "font-size: 20px; font-weight: 700; color: #1e293b; background: transparent; border: none;"
+            )
             lbl_cat = QLabel(label_text)
-            lbl_cat.setStyleSheet("font-size: 10px; color: grey;")
-            col_layout.addWidget(lbl_val)
-            col_layout.addWidget(lbl_cat)
-            stats_row.addWidget(col)
+            lbl_cat.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_cat.setStyleSheet(
+                "font-size: 10px; color: #94a3b8; background: transparent; border: none;"
+            )
+            tile_vbox.addWidget(lbl_val)
+            tile_vbox.addWidget(lbl_cat)
+            marc_stat_row.addWidget(tile)
             setattr(self, attr_name, lbl_val)
-        stats_row.addStretch()
-        input_layout.addLayout(stats_row)
+        marc_vbox.addLayout(marc_stat_row)
 
-        layout.addWidget(self.input_card)
+        # 3. Drop zone — expands to fill remaining space
+        marc_drop_zone = QFrame()
+        marc_drop_zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        marc_drop_zone.setStyleSheet(
+            "QFrame { border: 2px dashed #cbd5e1; border-radius: 8px; background: #f8fafc; }"
+        )
+        drop_zone_vbox = QVBoxLayout(marc_drop_zone)
+        drop_hint = QLabel("Drop .mrc or .xml file here")
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_hint.setStyleSheet(
+            "font-size: 13px; color: #94a3b8; background: transparent; border: none;"
+        )
+        drop_zone_vbox.addWidget(drop_hint)
+        marc_vbox.addWidget(marc_drop_zone, stretch=1)
 
-        # ── 4. Preview ─────────────────────────────────────────────────────────
-        preview_frame = QFrame()
-        preview_frame.setProperty("class", "Card")
-        # Prevent the preview from expanding vertically to fill leftover space
-        preview_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        # 4. File row at bottom
+        marc_file_row = QHBoxLayout()
+        marc_file_row.setSpacing(6)
+        self._marc_path_edit = QLineEdit()
+        self._marc_path_edit.setReadOnly(True)
+        self._marc_path_edit.setPlaceholderText("No MARC file selected… (.mrc binary or .xml MARCXML)")
+        self._marc_path_edit.setProperty("class", "LineEdit")
+        self._btn_browse_marc = QPushButton("Browse…")
+        self._btn_browse_marc.setProperty("class", "PrimaryButton")
+        self._btn_browse_marc.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_browse_marc.clicked.connect(self._browse_marc_file)
+        self._btn_import_marc = QPushButton("Import Records")
+        self._btn_import_marc.setProperty("class", "PrimaryButton")
+        self._btn_import_marc.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_import_marc.clicked.connect(self._import_marc_file)
+        self._btn_import_marc.setEnabled(False)
+        self._btn_clear_marc = QPushButton("Clear")
+        self._btn_clear_marc.setProperty("class", "PrimaryButton")
+        self._btn_clear_marc.setStyleSheet(
+            "QPushButton { background: transparent; color: #94a3b8;"
+            " border: 1.5px solid #e2e8f0; }"
+            " QPushButton:hover { color: #475569; border-color: #cbd5e1; background: #f8fafc; }"
+        )
+        self._btn_clear_marc.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_clear_marc.clicked.connect(self._clear_marc_file)
+        self._btn_clear_marc.setVisible(False)
+        marc_file_row.addWidget(self._marc_path_edit)
+        marc_file_row.addWidget(self._btn_clear_marc)
+        marc_file_row.addWidget(self._btn_browse_marc)
+        marc_file_row.addWidget(self._btn_import_marc)
+        marc_vbox.addLayout(marc_file_row)
+
+        stats_card = QGroupBox("File Statistics")
+        stats_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        stats_card_layout = QVBoxLayout(stats_card)
+        stats_card_layout.setContentsMargins(14, 14, 14, 14)
+        stats_card_layout.setSpacing(10)
+
+        stats_grid = QGridLayout()
+        stats_grid.setSpacing(10)
+        stat_defs = [
+            ("Valid (unique)", "lbl_val_loaded"),
+            ("Valid rows",     "lbl_val_rows_valid"),
+            ("Duplicates",     "lbl_val_duplicates"),
+            ("Invalid rows",   "lbl_val_invalid"),
+            ("Total rows",     "lbl_val_rows"),
+            ("File size",      "lbl_val_size"),
+        ]
+
+        for i, (label_text, attr_name) in enumerate(stat_defs):
+            tile = QWidget()
+            tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            tile.setStyleSheet(
+                "background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;"
+            )
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(14, 14, 14, 12)
+            tile_layout.setSpacing(4)
+            tile_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_val = QLabel("—")
+            lbl_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_val.setStyleSheet(
+                "font-size: 22px; font-weight: 700; color: #1e293b; background: transparent; border: none;"
+            )
+            lbl_cat = QLabel(label_text)
+            lbl_cat.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_cat.setStyleSheet(
+                "font-size: 11px; color: #94a3b8; font-weight: 500; background: transparent; border: none;"
+            )
+            tile_layout.addWidget(lbl_val)
+            tile_layout.addWidget(lbl_cat)
+            stats_grid.addWidget(tile, i // 3, i % 3)
+            setattr(self, attr_name, lbl_val)
+
+        stats_card_layout.addLayout(stats_grid)
+
+        # ── File Preview card (bottom-right) ──────────────────────────────────
+        preview_frame = QGroupBox("File Preview")
+        preview_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         preview_frame_layout = QVBoxLayout(preview_frame)
-        preview_frame_layout.setContentsMargins(12, 8, 12, 8)
+        preview_frame_layout.setContentsMargins(12, 12, 12, 12)
         preview_frame_layout.setSpacing(6)
 
-        # Toolbar row: title + filename + copy button
         preview_toolbar = QHBoxLayout()
-        preview_title = QLabel("File Preview")
-        preview_title.setStyleSheet("font-size: 11px; font-weight: 600; letter-spacing: 0.4px;")
         self.lbl_preview_filename = QLabel("No file selected")
         self.lbl_preview_filename.setStyleSheet("font-size: 10px; color: grey; font-style: italic;")
         self.btn_copy_preview = QPushButton("Copy")
         self.btn_copy_preview.setFixedHeight(24)
-        self.btn_copy_preview.setStyleSheet("font-size: 10px; padding: 0 10px;")
-        self.btn_copy_preview.clicked.connect(
-            lambda: QApplication.clipboard().setText(self.preview_text.toPlainText())
+        self.btn_copy_preview.setStyleSheet(
+            "background: transparent; font-size: 11px; font-weight: bold;"
+            " color: #1e293b; padding: 0 10px;"
         )
-        preview_toolbar.addWidget(preview_title)
+        self.btn_copy_preview.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy_preview.clicked.connect(self._copy_preview_content)
         preview_toolbar.addWidget(self.lbl_preview_filename)
         preview_toolbar.addStretch()
         preview_toolbar.addWidget(self.btn_copy_preview)
         preview_frame_layout.addLayout(preview_toolbar)
 
-        # Thin separator
-        prev_sep = QFrame()
-        prev_sep.setFrameShape(QFrame.Shape.HLine)
-        prev_sep.setStyleSheet("QFrame { color: rgba(128,128,128,0.2); }")
-        preview_frame_layout.addWidget(prev_sep)
+        # Table view with row numbers and status column
+        self.preview_table = QTableWidget()
+        self.preview_table.setShowGrid(False)
+        self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.preview_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.preview_table.horizontalHeader().setStretchLastSection(False)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.preview_table.verticalHeader().setDefaultSectionSize(26)
+        self.preview_table.verticalHeader().setVisible(True)
+        self.preview_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.preview_table.setStyleSheet("""
+            QTableWidget { background: transparent; border: none;
+                           font-size: 12px; font-family: 'Consolas', monospace; }
+            QTableWidget::item { padding: 2px 8px; }
+            QHeaderView::section { background: #f1f5f9; font-size: 11px; font-weight: 600;
+                                   padding: 4px 8px; border: none;
+                                   border-bottom: 1px solid #e2e8f0; }
+            QTableWidget::item:alternate { background: #f8fafc; }
+        """)
+        # Show placeholder headers before any file is loaded
+        self.preview_table.setColumnCount(2)
+        self.preview_table.setHorizontalHeaderLabels(["Value", "Status"])
+        self.preview_table.setRowCount(0)
+        preview_frame_layout.addWidget(self.preview_table, stretch=1)
 
+        # Keep preview_text as hidden attribute for backward compat
         self.info_label = QLabel("No file selected")
-        self.info_label.setWordWrap(True)
-        self.info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.info_label.setProperty("class", "CardHelper")
+        self.info_label.setVisible(False)
         self.preview_text = QTextEdit()
-        self.preview_text.setReadOnly(True)
-        self.preview_text.setProperty("class", "TerminalViewport")
-        self.preview_text.setMinimumHeight(60)
-        self.preview_text.setMaximumHeight(130)
-        self.preview_text.setStyleSheet("font-size: 13px; font-family: 'Consolas', monospace;")
-        preview_frame_layout.addWidget(self.preview_text)
-        layout.addWidget(preview_frame)
+        self.preview_text.setVisible(False)
 
-        # Absorb all extra vertical space here so nothing above or below stretches
-        layout.addStretch(1)
+        middle_row.addWidget(self.input_card,  0, 0)
+        middle_row.addWidget(stats_card,       0, 1)
+        middle_row.addWidget(marc_card,        1, 0)
+        middle_row.addWidget(preview_frame,    1, 1)
+        
+        layout.addLayout(middle_row, stretch=1)
 
-        # ── 5. Status pill + elapsed timer (created here, placed in action bar) ─
+        # ── 4. Status pill + elapsed timer ────────────────────────────────────
         self.lbl_run_status = QLabel("Idle")
         self.lbl_run_status.setProperty("class", "StatusPill")
         self.lbl_run_elapsed = QLabel("00:00:00")
         self.lbl_run_elapsed.setProperty("class", "ActivityValue")
 
-        # Timer
         self.run_timer = QTimer(self)
         self.run_timer.timeout.connect(self._update_timer)
         self.run_time = QTime(0, 0, 0)
         self.timer_is_paused = False
 
-        # ── 6. Action Bar ──────────────────────────────────────────────────────
+        # ── 5. Action Bar ──────────────────────────────────────────────────────
         action_frame = QFrame()
         action_frame.setProperty("class", "Card")
-        action_frame.setStyleSheet("""
-            QFrame[class="Card"] {
-                border-radius: 10px;
-            }
-        """)
-        action_layout = QHBoxLayout(action_frame)
-        action_layout.setContentsMargins(20, 10, 20, 10)
-        action_layout.setSpacing(0)
+        action_frame.setStyleSheet("QFrame[class=\"Card\"] { border-radius: 10px; }")
+        
+        # We need a vertical layout for action_frame so the progress bar goes across the bottom
+        action_layout = QVBoxLayout(action_frame)
+        action_layout.setContentsMargins(20, 10, 20, 8)
+        action_layout.setSpacing(8)
 
-        # ── Left: progress + status info ────────────────────────────────────
-        progress_section = QVBoxLayout()
-        progress_section.setSpacing(6)
-
-        # Top row: status pill + elapsed + log message
+        # Top row: text + buttons
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
         top_row.addWidget(self.lbl_run_status)
@@ -1128,54 +1230,20 @@ class HarvestTabV2(QWidget):
         lbl_elapsed_label.setStyleSheet("color: grey; font-size: 11px;")
         top_row.addWidget(lbl_elapsed_label)
         top_row.addWidget(self.lbl_run_elapsed)
-
-        self.log_output = QLabel("Ready…")
-        self.log_output.setProperty("class", "CardHelper")
-        self.log_output.setAccessibleName("Harvest status message")
-        self.log_output.setStyleSheet("font-size: 11px; color: grey; font-style: italic;")
         top_row.addStretch()
 
-        # Progress count label — right-aligned, outside the bar
         self.lbl_progress_text = QLabel("0 / 0")
         self.lbl_progress_text.setStyleSheet("font-size: 11px; font-weight: 600; min-width: 80px;")
         self.lbl_progress_text.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         top_row.addWidget(self.lbl_progress_text)
-
+        
+        self.log_output = QLabel("Ready…")
+        self.log_output.setProperty("class", "CardHelper")
+        self.log_output.setAccessibleName("Harvest status message")
+        self.log_output.setStyleSheet("font-size: 11px; color: grey; font-style: italic; min-width: 250px;")
         top_row.addWidget(self.log_output)
-        progress_section.addLayout(top_row)
 
-        # Progress bar — clean, no text inside
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setProperty("class", "TerminalProgressBar")
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(10)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border-radius: 5px;
-            }
-            QProgressBar::chunk {
-                border-radius: 5px;
-            }
-        """)
-        progress_section.addWidget(self.progress_bar)
-
-        action_layout.addLayout(progress_section, stretch=3)
-
-        # ── Vertical divider ───────────────────────────────────────────────
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.VLine)
-        divider.setFixedWidth(1)
-        divider.setFixedHeight(48)
-        divider.setStyleSheet("QFrame { background: rgba(128,128,128,0.2); }")
-        action_layout.addSpacing(20)
-        action_layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
-        action_layout.addSpacing(20)
-
-        # ── Right: buttons ─────────────────────────────────────────────────
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(10)
-
-        BTN_H = 44
+        BTN_H = 36
 
         self.btn_stop = QPushButton("✕  Cancel")
         self.btn_stop.setProperty("class", "DangerButton")
@@ -1208,12 +1276,21 @@ class HarvestTabV2(QWidget):
         self.lbl_start_helper = QLabel("")
         self.lbl_start_helper.setVisible(False)
 
-        buttons_layout.addWidget(self.btn_stop)
-        buttons_layout.addWidget(self.btn_pause)
-        buttons_layout.addWidget(self.btn_new_run)
-        buttons_layout.addWidget(self.btn_start)
+        top_row.addWidget(self.btn_stop)
+        top_row.addWidget(self.btn_pause)
+        top_row.addWidget(self.btn_new_run)
+        top_row.addWidget(self.btn_start)
+        
+        action_layout.addLayout(top_row)
 
-        action_layout.addLayout(buttons_layout)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setProperty("class", "TerminalProgressBar")
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { background: #e2e8f0; border-radius: 3px; } QProgressBar::chunk { border-radius: 3px; }"
+        )
+        action_layout.addWidget(self.progress_bar)
         layout.addWidget(action_frame)
 
         self._transition_state(UIState.IDLE)
@@ -1371,12 +1448,7 @@ class HarvestTabV2(QWidget):
 
     def _update_scrollbar_policy(self):
         """Hide vertical scrollbar when the window is maximized/fullscreen."""
-        win = self.window()
-        if win and (win.isMaximized() or win.isFullScreen()):
-            policy = Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        else:
-            policy = Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        self._scroll.setVerticalScrollBarPolicy(policy)
+        pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1437,14 +1509,16 @@ class HarvestTabV2(QWidget):
             # Success State
             self.input_file = path
 
-            # Update Path Display
+            # Update Path Display with blue tint
             self.file_path_edit.setText(str(path_obj))
+            self.file_path_edit.setStyleSheet(
+                "background-color: #eff6ff; border: 1.5px solid #3b82f6;"
+                " border-radius: 6px; padding: 4px 8px;"
+            )
 
-            # Enable clear button and make it red
+            # Show quiet ghost Clear button
             self.btn_clear_file.setEnabled(True)
-            self.btn_clear_file.setProperty("class", "DangerButton")
-            self.btn_clear_file.style().unpolish(self.btn_clear_file)
-            self.btn_clear_file.style().polish(self.btn_clear_file)
+            self.btn_clear_file.setVisible(True)
 
             # Labels and Preview
             self.progress_bar.setFormat(f"0 / {unique_valid}")
@@ -1507,26 +1581,77 @@ class HarvestTabV2(QWidget):
         self._transition_state(UIState.READY, count=count)
 
     def _load_file_preview(self):
-        """Load a snippet of the file for preview."""
+        """Load a snippet of the file into the preview table."""
+        self.preview_table.clearContents()
+        self.preview_table.setRowCount(0)
         if not self.input_file:
-            self.preview_text.clear()
             return
 
         path_obj = Path(self.input_file)
         if not path_obj.exists():
-            self.preview_text.setPlainText("Error: File does not exist.")
+            self._show_preview_message("Error: File does not exist.")
             return
 
         try:
             with open(path_obj, "r", encoding="utf-8-sig") as f:
-                lines = list(islice(f, 20))
-                preview_text = "".join(lines)
-                if len(lines) == 20:
-                    preview_text += "\n... (truncated)"
-            self.preview_text.setPlainText(preview_text)
-            self.lbl_preview_filename.setText(path_obj.name)
+                raw_lines = list(islice(f, 21))
+
+            truncated = len(raw_lines) == 21
+            lines = raw_lines[:20]
+            rows = [ln.rstrip("\n\r").split("\t") for ln in lines]
+            if not rows:
+                return
+
+            max_cols = max(len(r) for r in rows)
+            # Columns: data cols + Status
+            self.preview_table.setColumnCount(max_cols + 1)
+            self.preview_table.setRowCount(len(rows))
+            headers = [f"Col {i + 1}" for i in range(max_cols)] + ["Status"]
+            self.preview_table.setHorizontalHeaderLabels(headers)
+
+            for r, row in enumerate(rows):
+                for c, cell in enumerate(row):
+                    item = QTableWidgetItem(cell.strip())
+                    self.preview_table.setItem(r, c, item)
+                # Status: validate first cell as ISBN
+                raw = row[0].strip() if row else ""
+                is_valid = bool(normalize_isbn(raw.replace("-", "")))
+                status_item = QTableWidgetItem("✓ Valid" if is_valid else "✗ Invalid")
+                status_item.setForeground(
+                    QBrush(QColor("#22c55e" if is_valid else "#ef4444"))
+                )
+                self.preview_table.setItem(r, max_cols, status_item)
+
+            # Stretch the first data column, fit-to-content for status
+            self.preview_table.horizontalHeader().setSectionResizeMode(
+                0, QHeaderView.ResizeMode.Stretch
+            )
+            self.preview_table.horizontalHeader().setSectionResizeMode(
+                max_cols, QHeaderView.ResizeMode.ResizeToContents
+            )
+
+            name = path_obj.name + (" (first 20 rows)" if truncated else "")
+            self.lbl_preview_filename.setText(name)
         except Exception as e:
-            self.preview_text.setPlainText(f"Error reading file preview: {str(e)}")
+            self._show_preview_message(f"Error reading preview: {e}")
+
+    def _show_preview_message(self, msg: str):
+        """Show a single-cell message in the preview table."""
+        self.preview_table.setColumnCount(1)
+        self.preview_table.setRowCount(1)
+        self.preview_table.setHorizontalHeaderLabels(["Info"])
+        self.preview_table.setItem(0, 0, QTableWidgetItem(msg))
+
+    def _copy_preview_content(self):
+        """Copy preview table content as tab-separated text."""
+        lines = []
+        for r in range(self.preview_table.rowCount()):
+            cells = []
+            for c in range(self.preview_table.columnCount() - 1):  # skip Status col
+                item = self.preview_table.item(r, c)
+                cells.append(item.text() if item else "")
+            lines.append("\t".join(cells))
+        QApplication.clipboard().setText("\n".join(lines))
 
     def reset_for_profile_switch(self):
         """Reset the harvest tab when the user switches profiles.
@@ -1541,6 +1666,7 @@ class HarvestTabV2(QWidget):
         """Reset input state."""
         self.input_file = None
         self.file_path_edit.clear()
+        self.file_path_edit.setStyleSheet("")
         self.info_label.setText("No file selected")
 
         self.lbl_val_size.setText("-")
@@ -2030,6 +2156,20 @@ class HarvestTabV2(QWidget):
             out_label = f"Saved to: {base_dir}/{parent.name}/"
         self.lbl_banner_out.setText(out_label)
 
+    def _open_output_folder_path(self, folder: Path):
+        """Open a specific folder in the system file manager."""
+        import os
+        folder = folder.resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(str(folder))
+        elif sys.platform == "darwin":
+            import subprocess
+            subprocess.Popen(["open", str(folder)])
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", str(folder)])
+
     def _open_output_folder(self):
         """Open the data folder in Explorer."""
         out_path = Path("data").resolve()
@@ -2075,3 +2215,235 @@ class HarvestTabV2(QWidget):
     def stop_harvest(self):
         """Public method used by window close handlers."""
         self._stop_harvest()
+
+    # ── MARC Import ────────────────────────────────────────────────────────────
+
+    def _browse_marc_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select MARC File",
+            "",
+            "MARC Files (*.mrc *.marc *.xml);;All Files (*)",
+        )
+        if path:
+            self._marc_path_edit.setText(path)
+            self._btn_import_marc.setEnabled(True)
+            self._btn_clear_marc.setVisible(True)
+            self._marc_status_label.setText("Click 'Import Records' to extract call numbers and save results.")
+
+    def _clear_marc_file(self):
+        self._marc_path_edit.clear()
+        self._btn_import_marc.setEnabled(False)
+        self._btn_clear_marc.setVisible(False)
+        self._marc_status_label.setText("Select a MARC file (.mrc / .xml) to extract call numbers.")
+        for attr in ("_marc_stat_records", "_marc_stat_callnums", "_marc_stat_matched", "_marc_stat_unmatched"):
+            getattr(self, attr).setText("—")
+
+    def _import_marc_file(self):
+        path = self._marc_path_edit.text().strip()
+        if not path:
+            return
+
+        # ── Task 2: ask the user for a source name ─────────────────────────────
+        default_source = Path(path).stem
+        source_name, ok = QInputDialog.getText(
+            self,
+            "MARC Import — Source Name",
+            "Enter a source name to store with the imported records\n"
+            "(e.g. the library catalog or system the file came from):",
+            text=default_source,
+        )
+        if not ok:
+            return
+        source_name = source_name.strip() or default_source
+
+        self._btn_import_marc.setEnabled(False)
+
+        # ── Step 1: parse ──────────────────────────────────────────────────────
+        self._marc_status_label.setText("Step 1/3 — Reading MARC file…")
+        QApplication.processEvents()
+
+        try:
+            records = self._parse_marc_records(path)
+        except Exception as exc:
+            self._marc_status_label.setText(f"Error reading MARC file: {exc}")
+            self._btn_import_marc.setEnabled(True)
+            return
+
+        total_records = len(records)
+        if total_records == 0:
+            self._marc_status_label.setText("No records found in the MARC file.")
+            self._btn_import_marc.setEnabled(True)
+            return
+
+        self._marc_status_label.setText(
+            f"Step 2/3 — Processing {total_records:,} records…"
+        )
+        QApplication.processEvents()
+
+        # ── Step 2: determine mode and output path ─────────────────────────────
+        config = {}
+        if self._config_getter:
+            try:
+                config = self._config_getter() or {}
+            except Exception:
+                pass
+        mode = (config.get("call_number_mode", "lccn") or "lccn").strip().lower()
+
+        profile = "default"
+        if self._profile_getter:
+            try:
+                profile = _safe_filename(self._profile_getter() or "default")
+            except Exception:
+                pass
+        date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        live_dir = Path("data") / profile
+        live_dir.mkdir(parents=True, exist_ok=True)
+        out_path = live_dir / f"{profile}-marc-import-{date_str}.tsv"
+
+        if mode == "nlmcn":
+            headers = ["ISBN", "NLM", "NLM Source", "Date"]
+        elif mode == "both":
+            headers = ["ISBN", "LCCN", "LCCN Source", "Classification", "NLM", "NLM Source", "Date"]
+        else:
+            headers = ["ISBN", "LCCN", "LCCN Source", "Classification", "Date"]
+
+        date_added = today_yyyymmdd()
+        written = 0
+        skipped = 0
+        no_isbn = 0
+
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh, delimiter="\t")
+            writer.writerow(headers)
+            for i, (isbn, lccn, nlmcn) in enumerate(records, 1):
+                if mode == "nlmcn":
+                    if not nlmcn:
+                        skipped += 1
+                        continue
+                    row = [isbn or "", nlmcn, source_name, date_added]
+                elif mode == "both":
+                    if not lccn and not nlmcn:
+                        skipped += 1
+                        continue
+                    classification = _extract_lc_classification(lccn or "")
+                    row = [
+                        isbn or "",
+                        lccn or "", source_name if lccn else "",
+                        classification,
+                        nlmcn or "", source_name if nlmcn else "",
+                        date_added,
+                    ]
+                else:
+                    if not lccn:
+                        skipped += 1
+                        continue
+                    classification = _extract_lc_classification(lccn)
+                    row = [isbn or "", lccn, source_name, classification, date_added]
+                if not isbn:
+                    no_isbn += 1
+                writer.writerow(row)
+                written += 1
+                # Update status every 500 records so the UI stays responsive
+                if i % 500 == 0:
+                    self._marc_status_label.setText(
+                        f"Step 2/3 — Processed {i:,} / {total_records:,}…"
+                    )
+                    QApplication.processEvents()
+
+        # ── Step 3: write CSV copy ─────────────────────────────────────────────
+        self._marc_status_label.setText("Step 3/3 — Writing CSV copy…")
+        QApplication.processEvents()
+        with open(out_path, encoding="utf-8-sig", newline="") as _tsv:
+            _rows = list(csv.reader(_tsv, delimiter="\t"))
+        _write_csv_rows(_rows, str(out_path.with_suffix(".csv")))
+
+        # ── Update status label + MARC stats panel ─────────────────────────────
+        self._marc_status_label.setText(
+            f"Done — {written:,} imported, {skipped:,} skipped  →  {out_path.name}"
+        )
+        self._marc_stat_records.setText(f"{total_records:,}")
+        self._marc_stat_callnums.setText(f"{written:,}")
+        self._marc_stat_matched.setText(f"{written - no_isbn:,}")
+        self._marc_stat_unmatched.setText(f"{skipped:,}")
+        self._btn_import_marc.setEnabled(True)
+
+        # ── Summary dialog ─────────────────────────────────────────────────────
+        mode_label = {"lccn": "LCCN Only", "nlmcn": "NLM Only", "both": "Both (LCCN & NLM)"}.get(mode, mode)
+        summary_lines = [
+            f"<b>MARC Import Complete</b>",
+            "",
+            f"<b>Source:</b> {source_name}",
+            f"<b>File:</b> {Path(path).name}",
+            f"<b>Mode:</b> {mode_label}",
+            "",
+            f"<b>Total records in file:</b> {total_records:,}",
+            f"<b>Imported:</b> {written:,}",
+            f"<b>Skipped</b> (no call number for mode): {skipped:,}",
+            f"<b>Missing ISBN</b> (imported without ISBN): {no_isbn:,}",
+            "",
+            f"<b>Output:</b> {out_path.name}",
+        ]
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("MARC Import — Summary")
+        dlg.setIcon(QMessageBox.Icon.Information)
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("<br>".join(summary_lines))
+        dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        open_btn = dlg.addButton("Open Output Folder", QMessageBox.ButtonRole.ActionRole)
+        dlg.exec()
+        if dlg.clickedButton() == open_btn:
+            self._open_output_folder_path(live_dir)
+
+    def _parse_marc_records(self, path: str) -> list:
+        """Parse a binary .mrc or MARCXML file and return (isbn, lccn, nlmcn) tuples."""
+        import pymarc
+        from src.utils.call_number_normalizer import normalize_call_number
+
+        file_path = Path(path)
+        results = []
+
+        def _extract(record):
+            # ISBN from 020 $a (prefer) then $z
+            isbn = None
+            for code in ("a", "z"):
+                for field in record.get_fields("020"):
+                    for raw in field.get_subfields(code):
+                        raw = raw.split()[0].replace("-", "").strip() if raw.split() else ""
+                        norm = normalize_isbn(raw)
+                        if norm:
+                            isbn = norm
+                            break
+                if isbn:
+                    break
+
+            # LCCN from 050 $a + $b
+            lccn = None
+            f050 = record.get_fields("050")
+            if f050:
+                a_vals = f050[0].get_subfields("a")
+                b_vals = f050[0].get_subfields("b")
+                lccn = normalize_call_number(a_vals, b_vals) or None
+
+            # NLM from 060 $a + $b
+            nlmcn = None
+            f060 = record.get_fields("060")
+            if f060:
+                a_vals = f060[0].get_subfields("a")
+                b_vals = f060[0].get_subfields("b")
+                nlmcn = normalize_call_number(a_vals, b_vals) or None
+
+            return isbn, lccn, nlmcn
+
+        if file_path.suffix.lower() == ".xml":
+            for rec in pymarc.parse_xml_to_array(str(file_path)):
+                if rec is not None:
+                    results.append(_extract(rec))
+        else:
+            with open(file_path, "rb") as fh:
+                reader = pymarc.MARCReader(fh, to_unicode=True, force_utf8=True)
+                for rec in reader:
+                    if rec is not None:
+                        results.append(_extract(rec))
+
+        return results

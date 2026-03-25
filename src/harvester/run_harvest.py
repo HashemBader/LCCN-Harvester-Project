@@ -34,6 +34,11 @@ class ParsedISBNFile:
     duplicate_count: int
     invalid_isbns: list[str]
     total_nonempty: int
+    linked: dict = None  # primary_isbn -> [variant_isbn, ...] (empty if single-column file)
+
+    def __post_init__(self):
+        if self.linked is None:
+            self.linked = {}
 
 @dataclass
 class RunStats:
@@ -53,8 +58,10 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
     seen = set()
     total_nonempty = 0
     valid_count = 0
+    linked_map: dict[str, list[str]] = {}  # primary_isbn -> [linked_variant, ...]
 
     suffix = input_path.suffix.lower()
+
 
     if suffix in {".xlsx", ".xls"}:
         try:
@@ -73,10 +80,10 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
 
                 total_nonempty += 1
                 
-                # Assume first column contains ISBN
+                # Column 0 is the primary ISBN; columns 1+ are linked variants
                 raw_val = row.iloc[0]
                 raw_isbn = str(raw_val).strip() if pd.notna(raw_val) else ""
-                
+
                 if not raw_isbn or raw_isbn.startswith("#"):
                     continue
 
@@ -85,7 +92,7 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
                     continue
 
                 first_data_row_seen = True
-                
+
                 # Remove '.0' if pandas parsed it as a float
                 if raw_isbn.endswith(".0"):
                     raw_isbn = raw_isbn[:-2]
@@ -97,6 +104,22 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
                     if normalized not in seen:
                         seen.add(normalized)
                         valid_isbns.append(normalized)
+                    # Collect linked ISBNs from extra columns
+                    linked_variants: list[str] = []
+                    for col_idx in range(1, len(row)):
+                        extra_val = row.iloc[col_idx]
+                        if pd.isna(extra_val):
+                            continue
+                        extra_raw = str(extra_val).strip()
+                        if extra_raw.endswith(".0"):
+                            extra_raw = extra_raw[:-2]
+                        extra_norm = isbn_validator.normalize_isbn(extra_raw)
+                        if extra_norm and extra_norm != normalized and extra_norm not in linked_variants:
+                            linked_variants.append(extra_norm)
+                    if linked_variants:
+                        linked_map.setdefault(normalized, []).extend(
+                            v for v in linked_variants if v not in linked_map.get(normalized, [])
+                        )
                 else:
                     invalid_isbns.append(raw_isbn)
         except Exception as e:
@@ -134,6 +157,17 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
                     if normalized not in seen:
                         seen.add(normalized)
                         valid_isbns.append(normalized)
+                    # Collect linked ISBNs from extra columns
+                    linked_variants: list[str] = []
+                    for col_idx in range(1, len(row)):
+                        extra_raw = row[col_idx].strip()
+                        extra_norm = isbn_validator.normalize_isbn(extra_raw)
+                        if extra_norm and extra_norm != normalized and extra_norm not in linked_variants:
+                            linked_variants.append(extra_norm)
+                    if linked_variants:
+                        linked_map.setdefault(normalized, []).extend(
+                            v for v in linked_variants if v not in linked_map.get(normalized, [])
+                        )
                 else:
                     invalid_isbns.append(raw_isbn)
 
@@ -143,6 +177,7 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
         duplicate_count=valid_count - len(valid_isbns),
         invalid_isbns=invalid_isbns,
         total_nonempty=total_nonempty,
+        linked=linked_map,
     )
 
 
@@ -160,8 +195,9 @@ def run_harvest(
     max_workers: int = 1,
     call_number_mode: str = "both",
     stop_rule: str = "stop_either",
-    both_stop_policy: str = "both",
     include_z3950: bool = False,
+    db_only: bool = False,
+    both_stop_policy: str | None = None,
 ) -> HarvestSummary:
 
     input_path = input_path.expanduser().resolve()
@@ -173,11 +209,14 @@ def run_harvest(
     isbns = parsed.unique_valid
 
     if targets is None:
-        targets = []
-        targets.extend(build_default_api_targets())
-        if include_z3950:
-            from src.harvester.z3950_targets import build_default_z3950_targets
-            targets.extend(build_default_z3950_targets())
+        if db_only:
+            targets = []  # no API targets in db_only mode
+        else:
+            targets = []
+            targets.extend(build_default_api_targets())
+            if include_z3950:
+                from src.harvester.z3950_targets import build_default_z3950_targets
+                targets.extend(build_default_z3950_targets())
 
     orch = HarvestOrchestrator(
         db=db,
@@ -190,10 +229,10 @@ def run_harvest(
         max_workers=max_workers,
         call_number_mode=call_number_mode,
         stop_rule=stop_rule,
-        both_stop_policy=both_stop_policy,
+        db_only=db_only,
     )
 
-    orch_summary = orch.run(isbns, dry_run=dry_run)
+    orch_summary = orch.run(isbns, dry_run=dry_run, linked=parsed.linked or None)
 
     return HarvestSummary(
         total_rows=orch_summary.total_isbns,

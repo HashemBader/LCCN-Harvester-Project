@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import logging
 
 from src.utils.call_number_normalizer import normalize_call_number
+from src.utils.isbn_validator import normalize_isbn
 
 logger = logging.getLogger(__name__)
 
@@ -220,4 +221,67 @@ def extract_call_numbers_from_xml(
     nlmcn = normalize_call_number(fields["060"]["a"], fields["060"]["b"]) or None
 
     return lccn, nlmcn
+
+
+def extract_isbn_from_marc_json(record: Dict) -> Optional[str]:
+    """
+    Extract the first valid ISBN from a MARC-JSON record (field 020 $a or $z).
+
+    Checks $a (valid ISBN) first, then falls back to $z (cancelled/invalid ISBN).
+    Many older catalog records store ISBNs only in $z.
+    """
+    fields = record.get("fields", [])
+    # Two-pass: prefer $a, fall back to $z
+    for subfield_code in ("a", "z"):
+        for field in fields:
+            if "020" in field:
+                subfields = field["020"].get("subfields", [])
+                for sf in subfields:
+                    if subfield_code in sf:
+                        text = sf[subfield_code]
+                        if isinstance(text, str):
+                            raw = text.split()[0].replace("-", "").strip() if text.split() else ""
+                            norm = normalize_isbn(raw)
+                            if norm:
+                                return norm
+    return None
+
+
+def extract_isbn_from_marc_xml(
+    xml_element: ET.Element,
+    namespaces: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """
+    Extract the first valid ISBN from a MARCXML record (field 020 $a).
+    
+    Parameters
+    ----------
+    xml_element : ET.Element
+        Root element of a MARCXML record.
+    namespaces : dict[str, str] | None
+        XML namespace mapping. Uses standard MARCXML namespace if None.
+        
+    Returns
+    -------
+    str | None
+        Normalized ISBN if found, None otherwise.
+    """
+    if namespaces is None:
+        namespaces = {"marc": "http://www.loc.gov/MARC21/slim"}
+        
+    # Two-pass: prefer $a (valid ISBN), fall back to $z (cancelled/invalid ISBN)
+    datafields = xml_element.findall(".//marc:datafield[@tag='020']", namespaces)
+    for code in ("a", "z"):
+        for datafield in datafields:
+            for subfield in datafield.findall(f"marc:subfield[@code='{code}']", namespaces):
+                text: str = subfield.text or ""
+                if not text:
+                    continue
+                parts = text.split()
+                raw = parts[0].replace("-", "").strip() if parts else ""
+                norm = normalize_isbn(raw)
+                if norm:
+                    return norm
+
+    return None
 

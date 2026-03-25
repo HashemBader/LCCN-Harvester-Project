@@ -831,7 +831,7 @@ QPushButton[class="IconButton"]:hover, QPushButton.IconButton:hover {{
 
 /* --- Group Boxes --- */
 QGroupBox {{
-    background-color: transparent;
+    background-color: {t['surface']};
     border: 1px solid {t['border']};
     border-radius: 8px;
     margin-top: 14px;

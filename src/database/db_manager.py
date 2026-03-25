@@ -865,6 +865,28 @@ class DatabaseManager:
                 tuple(params),
             )
 
+    def upsert_linked_isbns_many(
+        self,
+        conn: sqlite3.Connection,
+        pairs: Iterable[tuple[str, str]],
+    ) -> None:
+        """Record isbn → canonical_isbn mappings in the linked_isbns table.
+
+        pairs: iterable of (isbn, canonical_isbn) — every member of the group
+        (including the canonical itself) may be passed; self-mappings are fine.
+        """
+        rows = [(isbn, canonical) for isbn, canonical in pairs if isbn and canonical]
+        if not rows:
+            return
+        conn.executemany(
+            """
+            INSERT INTO linked_isbns (isbn, canonical_isbn)
+            VALUES (?, ?)
+            ON CONFLICT(isbn) DO UPDATE SET canonical_isbn = excluded.canonical_isbn
+            """,
+            rows,
+        )
+
     @staticmethod
     def _combine_sources(*values: Optional[str]) -> Optional[str]:
         parts: list[str] = []

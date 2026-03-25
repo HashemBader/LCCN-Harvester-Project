@@ -128,7 +128,6 @@ def test_cross_target_accumulation_lccn_from_a_nlmcn_from_b(tmp_path: Path):
         db,
         targets=[target_a, target_b],
         call_number_mode="both",
-        both_stop_policy="both",
         stop_rule="continue_both"
     )
 
@@ -161,7 +160,6 @@ def test_lccn_nlmcn_sources_stored_separately(tmp_path: Path):
         db,
         targets=[target_a, target_b],
         call_number_mode="both",
-        both_stop_policy="both",
         stop_rule="continue_both"
     )
 
@@ -186,7 +184,6 @@ def test_lccn_nlmcn_sources_stored_separately(tmp_path: Path):
         db,
         targets=[single_target],
         call_number_mode="both",
-        both_stop_policy="both",
         stop_rule="continue_both"
     )
 

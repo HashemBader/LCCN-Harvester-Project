@@ -137,7 +137,7 @@ class RecentResultsPanel(QFrame):
             
             # ISBN
             item_isbn = QTableWidgetItem(r['isbn'])
-            item_isbn.setForeground(QColor("#ffffff"))
+            # We don't force a white foreground so it remains visible in Light Mode
             self.table.setItem(row_idx, 0, item_isbn)
             
             # Status
@@ -190,6 +190,12 @@ class DashboardTabV2(QWidget):
             "profile_dir": None,
         }
         self.current_profile = "default"
+        self._baseline_stats = {
+            "processed": 0,
+            "found": 0,
+            "failed": 0,
+            "invalid": 0,
+        }
         self.session_stats = {
             "processed": 0,
             "successful": 0,
@@ -369,6 +375,16 @@ class DashboardTabV2(QWidget):
         layout.addWidget(self.btn_open_invalid)
         layout.addWidget(self.btn_open_problems)
 
+        self.btn_open_linked_isbns = QPushButton("Export linked ISBNs")
+        self.btn_open_linked_isbns.setProperty("class", "SecondaryButton")
+        self.btn_open_linked_isbns.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_linked_isbns.setMinimumHeight(42)
+        self.btn_open_linked_isbns.setToolTip(
+            "Export the ISBN → canonical ISBN mapping table and open it"
+        )
+        self.btn_open_linked_isbns.clicked.connect(self._export_linked_isbns)
+        layout.addWidget(self.btn_open_linked_isbns)
+
         self.btn_reset_stats = QPushButton("Reset Dashboard Stats")
         self.btn_reset_stats.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_reset_stats.setMinimumHeight(42)
@@ -460,6 +476,53 @@ class DashboardTabV2(QWidget):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_path.resolve()))):
             QMessageBox.warning(self, "Open Failed", f"Could not open {target_path}.")
 
+    def _export_linked_isbns(self):
+        """Export the linked_isbns table to a TSV/CSV file and open it."""
+        import csv as _csv
+        from datetime import datetime as _dt
+
+        is_csv = getattr(self, "format_combo", None) and self.format_combo.currentText().startswith("CSV")
+        ext = ".csv" if is_csv else ".tsv"
+
+        # Query the database
+        try:
+            with self.db.connect() as conn:
+                rows = conn.execute(
+                    "SELECT isbn, canonical_isbn FROM linked_isbns ORDER BY canonical_isbn, isbn"
+                ).fetchall()
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Failed", f"Could not read linked ISBNs:\n{exc}")
+            return
+
+        if not rows:
+            QMessageBox.information(
+                self,
+                "No Linked ISBNs",
+                "The linked ISBNs table is empty.\n\n"
+                "Linked ISBNs are recorded when the harvester resolves a call number "
+                "via an alternate ISBN for the same edition.",
+            )
+            return
+
+        # Write export file into the profile folder
+        out_dir = self._profile_dir_path()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.now().strftime("%Y-%m-%d-%H-%M-%S")
+        out_path = out_dir / f"linked-isbns-{stamp}{ext}"
+
+        try:
+            delimiter = "," if is_csv else "\t"
+            with open(out_path, "w", newline="", encoding="utf-8-sig") as fh:
+                writer = _csv.writer(fh, delimiter=delimiter)
+                writer.writerow(["ISBN", "Canonical ISBN"])
+                writer.writerows(rows)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Failed", f"Could not write file:\n{exc}")
+            return
+
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_path.resolve()))):
+            QMessageBox.warning(self, "Open Failed", f"Exported to {out_path} but could not open it.")
+
     def _profile_dir_path(self) -> Path:
         return Path("data") / _safe_filename(self.current_profile)
 
@@ -517,6 +580,13 @@ class DashboardTabV2(QWidget):
 
     def apply_run_stats(self, stats):
         """Accept either a dict (legacy) or a RunStats dataclass."""
+        base = getattr(self, '_baseline_stats', {})
+        b_proc = base.get('processed', 0)
+        b_found = base.get('found', 0)
+        b_failed_total = base.get('failed', 0)
+        b_invalid = base.get('invalid', 0)
+        b_true_failed = max(0, b_failed_total - b_invalid)
+
         if hasattr(stats, 'processed_unique'):  # RunStats dataclass
             found = getattr(stats, 'found', 0)
             failed = getattr(stats, 'failed', 0)
@@ -524,18 +594,18 @@ class DashboardTabV2(QWidget):
             invalid = getattr(stats, 'invalid', 0)
             processed = getattr(stats, 'processed_unique', 0) + invalid
             self.session_stats = {
-                "processed": processed,
-                "successful": found,
-                "failed": failed + skipped,
-                "invalid": invalid,
+                "processed": b_proc + processed,
+                "successful": b_found + found,
+                "failed": b_true_failed + failed + skipped,
+                "invalid": b_invalid + invalid,
             }
         else:  # legacy dict
             stats = stats or {}
             self.session_stats = {
-                "processed": int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)),
-                "successful": int(stats.get("found", 0)) + int(stats.get("cached", 0)),
-                "failed": int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
-                "invalid": int(stats.get("invalid", 0)),
+                "processed": b_proc + int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)),
+                "successful": b_found + int(stats.get("found", 0)) + int(stats.get("cached", 0)),
+                "failed": b_true_failed + int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
+                "invalid": b_invalid + int(stats.get("invalid", 0)),
             }
         self._render_session_stats()
 
@@ -543,20 +613,34 @@ class DashboardTabV2(QWidget):
         """Live update session_stats from a RunStats object emitted by HarvestWorkerV2."""
         if not hasattr(stats, 'processed_unique'):
             return  # Only handle RunStats dataclass
+            
+        base = getattr(self, '_baseline_stats', {})
+        b_proc = base.get('processed', 0)
+        b_found = base.get('found', 0)
+        b_failed_total = base.get('failed', 0)
+        b_invalid = base.get('invalid', 0)
+        b_true_failed = max(0, b_failed_total - b_invalid)
+        
         found = getattr(stats, 'found', 0)
         failed = getattr(stats, 'failed', 0)
         skipped = getattr(stats, 'skipped', 0)
         invalid = getattr(stats, 'invalid', 0)
         processed = getattr(stats, 'processed_unique', 0) + invalid
         self.session_stats = {
-            "processed": processed,
-            "successful": found,
-            "failed": failed + skipped,
-            "invalid": invalid,
+            "processed": b_proc + processed,
+            "successful": b_found + found,
+            "failed": b_true_failed + failed + skipped,
+            "invalid": b_invalid + invalid,
         }
         self._render_session_stats()
 
     def reset_dashboard_stats(self):
+        self._baseline_stats = {
+            "processed": 0,
+            "found": 0,
+            "failed": 0,
+            "invalid": 0,
+        }
         self.session_stats = {
             "processed": 0,
             "successful": 0,

@@ -57,6 +57,7 @@ class HarvestSummary:
     successes: int
     failures: int
     dry_run: bool
+    not_in_local_catalog: int = 0
 
 
 @dataclass(frozen=True)
@@ -91,12 +92,13 @@ class HarvestOrchestrator:
         retry_days: int = 7,
         max_workers: int = 1,
         call_number_mode: str = "both",
-        both_stop_policy: str = "both",
         bypass_retry_isbns: Optional[set[str]] = None,
         bypass_cache_isbns: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCallback] = None,
         cancel_check: Optional[CancelCheck] = None,
         stop_rule: str = "stop_either",
+        db_only: bool = False,
+        both_stop_policy: str | None = None,
     ):
         self.db = db
         self.retry_days = retry_days
@@ -105,10 +107,11 @@ class HarvestOrchestrator:
         self.progress_cb = progress_cb
         self.cancel_check = cancel_check
         self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
-        self.both_stop_policy = self._normalize_both_stop_policy(both_stop_policy)
-        self.stop_rule = stop_rule
+        self.stop_rule = self._normalize_stop_rule(stop_rule)
         self.max_workers = max(1, int(max_workers))
-        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)    
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        # In db_only mode API targets are never consulted; bypass_cache_isbns is ignored.
+        self.db_only = db_only
 
         # If no real targets wired yet, keep Sprint-2 behavior with a placeholder.
         self.targets: list[HarvestTarget] = targets if targets else [PlaceholderTarget()]
@@ -129,11 +132,11 @@ class HarvestOrchestrator:
         return "both"
 
     @staticmethod
-    def _normalize_both_stop_policy(policy: str) -> str:
-        normalized = (policy or "").strip().lower()
-        if normalized in {"lccn", "nlmcn", "either", "both"}:
+    def _normalize_stop_rule(rule: str) -> str:
+        normalized = (rule or "").strip().lower()
+        if normalized in {"stop_either", "stop_lccn", "stop_nlmcn", "continue_both"}:
             return normalized
-        return "both"
+        return "stop_either"
 
     def _filter_result_by_mode(self, result: TargetResult) -> TargetResult:
         if not result.success or self.call_number_mode == "both":
@@ -217,26 +220,26 @@ class HarvestOrchestrator:
             return has_lccn
         if self.call_number_mode == "nlmcn":
             return has_nlmcn
-        if self.both_stop_policy == "lccn":
+        if self.stop_rule == "stop_lccn":
             return has_lccn
-        if self.both_stop_policy == "nlmcn":
+        if self.stop_rule == "stop_nlmcn":
             return has_nlmcn
-        if self.both_stop_policy == "either":
+        if self.stop_rule == "stop_either":
             return has_lccn or has_nlmcn
-        return has_lccn and has_nlmcn
+        return has_lccn and has_nlmcn  # continue_both
 
     def _required_types(self, has_lccn: bool, has_nlmcn: bool) -> list[str]:
         if self.call_number_mode == "lccn":
             return [] if has_lccn else ["lccn"]
         if self.call_number_mode == "nlmcn":
             return [] if has_nlmcn else ["nlmcn"]
-        if self.both_stop_policy == "lccn":
+        if self.stop_rule == "stop_lccn":
             return [] if has_lccn else ["lccn"]
-        if self.both_stop_policy == "nlmcn":
+        if self.stop_rule == "stop_nlmcn":
             return [] if has_nlmcn else ["nlmcn"]
-        if self.both_stop_policy == "either":
+        if self.stop_rule == "stop_either":
             return [] if (has_lccn or has_nlmcn) else ["lccn", "nlmcn"]
-        needed: list[str] = []
+        needed: list[str] = []  # continue_both
         if not has_lccn:
             needed.append("lccn")
         if not has_nlmcn:
@@ -339,6 +342,12 @@ class HarvestOrchestrator:
                 )
                 self._emit_result("cached", isbn=isbn, target=record.source or "Cache", record=record)
                 return ProcessOutcome("cached", record, tuple())
+
+        # db_only mode: never hit any API target. If we reach here the ISBN was
+        # not in the local DB (or had insufficient data). Report and stop.
+        if self.db_only:
+            self._emit("not_in_local_catalog", {"isbn": isbn})
+            return ProcessOutcome("not_in_local_catalog", None, tuple())
 
         last_error: Optional[str] = None
         last_target: Optional[str] = None
@@ -527,6 +536,7 @@ class HarvestOrchestrator:
             pending_attempted.extend(attempted_rows)
         return ProcessOutcome("failed", None, tuple(attempted_rows))
 
+
     def process_isbn(
         self,
         isbn: str,
@@ -542,16 +552,118 @@ class HarvestOrchestrator:
             pending_attempted=pending_attempted,
         )
         return outcome.status
-    def run(self, isbns: list[str], *, dry_run: bool) -> HarvestSummary:
+
+    def process_isbn_group(
+        self,
+        primary_isbn: str,
+        linked_isbns: list[str],
+        *,
+        dry_run: bool,
+        pending_main: list[MainRecord],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        pending_linked: list[tuple[str, str]],
+    ) -> str:
+        """Try primary_isbn then each linked variant in order until a call number is found.
+
+        On the first success:
+          - The result is stored under ``primary_isbn`` (same as a normal harvest).
+          - Cross-reference records are queued for every OTHER isbn in the group
+            (source tagged as ``"Linked from <primary_isbn>"``).
+
+        On total failure across the whole group:
+          - The attempted table entry is written for ``primary_isbn`` only.
+          - Linked variants are NOT added to attempted (they may succeed in a
+            future run when paired with a different primary).
+        """
+        all_isbns = [primary_isbn] + [iv for iv in linked_isbns if iv != primary_isbn]
+
+        # Use the lexicographically lowest ISBN as the canonical key for DB writes.
+        canonical_isbn = min(all_isbns)
+
+        winning_record: Optional[MainRecord] = None
+        winning_isbn: Optional[str] = None
+
+        for candidate in all_isbns:
+            self._check_cancelled()
+            outcome = self._process_isbn_internal(
+                candidate,
+                dry_run=dry_run,
+                pending_main=[],          # we collect the result ourselves below
+                pending_attempted=[],     # ditto
+            )
+            if outcome.status in ("success", "cached"):
+                winning_record = outcome.record
+                winning_isbn = candidate
+                break
+
+        if winning_record is None:
+            # All candidates exhausted — write attempted under the canonical ISBN.
+            self._process_isbn_internal(
+                canonical_isbn,
+                dry_run=dry_run,
+                pending_main=pending_main,
+                pending_attempted=pending_attempted,
+            )
+            return "failed"
+
+        # --- We have a result.  Write under canonical_isbn. ---
+        source_label = winning_record.source or winning_isbn or "Linked ISBN"
+
+        canonical_rec = self._build_record(
+            isbn=canonical_isbn,
+            lccn=winning_record.lccn,
+            lccn_source=winning_record.lccn_source if winning_isbn == canonical_isbn else f"Linked from {winning_isbn}",
+            nlmcn=winning_record.nlmcn,
+            nlmcn_source=winning_record.nlmcn_source if winning_isbn == canonical_isbn else f"Linked from {winning_isbn}",
+        )
+        if not dry_run:
+            pending_main.append(canonical_rec)
+
+        self._emit_result(
+            "success" if winning_isbn == canonical_isbn else "linked_success",
+            isbn=canonical_isbn, target=source_label, record=canonical_rec,
+        )
+
+        # --- Cross-reference: store the same call number for every OTHER isbn ---
+        # --- and record the full group in linked_isbns. ---
+        linked_pairs: list[tuple[str, str]] = [(isbn, canonical_isbn) for isbn in all_isbns]
+
+        for other_isbn in all_isbns:
+            if other_isbn == canonical_isbn:
+                continue
+            cross_rec = self._build_record(
+                isbn=other_isbn,
+                lccn=winning_record.lccn,
+                lccn_source=f"Linked from {canonical_isbn}",
+                nlmcn=winning_record.nlmcn,
+                nlmcn_source=f"Linked from {canonical_isbn}",
+            )
+            if not dry_run:
+                pending_main.append(cross_rec)
+            self._emit_result("linked_crossref",
+                              isbn=other_isbn, target=source_label, record=cross_rec)
+
+        if not dry_run:
+            pending_linked.extend(linked_pairs)
+
+        return "success"
+
+    def run(self, isbns: list[str], *, dry_run: bool,
+            linked: Optional[dict[str, list[str]]] = None) -> HarvestSummary:
+
         cached_hits = 0
         skipped_recent_fail = 0
         attempted = 0
         successes = 0
         failures = 0
+        not_in_local_catalog = 0
 
         # --- Sprint 5: batching buffers ---
         pending_main: list[MainRecord] = []
         pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
+        pending_linked: list[tuple[str, str]] = []
+
+        dynamic_batch_size = max(self.DEFAULT_FLUSH_BATCH_SIZE, min(1000, len(isbns) // 100))
 
         def flush() -> None:
             """Flush buffered DB writes in a single transaction."""
@@ -559,9 +671,10 @@ class HarvestOrchestrator:
             if dry_run:
                 pending_main.clear()
                 pending_attempted.clear()
+                pending_linked.clear()
                 return
 
-            if not pending_main and not pending_attempted:
+            if not pending_main and not pending_attempted and not pending_linked:
                 return
 
             if self.call_number_mode == "both" and self.stop_rule != "continue_both":
@@ -584,16 +697,30 @@ class HarvestOrchestrator:
             with self.db.transaction() as conn:
                 self.db.upsert_main_many(conn, pending_main, clear_attempted_on_success=True)
                 self.db.upsert_attempted_many(conn, filtered_attempted)
+                self.db.upsert_linked_isbns_many(conn, pending_linked)
 
             pending_main.clear()
             pending_attempted.clear()
+            pending_linked.clear()
             self._emit("db_flush", {"main": wrote_main, "attempted": wrote_attempted})
         # --- end Sprint 5 batching ---
+
+        _linked = linked or {}
 
         def _one(isbn: str) -> str:
             # NOTE: This will append into pending_main / pending_attempted.
             # That is NOT thread-safe, so we only use threads if max_workers == 1.
             # Parallel mode is handled below with a safe path.
+            variants = _linked.get(isbn)
+            if variants:
+                return self.process_isbn_group(
+                    isbn,
+                    variants,
+                    dry_run=dry_run,
+                    pending_main=pending_main,
+                    pending_attempted=pending_attempted,
+                    pending_linked=pending_linked,
+                )
             return self.process_isbn(
                 isbn,
                 dry_run=dry_run,
@@ -607,13 +734,15 @@ class HarvestOrchestrator:
                 self._check_cancelled()
                 status = _one(isbn)
 
-                if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
+                if (len(pending_main) + len(pending_attempted)) >= dynamic_batch_size:
                     flush()
 
                 if status == "cached":
                     cached_hits += 1
                 elif status == "skip_retry":
                     skipped_recent_fail += 1
+                elif status == "not_in_local_catalog":
+                    not_in_local_catalog += 1
                 else:
                     attempted += 1
                     if status == "success":
@@ -628,6 +757,7 @@ class HarvestOrchestrator:
                     "attempted": attempted,
                     "successes": successes,
                     "failures": failures,
+                    "not_in_local_catalog": not_in_local_catalog,
                 })
 
         else:
@@ -660,6 +790,11 @@ class HarvestOrchestrator:
                             "nlmcn_source": found_nlmcn_source,
                         })
                         return ("cached", None, None)
+
+                # db_only: skip all API targets
+                if self.db_only:
+                    self._emit("not_in_local_catalog", {"isbn": isbn})
+                    return ("not_in_local_catalog", None, tuple())
 
                 last_error = None
                 last_target = None
@@ -836,13 +971,15 @@ class HarvestOrchestrator:
                     if att:
                         pending_attempted.extend(att)
 
-                    if (len(pending_main) + len(pending_attempted)) >= self.DEFAULT_FLUSH_BATCH_SIZE:
+                    if (len(pending_main) + len(pending_attempted)) >= dynamic_batch_size:
                         flush()
 
                     if status == "cached":
                         cached_hits += 1
                     elif status == "skip_retry":
                         skipped_recent_fail += 1
+                    elif status == "not_in_local_catalog":
+                        not_in_local_catalog += 1
                     else:
                         attempted += 1
                         if status == "success":
@@ -857,6 +994,7 @@ class HarvestOrchestrator:
                         "attempted": attempted,
                         "successes": successes,
                         "failures": failures,
+                        "not_in_local_catalog": not_in_local_catalog,
                     })
 
         # Flush any trailing buffered writes so short runs are persisted.
@@ -870,4 +1008,5 @@ class HarvestOrchestrator:
             successes=successes,
             failures=failures,
             dry_run=dry_run,
+            not_in_local_catalog=not_in_local_catalog,
         )

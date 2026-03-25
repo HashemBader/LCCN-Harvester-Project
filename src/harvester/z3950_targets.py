@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
@@ -10,6 +12,41 @@ from typing import Optional, Any
 from src.harvester.orchestrator import HarvestTarget, TargetResult
 
 logger = logging.getLogger(__name__)
+
+_z3950_thread_local = threading.local()
+
+def _get_z3950_client(host: str, port: int, database: str, syntax: str):
+    """Retrieve or create a persistent Z39.50 connection for the current thread."""
+    if not hasattr(_z3950_thread_local, "clients"):
+        _z3950_thread_local.clients = {}
+    
+    key = (host, port, database, syntax)
+    client = _z3950_thread_local.clients.get(key)
+    
+    if not client:
+        # Import lazily so missing deps don't crash app startup
+        try:
+            from src.z3950.client import Z3950Client  # type: ignore
+        except ImportError:
+            from z3950.client import Z3950Client  # type: ignore
+            
+        client = Z3950Client(host=host, port=port, database=database, syntax=syntax)
+        client.connect()
+        _z3950_thread_local.clients[key] = client
+        
+    return client
+
+def _release_z3950_client(host: str, port: int, database: str, syntax: str):
+    """Close and discard the persistent connection for the current thread."""
+    if hasattr(_z3950_thread_local, "clients"):
+        key = (host, port, database, syntax)
+        client = _z3950_thread_local.clients.pop(key, None)
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
 
 
 def _parse_bool(v: object, default: bool = False) -> bool:
@@ -42,26 +79,18 @@ class Z3950Target(HarvestTarget):
     selected: bool = True
 
     def lookup(self, isbn: str) -> TargetResult:
-        # Import lazily so missing deps don’t crash app startup
-        try:
-            from src.z3950.client import Z3950Client  # type: ignore
-        except ImportError:
-            try:
-                from z3950.client import Z3950Client  # type: ignore
-            except ImportError as e:
-                return TargetResult(
-                    success=False,
-                    source=self.name,
-                    error=f"Z39.50 client import failed: {e}",
-                )
+        syntax = self.record_syntax or "USMARC"
 
         try:
-            with Z3950Client(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                syntax=self.record_syntax or "USMARC",
-            ) as client:
+            from src.z3950.client import Z3950Client
+        except ImportError:
+            return TargetResult(success=False, source=self.name, error="Z3950 client unavailable")
+
+        try:
+            with Z3950Client(host=self.host, port=self.port, database=self.database, syntax=syntax) as client:
+                # Gentle rate limiting to avoid getting banned on large harvests
+                time.sleep(1.0)
+
                 records = client.search_by_isbn(isbn)
 
             if not records:

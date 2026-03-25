@@ -129,13 +129,17 @@ class Z3950Client:
                        raw_data = raw_data.encode('utf-8') # Best guess, or latin-1 if MARC-8 was naively decoded
                    
                    # Use pymarc to parse the raw data
-                   # MARCReader expects a stream, but we can just parse the bytes directly if it's one record
-                   # Or use Record(data=raw_data)
                    try:
+                       # PyMARC will sometimes crash trying to decode MARC8 if the leader isn't explicitly UTF-8.
+                       # Force the 9th byte (character coding scheme) to 'a' (UTF-8) to ensure force_utf8 works flawlessly.
+                       if len(raw_data) >= 24 and raw_data[9:10] != b'a':
+                           raw_data = raw_data[:9] + b'a' + raw_data[10:]
+                           
                        record = Record(data=raw_data, force_utf8=True, utf8_handling='replace')
                        records.append(record)
                    except Exception as parse_error:
-                       self.logger.warning(f"Failed to parse MARC record: {parse_error}")
+                       # Only log at debug level so we don't spam the console for naturally broken upstream records
+                       self.logger.debug(f"Failed to parse MARC record: {parse_error}")
         except Exception as e:
             self.logger.error(f"Error iterating result set: {e}")
             

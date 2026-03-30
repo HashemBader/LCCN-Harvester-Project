@@ -345,6 +345,20 @@ class HarvestWorkerV2(QThread):
                     })
                     self._update_processed()
 
+                elif event == "not_in_local_catalog":
+                    self._append_failed_attempt_row(
+                        isbn,
+                        self.config.get("call_number_mode", "lccn"),
+                        "Local Catalog",
+                        "Not found in local catalog",
+                    )
+                    self.live_result.emit({
+                        "isbn": isbn,
+                        "status": "Failed",
+                        "detail": "Not found in local catalog"
+                    })
+                    self._update_processed()
+
                 elif event == "failed":
                     error = payload.get("last_error") or payload.get(
                         "error", "No results"
@@ -360,7 +374,7 @@ class HarvestWorkerV2(QThread):
 
                 elif event == "stats":
                     self.run_stats.found = payload.get("successes", 0) + payload.get("cached", 0)
-                    self.run_stats.failed = payload.get("failures", 0)
+                    self.run_stats.failed = payload.get("failures", 0) + payload.get("not_in_local_catalog", 0)
                     self.run_stats.skipped = payload.get("skipped", 0)
                     # Force stats update to UI
                     self.stats_update.emit(self.run_stats)
@@ -395,6 +409,7 @@ class HarvestWorkerV2(QThread):
                 call_number_mode=call_number_mode,
                 stop_rule=self.config.get("stop_rule", "stop_either"),
                 both_stop_policy=self.config.get("both_stop_policy", "both"),
+                db_only=self.config.get("db_only", False),
             )
 
             # Final stats
@@ -939,7 +954,7 @@ class HarvestTabV2(QWidget):
         title = QLabel("Harvest Execution")
         title.setProperty("class", "SectionTitle")
         subtitle = QLabel("Configure your run and monitor progress")
-        subtitle.setStyleSheet("color: grey; font-size: 12px;")
+        subtitle.setStyleSheet("font-size: 12px;")
         header_col = QVBoxLayout()
         header_col.setSpacing(2)
         header_col.addWidget(title)
@@ -999,12 +1014,7 @@ class HarvestTabV2(QWidget):
         self.btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_browse.clicked.connect(self._browse_file)
         self.btn_clear_file = QPushButton("Clear")
-        self.btn_clear_file.setProperty("class", "PrimaryButton")
-        self.btn_clear_file.setStyleSheet(
-            "QPushButton { background: transparent; color: #94a3b8;"
-            " border: 1.5px solid #e2e8f0; }"
-            " QPushButton:hover { color: #475569; border-color: #cbd5e1; background: #f8fafc; }"
-        )
+        self.btn_clear_file.setProperty("class", "SecondaryButton")
         self.btn_clear_file.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_file.clicked.connect(self._clear_input)
         self.btn_clear_file.setVisible(False)
@@ -1018,7 +1028,7 @@ class HarvestTabV2(QWidget):
         lbl_run_mode.setProperty("class", "HelperText")
         self.combo_run_mode = ConsistentComboBox()
         self.combo_run_mode.setProperty("class", "ComboBox")
-        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)"])
+        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)", "MARC Import Only"])
         self.combo_run_mode.setToolTip("Select the type of call numbers to harvest")
         if hasattr(self, "_config_getter") and callable(self._config_getter):
             config = self._config_getter() or {}
@@ -1027,6 +1037,8 @@ class HarvestTabV2(QWidget):
                 self.combo_run_mode.setCurrentText("NLM Only")
             elif saved_mode == "both":
                 self.combo_run_mode.setCurrentText("Both (LCCN & NLM)")
+            elif saved_mode == "marc_only":
+                self.combo_run_mode.setCurrentText("MARC Import Only")
             else:
                 self.combo_run_mode.setCurrentText("LCCN Only")
         else:
@@ -1072,10 +1084,7 @@ class HarvestTabV2(QWidget):
         self._marc_status_label = QLabel("Select a MARC file (.mrc / .xml) to import into the database and export results.")
         self._marc_status_label.setWordWrap(True)
         self._marc_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._marc_status_label.setStyleSheet(
-            "background: #f1f5f9; border-radius: 6px; padding: 8px 12px;"
-            " font-size: 12px; color: #475569;"
-        )
+        self._marc_status_label.setProperty("class", "MarcStatusBanner")
         marc_vbox.addWidget(self._marc_status_label)
 
         # 2. Four stat tiles in a row
@@ -1090,23 +1099,17 @@ class HarvestTabV2(QWidget):
         for label_text, attr_name in marc_stat_defs:
             tile = QWidget()
             tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            tile.setStyleSheet(
-                "background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;"
-            )
+            tile.setProperty("class", "StatTile")
             tile_vbox = QVBoxLayout(tile)
             tile_vbox.setContentsMargins(10, 10, 10, 10)
             tile_vbox.setSpacing(3)
             tile_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl_val = QLabel("—")
             lbl_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_val.setStyleSheet(
-                "font-size: 20px; font-weight: 700; color: #1e293b; background: transparent; border: none;"
-            )
+            lbl_val.setProperty("class", "StatTileValueSmall")
             lbl_cat = QLabel(label_text)
             lbl_cat.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_cat.setStyleSheet(
-                "font-size: 10px; color: #94a3b8; background: transparent; border: none;"
-            )
+            lbl_cat.setProperty("class", "StatTileLabelSmall")
             tile_vbox.addWidget(lbl_val)
             tile_vbox.addWidget(lbl_cat)
             marc_stat_row.addWidget(tile)
@@ -1116,15 +1119,11 @@ class HarvestTabV2(QWidget):
         # 3. Drop zone — expands to fill remaining space
         marc_drop_zone = QFrame()
         marc_drop_zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        marc_drop_zone.setStyleSheet(
-            "QFrame { border: 2px dashed #cbd5e1; border-radius: 8px; background: #f8fafc; }"
-        )
+        marc_drop_zone.setProperty("class", "MarcDropZone")
         drop_zone_vbox = QVBoxLayout(marc_drop_zone)
         drop_hint = QLabel("Drop .mrc or .xml file here")
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_hint.setStyleSheet(
-            "font-size: 13px; color: #94a3b8; background: transparent; border: none;"
-        )
+        drop_hint.setStyleSheet("font-size: 13px;")
         drop_zone_vbox.addWidget(drop_hint)
         marc_vbox.addWidget(marc_drop_zone, stretch=1)
 
@@ -1145,12 +1144,7 @@ class HarvestTabV2(QWidget):
         self._btn_import_marc.clicked.connect(self._import_marc_file)
         self._btn_import_marc.setEnabled(False)
         self._btn_clear_marc = QPushButton("Clear")
-        self._btn_clear_marc.setProperty("class", "PrimaryButton")
-        self._btn_clear_marc.setStyleSheet(
-            "QPushButton { background: transparent; color: #94a3b8;"
-            " border: 1.5px solid #e2e8f0; }"
-            " QPushButton:hover { color: #475569; border-color: #cbd5e1; background: #f8fafc; }"
-        )
+        self._btn_clear_marc.setProperty("class", "SecondaryButton")
         self._btn_clear_marc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_clear_marc.clicked.connect(self._clear_marc_file)
         self._btn_clear_marc.setVisible(False)
@@ -1180,23 +1174,17 @@ class HarvestTabV2(QWidget):
         for i, (label_text, attr_name) in enumerate(stat_defs):
             tile = QWidget()
             tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            tile.setStyleSheet(
-                "background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;"
-            )
+            tile.setProperty("class", "StatTile")
             tile_layout = QVBoxLayout(tile)
             tile_layout.setContentsMargins(14, 14, 14, 12)
             tile_layout.setSpacing(4)
             tile_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl_val = QLabel("—")
             lbl_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_val.setStyleSheet(
-                "font-size: 22px; font-weight: 700; color: #1e293b; background: transparent; border: none;"
-            )
+            lbl_val.setProperty("class", "StatTileValue")
             lbl_cat = QLabel(label_text)
             lbl_cat.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_cat.setStyleSheet(
-                "font-size: 11px; color: #94a3b8; font-weight: 500; background: transparent; border: none;"
-            )
+            lbl_cat.setProperty("class", "StatTileLabel")
             tile_layout.addWidget(lbl_val)
             tile_layout.addWidget(lbl_cat)
             stats_grid.addWidget(tile, i // 3, i % 3)
@@ -1213,12 +1201,11 @@ class HarvestTabV2(QWidget):
 
         preview_toolbar = QHBoxLayout()
         self.lbl_preview_filename = QLabel("No file selected")
-        self.lbl_preview_filename.setStyleSheet("font-size: 10px; color: grey; font-style: italic;")
+        self.lbl_preview_filename.setStyleSheet("font-size: 10px; font-style: italic;")
         self.btn_copy_preview = QPushButton("Copy")
         self.btn_copy_preview.setFixedHeight(24)
         self.btn_copy_preview.setStyleSheet(
-            "background: transparent; font-size: 11px; font-weight: bold;"
-            " color: #1e293b; padding: 0 10px;"
+            "background: transparent; font-size: 11px; font-weight: bold; padding: 0 10px;"
         )
         self.btn_copy_preview.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_copy_preview.clicked.connect(self._copy_preview_content)
@@ -1238,15 +1225,11 @@ class HarvestTabV2(QWidget):
         self.preview_table.verticalHeader().setDefaultSectionSize(26)
         self.preview_table.verticalHeader().setVisible(True)
         self.preview_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.preview_table.setStyleSheet("""
-            QTableWidget { background: transparent; border: none;
-                           font-size: 12px; font-family: 'Consolas', monospace; }
-            QTableWidget::item { padding: 2px 8px; }
-            QHeaderView::section { background: #f1f5f9; font-size: 11px; font-weight: 600;
-                                   padding: 4px 8px; border: none;
-                                   border-bottom: 1px solid #e2e8f0; }
-            QTableWidget::item:alternate { background: #f8fafc; }
-        """)
+        self.preview_table.setStyleSheet(
+            "QTableWidget { font-size: 12px; font-family: 'Consolas', monospace; }"
+            "QTableWidget::item { padding: 2px 8px; }"
+            "QHeaderView::section { font-size: 11px; font-weight: 600; padding: 4px 8px; }"
+        )
         # Show placeholder headers before any file is loaded
         self.preview_table.setColumnCount(2)
         self.preview_table.setHorizontalHeaderLabels(["Value", "Status"])
@@ -1354,7 +1337,7 @@ class HarvestTabV2(QWidget):
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedHeight(6)
         self.progress_bar.setStyleSheet(
-            "QProgressBar { background: #e2e8f0; border-radius: 3px; } QProgressBar::chunk { border-radius: 3px; }"
+            "QProgressBar { border-radius: 3px; } QProgressBar::chunk { border-radius: 3px; }"
         )
         action_layout.addWidget(self.progress_bar)
         layout.addWidget(action_frame)
@@ -1366,6 +1349,7 @@ class HarvestTabV2(QWidget):
             mode_text = self.combo_run_mode.currentText()
 
         is_both = mode_text == "Both (LCCN & NLM)"
+        is_marc_only = mode_text == "MARC Import Only"
         self.lbl_stop_rule.setEnabled(is_both)
         self.combo_stop_rule.setEnabled(is_both)
 
@@ -1390,6 +1374,7 @@ class HarvestTabV2(QWidget):
             self.lbl_stop_rule.setStyleSheet(muted_label)
             self.combo_stop_rule.setStyleSheet(muted_combo)
             self.combo_stop_rule.setCursor(Qt.CursorShape.ForbiddenCursor)
+
 
     def _transition_state(self, state: UIState, **kwargs):
         """Unified UI state machine handling buttons, banners, and status."""
@@ -1573,11 +1558,10 @@ class HarvestTabV2(QWidget):
             # Success State
             self.input_file = path
 
-            # Update Path Display with blue tint
+            # Update Path Display with blue accent border (theme-neutral)
             self.file_path_edit.setText(str(path_obj))
             self.file_path_edit.setStyleSheet(
-                "background-color: #eff6ff; border: 1.5px solid #3b82f6;"
-                " border-radius: 6px; padding: 4px 8px;"
+                "border: 1.5px solid #3b82f6; border-radius: 6px; padding: 4px 8px;"
             )
 
             # Show quiet ghost Clear button
@@ -1826,8 +1810,10 @@ class HarvestTabV2(QWidget):
         if mode_text == "NLM Only":
             config["call_number_mode"] = "nlmcn"
             config["both_stop_policy"] = "nlmcn"
+            config["db_only"] = False
         elif mode_text == "Both (LCCN & NLM)":
             config["call_number_mode"] = "both"
+            config["db_only"] = False
             stop_text = self.combo_stop_rule.currentText()
 
             # Read stop rule from the UI combo (no popup needed — user already chose)
@@ -1840,14 +1826,18 @@ class HarvestTabV2(QWidget):
             stop_rule_val, both_policy_val = stop_mapping.get(stop_text, ("stop_either", "either"))
             config["stop_rule"] = stop_rule_val
             config["both_stop_policy"] = both_policy_val
+        elif mode_text == "MARC Import Only":
+            config["call_number_mode"] = "both"
+            config["db_only"] = True
         else:
             config["call_number_mode"] = "lccn"
             config["both_stop_policy"] = "lccn"
+            config["db_only"] = False
 
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
         selected_targets = [t for t in targets if t.get("selected", True)]
-        if not selected_targets:
+        if not selected_targets and not config.get("db_only", False):
             QMessageBox.warning(
                 self,
                 "No Targets",

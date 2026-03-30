@@ -869,6 +869,9 @@ class DashboardTabV2(QWidget):
 
     def apply_run_stats(self, stats):
         """Accept either a dict (legacy) or a RunStats dataclass."""
+        # Prefer the embedded RunStats object when available in a dict
+        if isinstance(stats, dict) and hasattr(stats.get("run_stats"), 'processed_unique'):
+            stats = stats["run_stats"]
         base = getattr(self, '_baseline_stats', {})
         b_proc = base.get('processed', 0)
         b_found = base.get('found', 0)
@@ -891,7 +894,7 @@ class DashboardTabV2(QWidget):
         else:  # legacy dict
             stats = stats or {}
             self.session_stats = {
-                "processed": b_proc + int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)),
+                "processed": b_proc + int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)) + int(stats.get("invalid", 0)),
                 "successful": b_found + int(stats.get("found", 0)) + int(stats.get("cached", 0)),
                 "failed": b_true_failed + int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
                 "invalid": b_invalid + int(stats.get("invalid", 0)),

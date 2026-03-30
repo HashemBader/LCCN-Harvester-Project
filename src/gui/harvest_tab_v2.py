@@ -50,10 +50,12 @@ from .input_tab import ClickableDropZone
 
 # Add imports for Worker
 from src.harvester.run_harvest import run_harvest, parse_isbn_file, RunStats
+from src.harvester.marc_import import MarcImportService, ParsedMarcImportRecord
 from src.harvester.targets import create_target_from_config
 from src.harvester.orchestrator import HarvestCancelled
 from src.database import DatabaseManager, today_yyyymmdd
 from src.database.db_manager import yyyymmdd_to_iso_date
+from src.config.profile_manager import ProfileManager
 from src.utils import messages
 
 
@@ -80,6 +82,62 @@ def _safe_filename(s: str) -> str:
 def _display_date(value) -> str:
     """Format storage dates for TSV/live display."""
     return yyyymmdd_to_iso_date(value) or ""
+
+
+def _select_marc_values_for_mode(lccn: str | None, nlmcn: str | None, mode: str) -> tuple[str | None, str | None]:
+    """Return only the call-number fields relevant to the chosen import mode."""
+    normalized_mode = (mode or "lccn").strip().lower()
+    if normalized_mode == "nlmcn":
+        return None, nlmcn or None
+    if normalized_mode == "both":
+        return lccn or None, nlmcn or None
+    return lccn or None, None
+
+
+def _prepare_marc_import_records(
+    records: list[tuple[str | None, str | None, str | None]],
+    *,
+    mode: str,
+    source_name: str,
+) -> tuple[list[tuple[str, str | None, str | None]], list[ParsedMarcImportRecord], int, int, int]:
+    """Prepare MARC rows for both export files and database persistence."""
+    selected_rows: list[tuple[str, str | None, str | None]] = []
+    parsed_records: list[ParsedMarcImportRecord] = []
+    written = 0
+    skipped = 0
+    no_isbn = 0
+    normalized_mode = (mode or "lccn").strip().lower()
+
+    for isbn, lccn, nlmcn in records:
+        selected_lccn, selected_nlmcn = _select_marc_values_for_mode(lccn, nlmcn, normalized_mode)
+
+        if normalized_mode == "nlmcn":
+            keep = bool(selected_nlmcn)
+        elif normalized_mode == "both":
+            keep = bool(selected_lccn or selected_nlmcn)
+        else:
+            keep = bool(selected_lccn)
+
+        if not keep:
+            skipped += 1
+            continue
+
+        normalized_isbn = str(isbn or "").replace("-", "").strip()
+        if not normalized_isbn:
+            no_isbn += 1
+
+        selected_rows.append((normalized_isbn, selected_lccn, selected_nlmcn))
+        parsed_records.append(
+            ParsedMarcImportRecord(
+                isbns=(normalized_isbn,) if normalized_isbn else tuple(),
+                lccn=selected_lccn,
+                nlmcn=selected_nlmcn,
+                source=source_name,
+            )
+        )
+        written += 1
+
+    return selected_rows, parsed_records, written, skipped, no_isbn
 
 
 class HarvestWorkerV2(QThread):
@@ -337,6 +395,7 @@ class HarvestWorkerV2(QThread):
                 call_number_mode=call_number_mode,
                 stop_rule=self.config.get("stop_rule", "stop_either"),
                 both_stop_policy=self.config.get("both_stop_policy", "both"),
+                db_only=self.config.get("db_only", False),
             )
 
             # Final stats
@@ -960,7 +1019,7 @@ class HarvestTabV2(QWidget):
         lbl_run_mode.setProperty("class", "HelperText")
         self.combo_run_mode = ConsistentComboBox()
         self.combo_run_mode.setProperty("class", "ComboBox")
-        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)"])
+        self.combo_run_mode.addItems(["LCCN Only", "NLM Only", "Both (LCCN & NLM)", "MARC Import Only"])
         self.combo_run_mode.setToolTip("Select the type of call numbers to harvest")
         if hasattr(self, "_config_getter") and callable(self._config_getter):
             config = self._config_getter() or {}
@@ -969,6 +1028,8 @@ class HarvestTabV2(QWidget):
                 self.combo_run_mode.setCurrentText("NLM Only")
             elif saved_mode == "both":
                 self.combo_run_mode.setCurrentText("Both (LCCN & NLM)")
+            elif saved_mode == "marc_only":
+                self.combo_run_mode.setCurrentText("MARC Import Only")
             else:
                 self.combo_run_mode.setCurrentText("LCCN Only")
         else:
@@ -1011,7 +1072,7 @@ class HarvestTabV2(QWidget):
         marc_vbox.setSpacing(10)
 
         # 1. Status banner
-        self._marc_status_label = QLabel("Select a MARC file (.mrc / .xml) to extract call numbers.")
+        self._marc_status_label = QLabel("Select a MARC file (.mrc / .xml) to import into the database and export results.")
         self._marc_status_label.setWordWrap(True)
         self._marc_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._marc_status_label.setStyleSheet(
@@ -1308,6 +1369,7 @@ class HarvestTabV2(QWidget):
             mode_text = self.combo_run_mode.currentText()
 
         is_both = mode_text == "Both (LCCN & NLM)"
+        is_marc_only = mode_text == "MARC Import Only"
         self.lbl_stop_rule.setEnabled(is_both)
         self.combo_stop_rule.setEnabled(is_both)
 
@@ -1332,6 +1394,7 @@ class HarvestTabV2(QWidget):
             self.lbl_stop_rule.setStyleSheet(muted_label)
             self.combo_stop_rule.setStyleSheet(muted_combo)
             self.combo_stop_rule.setCursor(Qt.CursorShape.ForbiddenCursor)
+
 
     def _transition_state(self, state: UIState, **kwargs):
         """Unified UI state machine handling buttons, banners, and status."""
@@ -1768,8 +1831,10 @@ class HarvestTabV2(QWidget):
         if mode_text == "NLM Only":
             config["call_number_mode"] = "nlmcn"
             config["both_stop_policy"] = "nlmcn"
+            config["db_only"] = False
         elif mode_text == "Both (LCCN & NLM)":
             config["call_number_mode"] = "both"
+            config["db_only"] = False
             stop_text = self.combo_stop_rule.currentText()
 
             # Read stop rule from the UI combo (no popup needed — user already chose)
@@ -1782,14 +1847,18 @@ class HarvestTabV2(QWidget):
             stop_rule_val, both_policy_val = stop_mapping.get(stop_text, ("stop_either", "either"))
             config["stop_rule"] = stop_rule_val
             config["both_stop_policy"] = both_policy_val
+        elif mode_text == "MARC Import Only":
+            config["call_number_mode"] = "both"
+            config["db_only"] = True
         else:
             config["call_number_mode"] = "lccn"
             config["both_stop_policy"] = "lccn"
+            config["db_only"] = False
 
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
         selected_targets = [t for t in targets if t.get("selected", True)]
-        if not selected_targets:
+        if not selected_targets and not config.get("db_only", False):
             QMessageBox.warning(
                 self,
                 "No Targets",
@@ -2235,13 +2304,13 @@ class HarvestTabV2(QWidget):
             self._marc_path_edit.setText(path)
             self._btn_import_marc.setEnabled(True)
             self._btn_clear_marc.setVisible(True)
-            self._marc_status_label.setText("Click 'Import Records' to extract call numbers and save results.")
+            self._marc_status_label.setText("Click 'Import Records' to import call numbers into the database and save results.")
 
     def _clear_marc_file(self):
         self._marc_path_edit.clear()
         self._btn_import_marc.setEnabled(False)
         self._btn_clear_marc.setVisible(False)
-        self._marc_status_label.setText("Select a MARC file (.mrc / .xml) to extract call numbers.")
+        self._marc_status_label.setText("Select a MARC file (.mrc / .xml) to import into the database and export results.")
         for attr in ("_marc_stat_records", "_marc_stat_callnums", "_marc_stat_matched", "_marc_stat_unmatched"):
             getattr(self, attr).setText("—")
 
@@ -2314,24 +2383,46 @@ class HarvestTabV2(QWidget):
         else:
             headers = ["ISBN", "LCCN", "LCCN Source", "Classification", "Date"]
 
+        selected_rows, parsed_records, written, skipped, no_isbn = _prepare_marc_import_records(
+            records,
+            mode=mode,
+            source_name=source_name,
+        )
         date_added = today_yyyymmdd()
-        written = 0
-        skipped = 0
-        no_isbn = 0
+
+        profile_name = None
+        if self._profile_getter:
+            try:
+                profile_name = self._profile_getter() or None
+            except Exception:
+                profile_name = None
+
+        db_path = "data/lccn_harvester.sqlite3"
+        if self._db_path_getter:
+            try:
+                db_path = str(self._db_path_getter())
+            except Exception:
+                pass
+
+        marc_service = MarcImportService(
+            db_path=db_path,
+            profile_manager=ProfileManager(),
+            profile_name=profile_name,
+        )
+        db_summary = marc_service.persist_records(
+            parsed_records,
+            source_name=source_name,
+            import_date=date_added,
+            save_source_to_active_profile=True,
+        )
 
         with open(out_path, "w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow(headers)
-            for i, (isbn, lccn, nlmcn) in enumerate(records, 1):
+            for i, (isbn, lccn, nlmcn) in enumerate(selected_rows, 1):
                 if mode == "nlmcn":
-                    if not nlmcn:
-                        skipped += 1
-                        continue
                     row = [isbn or "", nlmcn, source_name, date_added]
                 elif mode == "both":
-                    if not lccn and not nlmcn:
-                        skipped += 1
-                        continue
                     classification = _extract_lc_classification(lccn or "")
                     row = [
                         isbn or "",
@@ -2341,15 +2432,9 @@ class HarvestTabV2(QWidget):
                         date_added,
                     ]
                 else:
-                    if not lccn:
-                        skipped += 1
-                        continue
                     classification = _extract_lc_classification(lccn)
                     row = [isbn or "", lccn, source_name, classification, date_added]
-                if not isbn:
-                    no_isbn += 1
                 writer.writerow(row)
-                written += 1
                 # Update status every 500 records so the UI stays responsive
                 if i % 500 == 0:
                     self._marc_status_label.setText(
@@ -2366,12 +2451,12 @@ class HarvestTabV2(QWidget):
 
         # ── Update status label + MARC stats panel ─────────────────────────────
         self._marc_status_label.setText(
-            f"Done — {written:,} imported, {skipped:,} skipped  →  {out_path.name}"
+            f"Done — {db_summary.main_rows:,} saved to database, {written:,} exported, {skipped:,} skipped  →  {out_path.name}"
         )
         self._marc_stat_records.setText(f"{total_records:,}")
         self._marc_stat_callnums.setText(f"{written:,}")
-        self._marc_stat_matched.setText(f"{written - no_isbn:,}")
-        self._marc_stat_unmatched.setText(f"{skipped:,}")
+        self._marc_stat_matched.setText(f"{db_summary.main_rows:,}")
+        self._marc_stat_unmatched.setText(f"{skipped + db_summary.skipped_records:,}")
         self._btn_import_marc.setEnabled(True)
 
         # ── Summary dialog ─────────────────────────────────────────────────────
@@ -2384,9 +2469,11 @@ class HarvestTabV2(QWidget):
             f"<b>Mode:</b> {mode_label}",
             "",
             f"<b>Total records in file:</b> {total_records:,}",
-            f"<b>Imported:</b> {written:,}",
+            f"<b>Saved to database (main):</b> {db_summary.main_rows:,}",
+            f"<b>Saved to database (attempted):</b> {db_summary.attempted_rows:,}",
+            f"<b>Exported to file:</b> {written:,}",
             f"<b>Skipped</b> (no call number for mode): {skipped:,}",
-            f"<b>Missing ISBN</b> (imported without ISBN): {no_isbn:,}",
+            f"<b>Missing ISBN</b> (not saved to database): {no_isbn:,}",
             "",
             f"<b>Output:</b> {out_path.name}",
         ]

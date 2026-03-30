@@ -60,33 +60,40 @@ class Z3950Target:
                         error=messages.NetworkMessages.no_match.format(target=self.name)
                     )
 
-                # Extract LCCN (MARC 050 $a+$b) and NLMCN (MARC 060 $a+$b)
-                # per project requirements: 050 = LC call number, 060 = NLM call number.
+                # Extract LCCN (MARC 050 $a+$b), NLMCN (MARC 060 $a+$b), and all ISBNs.
                 # Use the shared marc_decoder utility which normalises $a+$b and
                 # iterates all returned records until a call number is found.
-                from src.z3950.marc_decoder import extract_call_numbers_from_pymarc
+                from src.z3950.marc_decoder import (
+                    extract_call_numbers_from_pymarc,
+                    extract_isbns_from_pymarc,
+                )
 
                 lccn = None
                 nlmcn = None
+                all_isbns: list[str] = []
                 for rec in records:
                     raw_lccn, raw_nlmcn = extract_call_numbers_from_pymarc(rec)
+                    all_isbns.extend(extract_isbns_from_pymarc(rec))
                     lccn = validate_lccn(raw_lccn)
                     nlmcn = validate_nlmcn(raw_nlmcn)
                     if lccn or nlmcn:
                         break
 
+                unique_isbns = tuple(dict.fromkeys(all_isbns))
                 if lccn or nlmcn:
                     return TargetResult(
                         success=True,
                         lccn=lccn,
                         nlmcn=nlmcn,
-                        source=self.name
+                        source=self.name,
+                        isbns=unique_isbns,
                     )
                 else:
                     return TargetResult(
                         success=False,
                         source=self.name,
-                        error=messages.NetworkMessages.record_no_lccn
+                        error=messages.NetworkMessages.record_no_lccn,
+                        isbns=unique_isbns,
                     )
 
         except Exception as e:
@@ -119,19 +126,22 @@ class LibraryOfCongressTarget:
                     success=True,
                     lccn=result.lccn,
                     nlmcn=result.nlmcn,
-                    source=self.name
+                    source=self.name,
+                    isbns=tuple(result.isbns),
                 )
             elif result.status == "not_found":
                 return TargetResult(
                     success=False,
                     source=self.name,
-                    error=f"No records found in {self.name}."
+                    error=f"No records found in {self.name}.",
+                    isbns=tuple(result.isbns),
                 )
             else:
                 return TargetResult(
                     success=False,
                     source=self.name,
-                    error=result.error_message or f"API status: {result.status}"
+                    error=result.error_message or f"API status: {result.status}",
+                    isbns=tuple(result.isbns),
                 )
         except Exception as e:
             logger.error(f"Library of Congress lookup failed for {isbn}: {e}")
@@ -161,19 +171,22 @@ class HarvardLibraryCloudTarget:
                     success=True,
                     lccn=result.lccn,
                     nlmcn=result.nlmcn,
-                    source=self.name
+                    source=self.name,
+                    isbns=tuple(result.isbns),
                 )
             elif result.status == "not_found":
                 return TargetResult(
                     success=False,
                     source=self.name,
-                    error=f"No records found in {self.name}."
+                    error=f"No records found in {self.name}.",
+                    isbns=tuple(result.isbns),
                 )
             else:
                 return TargetResult(
                     success=False,
                     source=self.name,
-                    error=result.error_message or f"API status: {result.status}"
+                    error=result.error_message or f"API status: {result.status}",
+                    isbns=tuple(result.isbns),
                 )
         except Exception as e:
             logger.error(f"Harvard LibraryCloud lookup failed for {isbn}: {e}")
@@ -203,19 +216,22 @@ class OpenLibraryTarget:
                     success=True,
                     lccn=result.lccn,
                     nlmcn=result.nlmcn,
-                    source=self.name
+                    source=self.name,
+                    isbns=tuple(result.isbns),
                 )
             elif result.status == "not_found":
                 return TargetResult(
                     success=False,
                     source=self.name,
-                    error=f"No records found in {self.name}."
+                    error=f"No records found in {self.name}.",
+                    isbns=tuple(result.isbns),
                 )
             else:
                 return TargetResult(
                     success=False,
                     source=self.name,
-                    error=result.error_message or f"API status: {result.status}"
+                    error=result.error_message or f"API status: {result.status}",
+                    isbns=tuple(result.isbns),
                 )
         except Exception as e:
             logger.error(f"OpenLibrary lookup failed for {isbn}: {e}")

@@ -5,6 +5,7 @@ Part of the LCCN Harvester Project.
 
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 import re
 
 try:
@@ -49,6 +50,22 @@ def _simple_validate_isbn(isbn_str: str) -> bool:
     """Simple ISBN validation when stdnum is not available."""
     cleaned = _simple_normalize_isbn(isbn_str)
     return len(cleaned) in (10, 13)
+
+
+def _isbn_sort_key(isbn_str: str) -> str:
+    """Return a sort key for ISBNs where the numerically smallest ISBN sorts first."""
+    normalized = _simple_normalize_isbn(isbn_str).upper()
+    if normalized.endswith("X"):
+        normalized = normalized[:-1] + "9"
+    return normalized or isbn_str.strip().upper()
+
+
+def pick_lowest_isbn(isbns: Iterable[str]) -> str:
+    """Return the numerically lowest ISBN from a sequence of ISBN strings."""
+    candidates = [isbn for isbn in isbns if isbn and str(isbn).strip()]
+    if not candidates:
+        raise ValueError("At least one ISBN is required")
+    return min(candidates, key=_isbn_sort_key)
 
 
 def normalize_isbn(isbn_str: str) -> str:

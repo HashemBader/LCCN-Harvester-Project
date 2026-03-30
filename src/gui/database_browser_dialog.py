@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 
 from database import DatabaseManager
+from database.db_manager import yyyymmdd_to_iso_date
 
 TABLE_COLUMNS = {
     "main":         ["isbn", "call_number", "call_number_type", "classification", "source", "date_added"],
@@ -191,6 +192,14 @@ class _TableTab(QWidget):
         self._page = 0
         self._render_page()
 
+    def _format_cell(self, col_idx: int, cell: object) -> str:
+        if cell is None:
+            return ""
+        column_name = self.columns[col_idx]
+        if column_name in ("date_added", "last_attempted"):
+            return yyyymmdd_to_iso_date(cell) or str(cell)
+        return str(cell)
+
     def _render_page(self):
         total = len(self._filtered_rows)
         total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -202,8 +211,9 @@ class _TableTab(QWidget):
         self.table.setRowCount(len(page_rows))
         for r_idx, row in enumerate(page_rows):
             for c_idx, cell in enumerate(row):
-                item = QTableWidgetItem("" if cell is None else str(cell))
-                item.setToolTip("" if cell is None else str(cell))
+                formatted = self._format_cell(c_idx, cell)
+                item = QTableWidgetItem(formatted)
+                item.setToolTip(formatted)
                 self.table.setItem(r_idx, c_idx, item)
         self.table.setSortingEnabled(True)
 

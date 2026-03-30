@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from src.api.base_api import ApiResult, BaseApiClient
 from src.api.http_utils import urlopen_with_ca
 from src.utils.call_number_validators import validate_lccn, validate_nlmcn
+from src.utils.isbn_validator import normalize_isbn
 
 
 class HarvardApiClient(BaseApiClient):
@@ -206,6 +207,67 @@ class HarvardApiClient(BaseApiClient):
 
         return []
 
+    def _extract_isbns(self, payload: Any) -> List[str]:
+        if not isinstance(payload, dict):
+            return []
+
+        items = self._extract_item_objects(payload)
+        isbns: List[str] = []
+
+        for item in items:
+            self._collect_isbns_from_json(item, isbns)
+            mods_xml = self._get_mods_xml_if_present(item)
+            if mods_xml:
+                isbns.extend(self._extract_isbns_from_mods_xml(mods_xml))
+
+        return self._dedupe_keep_order(isbns)
+
+    def _collect_isbns_from_json(self, obj: Any, isbns: List[str]) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                key_lower = str(key).strip().lower()
+                if key_lower in {"isbn", "isbn_10", "isbn_13"}:
+                    values = value if isinstance(value, list) else [value]
+                    for item in values:
+                        if isinstance(item, str):
+                            normalized = normalize_isbn(item.strip())
+                            if normalized:
+                                isbns.append(normalized)
+                elif key_lower == "identifier" and isinstance(value, list):
+                    for entry in value:
+                        if isinstance(entry, dict):
+                            if str(entry.get("@type", "")).strip().lower() == "isbn":
+                                text = str(entry.get("#text", "")).strip()
+                                if text:
+                                    normalized = normalize_isbn(text)
+                                    if normalized:
+                                        isbns.append(normalized)
+                        elif isinstance(entry, str):
+                            normalized = normalize_isbn(entry.strip())
+                            if normalized:
+                                isbns.append(normalized)
+                else:
+                    self._collect_isbns_from_json(value, isbns)
+        elif isinstance(obj, list):
+            for item in obj:
+                self._collect_isbns_from_json(item, isbns)
+
+    def _extract_isbns_from_mods_xml(self, xml_text: str) -> List[str]:
+        isbns: List[str] = []
+        try:
+            root = et.fromstring(xml_text)
+        except Exception:
+            return isbns
+
+        for elem in root.iter():
+            if elem.tag.lower().endswith("identifier"):
+                identifier_type = str(elem.attrib.get("type", "")).strip().lower()
+                if identifier_type == "isbn" and elem.text:
+                    normalized = normalize_isbn(elem.text.strip())
+                    if normalized:
+                        isbns.append(normalized)
+        return isbns
+
     def extract_call_numbers(self, isbn: str, payload: Any) -> ApiResult:
         """
         Convert Harvard response payload into the unified ApiResult contract.
@@ -213,6 +275,7 @@ class HarvardApiClient(BaseApiClient):
         candidates = self._extract_candidates(payload)
         lccn = candidates["lc"][0] if candidates["lc"] else None
         nlmcn = candidates["nlm"][0] if candidates["nlm"] else None
+        isbns = self._extract_isbns(payload)
 
         # Validate extracted call numbers
         lccn = validate_lccn(lccn, source=self.source)
@@ -226,6 +289,7 @@ class HarvardApiClient(BaseApiClient):
                 lccn=lccn,
                 nlmcn=nlmcn,
                 raw=payload,
+                isbns=isbns,
             )
 
         return ApiResult(
@@ -233,6 +297,7 @@ class HarvardApiClient(BaseApiClient):
             source=self.source,
             status="not_found",
             raw=payload,
+            isbns=isbns,
         )
 
     # -------------------------

@@ -102,8 +102,9 @@ class LocApiClient(BaseApiClient):
                 error_message="LoC record found but MARC payload missing",
             )
 
-        # Use marc_parser to extract call numbers
+        # Use marc_parser to extract call numbers and all ISBNs from the record
         lccn, nlmcn = marc_parser.extract_call_numbers_from_xml(marc_record, self.namespaces)
+        isbns = list(dict.fromkeys(marc_parser.extract_isbns_from_xml(marc_record, self.namespaces)))
 
         # Validate extracted call numbers
         lccn = validate_lccn(lccn, source=self.source)
@@ -117,6 +118,7 @@ class LocApiClient(BaseApiClient):
                 lccn=lccn,
                 nlmcn=nlmcn,
                 raw={"numberOfRecords": records_count},
+                isbns=isbns,
             )
 
         return ApiResult(
@@ -125,4 +127,5 @@ class LocApiClient(BaseApiClient):
             status="not_found",
             error_message="Record found but no usable call number",
             raw={"numberOfRecords": records_count},
+            isbns=isbns,
         )

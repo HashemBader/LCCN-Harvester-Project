@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 
 from src.config.profile_manager import ProfileManager
 from src.database.db_manager import DatabaseManager, MainRecord, today_yyyymmdd
+from src.utils.isbn_validator import pick_lowest_isbn
 from src.utils.marc_parser import (
     extract_call_numbers_from_json,
     extract_call_numbers_from_xml,
@@ -135,7 +136,7 @@ class MarcImportService:
                     continue
 
                 record_source = (record.source or normalized_source).strip() or "MARC Import"
-                lowest_isbn = min(isbns)
+                lowest_isbn = pick_lowest_isbn(isbns)
                 other_isbns = [isbn for isbn in isbns if isbn != lowest_isbn]
 
                 if record.lccn or record.nlmcn:

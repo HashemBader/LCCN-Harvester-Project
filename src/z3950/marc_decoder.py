@@ -51,11 +51,11 @@ def pymarc_record_to_json(record: Any) -> Dict[str, List[Dict[str, Any]]]:
 
     fields = []
 
-    # Extract MARC fields 050 (LCCN) and 060 (NLMCN).
+    # Extract MARC fields 020 (ISBN), 050 (LCCN) and 060 (NLMCN).
     # When multiple occurrences exist, prefer the LC-assigned one (ind2='0')
     # over institution copies (ind2='4' or blank) to avoid mixing $b values
     # from different field occurrences during normalization.
-    for field_tag in ("050", "060"):
+    for field_tag in ("020", "050", "060"):
         try:
             field_objs = record.get_fields(field_tag)
             if not field_objs:
@@ -153,3 +153,16 @@ def extract_call_numbers_from_pymarc(record: Any) -> tuple[Optional[str], Option
 
     marc_json = pymarc_record_to_json(record)
     return extract_call_numbers_from_json(marc_json)
+
+
+def extract_isbns_from_pymarc(record: Any) -> list[str]:
+    """
+    Extract normalized ISBNs from a pymarc Record.
+
+    This is a convenience function for Z39.50 workflows that need all ISBNs
+    contained in a MARC record, not just the ISBN that was queried.
+    """
+    from src.utils.marc_parser import extract_isbns_from_json
+
+    marc_json = pymarc_record_to_json(record)
+    return list(dict.fromkeys(extract_isbns_from_json(marc_json)))

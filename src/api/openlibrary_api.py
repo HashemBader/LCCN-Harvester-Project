@@ -19,6 +19,7 @@ from typing import Any, Optional
 from src.api.base_api import ApiResult, BaseApiClient
 from src.api.http_utils import urlopen_with_ca
 from src.utils.call_number_validators import validate_lccn, validate_nlmcn
+from src.utils.isbn_validator import normalize_isbn
 
 
 
@@ -53,6 +54,36 @@ class OpenLibraryApiClient(BaseApiClient):
                 return None # distinct from network error
             raise e
 
+    def _extract_isbns(self, payload: Any) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+
+        def _collect_values(value: Any) -> list[str]:
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if isinstance(item, str)]
+            if isinstance(value, str):
+                return [value.strip()]
+            return []
+
+        isbns: list[str] = []
+        for key in ("isbn", "isbn_10", "isbn_13"):
+            values = _collect_values(payload.get(key))
+            for raw in values:
+                normalized = normalize_isbn(raw)
+                if normalized:
+                    isbns.append(normalized)
+
+        identifiers = payload.get("identifiers")
+        if isinstance(identifiers, dict):
+            for key in ("isbn", "isbn_10", "isbn_13"):
+                values = _collect_values(identifiers.get(key))
+                for raw in values:
+                    normalized = normalize_isbn(raw)
+                    if normalized:
+                        isbns.append(normalized)
+
+        return list(dict.fromkeys(isbns))
+
     def extract_call_numbers(self, isbn: str, payload: Any) -> ApiResult:
         if payload is None:
              return ApiResult(
@@ -83,6 +114,8 @@ class OpenLibraryApiClient(BaseApiClient):
         lccn = validate_lccn(lccn, source=self.source)
         nlmcn = validate_nlmcn(nlmcn, source=self.source)
 
+        isbns = self._extract_isbns(payload)
+
         if lccn or nlmcn:
              return ApiResult(
                 isbn=isbn,
@@ -90,11 +123,13 @@ class OpenLibraryApiClient(BaseApiClient):
                 status="success",
                 lccn=lccn,
                 nlmcn=nlmcn,
-                raw=payload
+                raw=payload,
+                isbns=isbns,
             )
             
         return ApiResult(
             isbn=isbn,
             source=self.source,
-            status="not_found" # if no call number, effectively not found for our purpose
+            status="not_found", # if no call number, effectively not found for our purpose
+            isbns=isbns,
         )

@@ -522,7 +522,8 @@ class DashboardTabV2(QWidget):
         try:
             with self.db.connect() as conn:
                 rows = conn.execute(
-                    "SELECT isbn, canonical_isbn FROM linked_isbns ORDER BY canonical_isbn, isbn"
+                    "SELECT other_isbn AS isbn, lowest_isbn AS canonical_isbn "
+                    "FROM linked_isbns ORDER BY lowest_isbn, other_isbn"
                 ).fetchall()
         except Exception as exc:
             QMessageBox.warning(self, "Export Failed", f"Could not read linked ISBNs:\n{exc}")

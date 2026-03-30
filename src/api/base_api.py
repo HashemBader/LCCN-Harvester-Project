@@ -11,8 +11,8 @@ the harvest orchestrator can treat clients uniformly.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -44,6 +44,7 @@ class ApiResult:
     lccn: Optional[str] = None
     nlmcn: Optional[str] = None
     raw: Optional[Any] = None
+    isbns: List[str] = field(default_factory=list)
     error_message: Optional[str] = None
 
 

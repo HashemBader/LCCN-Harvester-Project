@@ -302,6 +302,12 @@ QLineEdit:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     background-color: {t['surface']};
 }}
 
+QLineEdit:read-only {{
+    background-color: {t['surface2']};
+    color: {t['text_muted']};
+    border: 1px solid {t['border']};
+}}
+
 /* Stronger Affordance for Dropdowns */
 QComboBox {{
     background-color: {t['bg']}; 
@@ -979,6 +985,56 @@ QLabel#CategoryHeader {{
     padding: 8px;
     border-bottom: 2px solid {t['border_strong']};
     margin-top: 10px;
+}}
+
+/* --- Harvest Tab: Stat Tiles (File Statistics + MARC) --- */
+QWidget[class="StatTile"] {{
+    background-color: {t['surface2']};
+    border-radius: 8px;
+    border: 1px solid {t['border']};
+}}
+QLabel[class="StatTileValue"] {{
+    font-size: 22px;
+    font-weight: 700;
+    color: {t['text']};
+    background: transparent;
+    border: none;
+}}
+QLabel[class="StatTileValueSmall"] {{
+    font-size: 20px;
+    font-weight: 700;
+    color: {t['text']};
+    background: transparent;
+    border: none;
+}}
+QLabel[class="StatTileLabel"] {{
+    font-size: 11px;
+    color: {t['text_muted']};
+    font-weight: 500;
+    background: transparent;
+    border: none;
+}}
+QLabel[class="StatTileLabelSmall"] {{
+    font-size: 10px;
+    color: {t['text_muted']};
+    background: transparent;
+    border: none;
+}}
+
+/* --- Harvest Tab: MARC Status Banner --- */
+QLabel[class="MarcStatusBanner"] {{
+    background-color: {t['surface2']};
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: {t['text_muted']};
+}}
+
+/* --- Harvest Tab: MARC Drop Zone --- */
+QFrame[class="MarcDropZone"] {{
+    border: 2px dashed {t['border_strong']};
+    border-radius: 8px;
+    background-color: {t['surface2']};
 }}
 """
 

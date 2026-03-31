@@ -153,7 +153,9 @@ class MarcImportService:
                     )
                     main_rows += 1
                     for other_isbn in other_isbns:
-                        self.db._upsert_linked_isbn_conn(conn, lowest_isbn=lowest_isbn, other_isbn=other_isbn)
+                        # Use rewrite (not just upsert) so any pre-existing rows
+                        # stored under other_isbn are moved to lowest_isbn.
+                        self.db._rewrite_to_lowest_isbn_conn(conn, lowest_isbn=lowest_isbn, other_isbn=other_isbn)
                 else:
                     error_text = (record.error or self.DEFAULT_ERROR).strip() or self.DEFAULT_ERROR
                     for isbn in isbns:

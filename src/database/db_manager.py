@@ -1050,7 +1050,14 @@ class DatabaseManager:
         if lowest_isbn == other_isbn:
             return
 
+        # The subjects table has a legacy FK to main(isbn) where isbn is not
+        # unique (main's PK is composite).  SQLite raises "foreign key mismatch"
+        # on DELETE when FK enforcement is on, so we disable it for this
+        # operation.  This PRAGMA must be issued before the first DML statement
+        # so it takes effect before Python's sqlite3 module auto-begins a
+        # transaction.
         conn.execute("PRAGMA foreign_keys = OFF;")
+
         moved_main_rows = conn.execute(
             """
             SELECT call_number, call_number_type, classification, source, date_added
@@ -1063,13 +1070,22 @@ class DatabaseManager:
         for row in moved_main_rows:
             existing = conn.execute(
                 """
-                SELECT classification, source, date_added
+                SELECT call_number, classification, source, date_added
                 FROM main
                 WHERE isbn = ? AND call_number_type = ?
                 LIMIT 1
                 """,
                 (lowest_isbn, row["call_number_type"]),
             ).fetchone()
+            existing_date = normalize_to_yyyymmdd(existing["date_added"]) if existing else 0
+            row_date = normalize_to_yyyymmdd(row["date_added"]) or 0
+            # Keep the call_number from the more recent row; prefer other_isbn on tie
+            # so a freshly harvested result always wins over an older canonical row.
+            merged_call_number = (
+                row["call_number"]
+                if row_date >= existing_date
+                else existing["call_number"]
+            )
             merged_source = self._combine_sources(
                 existing["source"] if existing else None,
                 row["source"],
@@ -1079,22 +1095,20 @@ class DatabaseManager:
                 if existing and existing["classification"]
                 else row["classification"]
             )
-            merged_date = max(
-                normalize_to_yyyymmdd(existing["date_added"]) if existing else None or 0,
-                normalize_to_yyyymmdd(row["date_added"]) or 0,
-            ) or today_yyyymmdd()
+            merged_date = max(existing_date, row_date) or today_yyyymmdd()
             conn.execute(
                 """
                 INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(isbn, call_number_type) DO UPDATE SET
+                    call_number = excluded.call_number,
                     classification = excluded.classification,
                     source = excluded.source,
                     date_added = excluded.date_added
                 """,
                 (
                     lowest_isbn,
-                    row["call_number"],
+                    merged_call_number,
                     row["call_number_type"],
                     merged_classification,
                     merged_source,
@@ -1149,7 +1163,6 @@ class DatabaseManager:
     ) -> None:
         if not pairs:
             return
-        conn.execute("PRAGMA foreign_keys = OFF;")
         for lowest_isbn, other_isbn in pairs:
             if lowest_isbn and other_isbn and lowest_isbn != other_isbn:
                 self._rewrite_to_lowest_isbn_conn(

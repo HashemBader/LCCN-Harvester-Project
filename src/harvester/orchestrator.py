@@ -320,6 +320,10 @@ class HarvestOrchestrator:
         self._check_cancelled()
         self._emit("isbn_start", {"isbn": isbn})
 
+        # Resolve to the canonical (lowest) ISBN for all DB reads/writes.
+        # API lookups still use the original isbn so the request matches the input.
+        store_isbn = self.db.get_lowest_isbn(isbn)
+
         cached_rec = None
         found_lccn: Optional[str] = None
         found_lccn_source: Optional[str] = None
@@ -328,7 +332,7 @@ class HarvestOrchestrator:
         attempted_rows: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
 
         if isbn not in self.bypass_cache_isbns:
-            cached_rec = self.db.get_main(isbn)
+            cached_rec = self.db.get_main(store_isbn)
         if cached_rec is not None:
             found_lccn = cached_rec.lccn
             found_lccn_source = getattr(cached_rec, "lccn_source", None) or cached_rec.source
@@ -336,7 +340,7 @@ class HarvestOrchestrator:
             found_nlmcn_source = getattr(cached_rec, "nlmcn_source", None) or cached_rec.source
             if self._should_stop_with_found(bool(found_lccn), bool(found_nlmcn)):
                 record = self._build_record(
-                    isbn=isbn,
+                    isbn=store_isbn,
                     lccn=found_lccn,
                     lccn_source=found_lccn_source,
                     nlmcn=found_nlmcn,
@@ -372,7 +376,7 @@ class HarvestOrchestrator:
                 break
 
             if isbn not in self.bypass_retry_isbns and all(
-                self.db.should_skip_retry(isbn, last_target, call_number_type, retry_days=self.retry_days)
+                self.db.should_skip_retry(store_isbn, last_target, call_number_type, retry_days=self.retry_days)
                 for call_number_type in required_types
             ):
                 skipped_retry_targets.append(last_target)
@@ -426,7 +430,7 @@ class HarvestOrchestrator:
                 other_errors.append((last_target, err))
             for call_number_type in required_types:
                 reason = err or f"No {self._type_label(call_number_type)} call number"
-                attempted_rows.append((isbn, last_target, call_number_type, attempt_time, reason))
+                attempted_rows.append((store_isbn, last_target, call_number_type, attempt_time, reason))
                 self._emit_attempt_failure(
                     isbn=isbn,
                     target=last_target,
@@ -444,7 +448,7 @@ class HarvestOrchestrator:
         # Check if we accumulated a fully successful result.
         if has_partial_result and (not requires_both_for_success or has_complete_result):
             rec = self._build_record(
-                isbn=isbn,
+                isbn=store_isbn,
                 lccn=best_lccn,
                 lccn_source=best_lccn_source,
                 nlmcn=best_nlmcn,
@@ -463,7 +467,7 @@ class HarvestOrchestrator:
 
         if has_partial_result:
             rec = self._build_record(
-                isbn=isbn,
+                isbn=store_isbn,
                 lccn=best_lccn,
                 lccn_source=best_lccn_source,
                 nlmcn=best_nlmcn,
@@ -546,6 +550,7 @@ class HarvestOrchestrator:
         dry_run: bool,
         pending_main: list[MainRecord],
         pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        pending_linked: Optional[list[tuple[str, str]]] = None,
     ) -> str:
         outcome = self._process_isbn_internal(
             isbn,
@@ -553,6 +558,12 @@ class HarvestOrchestrator:
             pending_main=pending_main,
             pending_attempted=pending_attempted,
         )
+        # If this ISBN resolves to a lower canonical already in linked_isbns,
+        # queue the pair so the batch flush rewrites any old rows stored under isbn.
+        if pending_linked is not None:
+            store_isbn = self.db.get_lowest_isbn(isbn)
+            if store_isbn != isbn:
+                pending_linked.append((store_isbn, isbn))
         return outcome.status
 
     def process_isbn_group(
@@ -861,6 +872,7 @@ class HarvestOrchestrator:
                 dry_run=dry_run,
                 pending_main=pending_main,
                 pending_attempted=pending_attempted,
+                pending_linked=pending_linked,
             )
 
         if self.max_workers <= 1:

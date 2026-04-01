@@ -338,6 +338,7 @@ class HarvestOrchestrator:
         # Resolve to the canonical (lowest) ISBN for all DB reads/writes.
         # API lookups still use the original isbn so the request matches the input.
         store_isbn = self.db.get_lowest_isbn(isbn)
+        is_linked_input = store_isbn != isbn
 
         cached_rec = None
         found_lccn: Optional[str] = None
@@ -361,7 +362,8 @@ class HarvestOrchestrator:
                     nlmcn=found_nlmcn,
                     nlmcn_source=found_nlmcn_source,
                 )
-                self._emit_result("cached", isbn=isbn, target=record.source or "Cache", record=record)
+                event_name = "linked_cached" if is_linked_input else "cached"
+                self._emit_result(event_name, isbn=isbn, target=record.source or "Cache", record=record)
                 return ProcessOutcome("cached", record, tuple())
 
         # db_only mode: never hit any API target. If we reach here the ISBN was
@@ -469,7 +471,8 @@ class HarvestOrchestrator:
                 nlmcn=best_nlmcn,
                 nlmcn_source=best_nlmcn_source,
             )
-            self._emit_result("success", isbn=isbn, target=rec.source or "Unknown", record=rec)
+            event_name = "linked_success" if is_linked_input else "success"
+            self._emit_result(event_name, isbn=isbn, target=rec.source or "Unknown", record=rec)
 
             if dry_run:
                 rec = None

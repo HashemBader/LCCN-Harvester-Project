@@ -947,7 +947,13 @@ class DashboardTabV2(QWidget):
         self._render_session_stats()
 
     def _append_recent_result(self, isbn: str, status: str, detail: str):
-        status_label = "Successful" if status.lower() in ("found", "cached", "successful") else "Failed"
+        normalized = status.strip().lower() if status else ""
+        if normalized in ("found", "cached", "successful"):
+            status_label = "Successful"
+        elif normalized in ("linked isbn", "linked_isbn", "linked"):  # preserve linked ISBN events
+            status_label = "Linked ISBN"
+        else:
+            status_label = "Failed"
         self.session_recent.insert(
             0,
             {

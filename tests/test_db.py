@@ -59,6 +59,34 @@ def test_main_stores_one_row_per_call_number_type(tmp_path: Path):
     ]
 
 
+def test_main_allows_multiple_sources_for_same_isbn_and_type(tmp_path: Path):
+    db_path = tmp_path / "test.sqlite3"
+    db = DatabaseManager(db_path)
+    db.init_db()
+
+    db.upsert_main(MainRecord(isbn="9780132350884", lccn="QA76.76", lccn_source="UCLA", date_added=20260320))
+    db.upsert_main(MainRecord(isbn="9780132350884", lccn="QA76.76", lccn_source="Yale", date_added=20260321))
+
+    rows = db.get_main_rows("9780132350884")
+    assert [(row["call_number_type"], row["call_number"], row["source"]) for row in rows] == [
+        ("lccn", "QA76.76", "UCLA"),
+        ("lccn", "QA76.76", "Yale"),
+    ]
+
+    yale_only = db.get_main("9780132350884", allowed_sources={"Yale"})
+    assert yale_only is not None
+    assert yale_only.lccn == "QA76.76"
+    assert yale_only.lccn_source == "Yale"
+    assert yale_only.source == "Yale"
+
+    ucla_only = db.get_main("9780132350884", allowed_sources={"UCLA"})
+    assert ucla_only is not None
+    assert ucla_only.lccn_source == "UCLA"
+
+    no_match = db.get_main("9780132350884", allowed_sources={"Harvard"})
+    assert no_match is None
+
+
 def test_attempted_upsert_increments_fail_count(tmp_path: Path):
     """fail_count increments are scoped to (isbn, target, type) — not global."""
     db_path = tmp_path / "test.sqlite3"

@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QDialog,
+    QCheckBox,
 )
 from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
@@ -767,10 +768,12 @@ class HarvestWorkerV2(QThread):
     def _build_targets(self):
         """Build list of harvest targets from targets configuration."""
         if not self.targets:
-            return None  # Orchestrator will use PlaceholderTarget
+            return []
 
         try:
             selected_targets = [t for t in self.targets if t.get("selected", True)]
+            if not selected_targets:
+                return []
             sorted_targets = sorted(selected_targets, key=lambda x: x.get("rank", 999))
             try:
                 global_timeout = int(
@@ -1068,7 +1071,13 @@ class HarvestTabV2(QWidget):
         setup_grid.addWidget(self.lbl_stop_rule, 2, 0)
         setup_grid.addWidget(self.combo_stop_rule, 2, 1)
 
+        self.chk_db_only = QCheckBox("Database only for this run")
+        self.chk_db_only.setToolTip("Skip APIs and Z39.50 targets and search only the existing SQLite database")
+        self.chk_db_only.setCursor(Qt.CursorShape.PointingHandCursor)
+        setup_grid.addWidget(self.chk_db_only, 3, 1)
+
         self.combo_run_mode.currentTextChanged.connect(self._toggle_stop_rule_visibility)
+        self.chk_db_only.toggled.connect(self._toggle_stop_rule_visibility)
         self._toggle_stop_rule_visibility(self.combo_run_mode.currentText())
         input_layout.addLayout(setup_grid)
         input_layout.addStretch()
@@ -1349,11 +1358,12 @@ class HarvestTabV2(QWidget):
             mode_text = self.combo_run_mode.currentText()
 
         is_both = mode_text == "Both (LCCN & NLM)"
-        is_marc_only = mode_text == "MARC Import Only"
-        self.lbl_stop_rule.setEnabled(is_both)
-        self.combo_stop_rule.setEnabled(is_both)
+        db_only_for_run = getattr(self, "chk_db_only", None) is not None and self.chk_db_only.isChecked()
+        stop_rule_active = is_both and not db_only_for_run
+        self.lbl_stop_rule.setEnabled(stop_rule_active)
+        self.combo_stop_rule.setEnabled(stop_rule_active)
 
-        if is_both:
+        if stop_rule_active:
             # Restore normal theme appearance
             self.lbl_stop_rule.setStyleSheet("")
             self.combo_stop_rule.setStyleSheet("")
@@ -1374,6 +1384,20 @@ class HarvestTabV2(QWidget):
             self.lbl_stop_rule.setStyleSheet(muted_label)
             self.combo_stop_rule.setStyleSheet(muted_combo)
             self.combo_stop_rule.setCursor(Qt.CursorShape.ForbiddenCursor)
+
+    def _confirm_db_only_without_targets(self) -> bool:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("No Targets Selected")
+        msg.setText("No targets are selected for this run.")
+        msg.setInformativeText(
+            "This run will search only the existing database and will not query any live targets."
+        )
+        ok_btn = msg.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(ok_btn)
+        msg.exec()
+        return msg.clickedButton() == ok_btn
 
 
     def _transition_state(self, state: UIState, **kwargs):
@@ -1837,13 +1861,21 @@ class HarvestTabV2(QWidget):
         # 2. Get Targets
         targets = self._targets_getter() if self._targets_getter else []
         selected_targets = [t for t in targets if t.get("selected", True)]
-        if not selected_targets and not config.get("db_only", False):
-            QMessageBox.warning(
-                self,
-                "No Targets",
-                "Please select at least one target in the Targets tab.",
+        explicit_db_only = self.chk_db_only.isChecked()
+
+        if not selected_targets:
+            if not self._confirm_db_only_without_targets():
+                self.log_output.setText("Harvest cancelled: no targets selected.")
+                return
+            config["db_only"] = True
+            self.log_output.setText(
+                "No targets selected. Running against the existing database only."
             )
-            return
+        elif explicit_db_only:
+            config["db_only"] = True
+            self.log_output.setText(
+                "Database-only mode enabled for this run. Skipping live targets."
+            )
 
         # 3. Start Worker
         self._start_worker(config, targets, bypass_retry_isbns=bypass_retry_isbns)

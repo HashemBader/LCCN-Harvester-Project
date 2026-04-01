@@ -12,13 +12,14 @@ CREATE TABLE IF NOT EXISTS main (
     call_number     TEXT NOT NULL,
     call_number_type TEXT NOT NULL, -- 'lccn' or 'nlmcn'
     classification  TEXT,
-    source          TEXT,
+    source          TEXT NOT NULL DEFAULT '',
     date_added      INTEGER NOT NULL, -- yyyymmdd (e.g. 20260317)
-    PRIMARY KEY (isbn, call_number_type)
+    PRIMARY KEY (isbn, call_number_type, source)
 );
 
 CREATE INDEX IF NOT EXISTS idx_main_source ON main(source);
 CREATE INDEX IF NOT EXISTS idx_main_date_added ON main(date_added);
+CREATE INDEX IF NOT EXISTS idx_main_type ON main(call_number_type);
 
 -- =========================
 -- Attempted / failure tracking table

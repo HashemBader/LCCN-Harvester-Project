@@ -249,13 +249,25 @@ class DatabaseManager:
             self._migrate_dates_to_yyyymmdd(conn)
 
     def _migrate_main_schema_if_needed(self, conn: sqlite3.Connection) -> None:
-        """Ensure main table uses the MVP per-ISBN+type schema."""
+        """Ensure main table supports multiple source rows per ISBN + type."""
         cols = conn.execute("PRAGMA table_info(main)").fetchall()
         if not cols:
             return
 
         col_names = {row["name"] for row in cols}
-        if "call_number_type" in col_names and "call_number" in col_names:
+        pk_cols = [
+            row["name"]
+            for row in sorted(cols, key=lambda row: int(row["pk"]))
+            if int(row["pk"]) > 0
+        ]
+        desired_pk = ["isbn", "call_number_type", "source"]
+
+        if (
+            "call_number_type" in col_names
+            and "call_number" in col_names
+            and "source" in col_names
+            and pk_cols == desired_pk
+        ):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_main_source ON main(source)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_main_date_added ON main(date_added)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_main_type ON main(call_number_type)")
@@ -269,9 +281,9 @@ class DatabaseManager:
                 call_number      TEXT NOT NULL,
                 call_number_type TEXT NOT NULL,
                 classification   TEXT,
-                source           TEXT,
+                source           TEXT NOT NULL DEFAULT '',
                 date_added       INTEGER NOT NULL,
-                PRIMARY KEY (isbn, call_number_type)
+                PRIMARY KEY (isbn, call_number_type, source)
             )
             """
         )
@@ -306,7 +318,7 @@ class DatabaseManager:
                         row["isbn"],
                         row["lccn"],
                         row["classification"] or classification_from_lccn(row["lccn"]),
-                        row["lccn_source"] if "lccn_source" in row.keys() else row["source"],
+                        (row["lccn_source"] if "lccn_source" in row.keys() else row["source"]) or "",
                         date_added,
                     ),
                 )
@@ -321,7 +333,7 @@ class DatabaseManager:
                         row["isbn"],
                         row["nlmcn"],
                         None,
-                        row["nlmcn_source"] if "nlmcn_source" in row.keys() else row["source"],
+                        (row["nlmcn_source"] if "nlmcn_source" in row.keys() else row["source"]) or "",
                         date_added,
                     ),
                 )
@@ -481,14 +493,14 @@ class DatabaseManager:
 
         # -- main.date_added --
         rows_main = conn.execute(
-            "SELECT isbn, date_added FROM main WHERE typeof(date_added) = 'text'"
+            "SELECT rowid, date_added FROM main WHERE typeof(date_added) = 'text'"
         ).fetchall()
         for row in rows_main:
             new_val = _iso_to_yyyymmdd(row["date_added"])
             if new_val is not None:
-                conn.execute("UPDATE main SET date_added = ? WHERE isbn = ?", (new_val, row["isbn"]))
+                conn.execute("UPDATE main SET date_added = ? WHERE rowid = ?", (new_val, row["rowid"]))
             else:
-                log.warning("Could not convert main.date_added=%r for isbn=%s", row["date_added"], row["isbn"])
+                log.warning("Could not convert main.date_added=%r for rowid=%s", row["date_added"], row["rowid"])
 
         # -- attempted.last_attempted --
         rows_att = conn.execute(
@@ -569,14 +581,18 @@ class DatabaseManager:
             source = row["source"]
             if source and source not in sources:
                 sources.append(source)
-            latest_date = row["date_added"]
+            row_date = normalize_to_yyyymmdd(row["date_added"])
+            current_latest = normalize_to_yyyymmdd(latest_date)
+            latest_date = max(current_latest or 0, row_date or 0) or latest_date
             if call_type == "lccn":
-                lccn = call_number
-                lccn_source = source
-                classification = row["classification"] or classification_from_lccn(call_number)
+                if lccn is None:
+                    lccn = call_number
+                    lccn_source = source
+                    classification = row["classification"] or classification_from_lccn(call_number)
             elif call_type == "nlmcn":
-                nlmcn = call_number
-                nlmcn_source = source
+                if nlmcn is None:
+                    nlmcn = call_number
+                    nlmcn_source = source
 
         return MainRecord(
             isbn=isbn,
@@ -600,7 +616,7 @@ class DatabaseManager:
                     record.lccn,
                     "lccn",
                     record.classification or classification_from_lccn(record.lccn),
-                    record.lccn_source or record.source,
+                    record.lccn_source or record.source or "",
                     date_added,
                 )
             )
@@ -611,25 +627,53 @@ class DatabaseManager:
                     record.nlmcn,
                     "nlmcn",
                     None,
-                    record.nlmcn_source or record.source,
+                    record.nlmcn_source or record.source or "",
                     date_added,
                 )
             )
         return rows
 
-    def get_main(self, isbn: str) -> Optional[MainRecord]:
+    def get_main(self, isbn: str, *, allowed_sources: Optional[Iterable[str]] = None) -> Optional[MainRecord]:
+        allowed = None if allowed_sources is None else [str(source).strip() for source in allowed_sources if str(source).strip()]
+        if allowed_sources is not None and not allowed:
+            return None
+
         with self.connect() as conn:
-            rows = conn.execute(
+            if allowed is None:
+                rows = conn.execute(
+                    """
+                    SELECT isbn, call_number, call_number_type, classification, source, date_added
+                    FROM main
+                    WHERE isbn = ?
+                    ORDER BY date_added DESC, call_number_type, source
+                    """,
+                    (isbn,),
+                ).fetchall()
+            else:
+                placeholders = ",".join("?" for _ in allowed)
+                rows = conn.execute(
+                    f"""
+                    SELECT isbn, call_number, call_number_type, classification, source, date_added
+                    FROM main
+                    WHERE isbn = ? AND source IN ({placeholders})
+                    ORDER BY date_added DESC, call_number_type, source
+                    """,
+                    (isbn, *allowed),
+                ).fetchall()
+
+        return self._aggregate_main_rows(rows)
+
+    def get_main_rows(self, isbn: str) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
                 """
                 SELECT isbn, call_number, call_number_type, classification, source, date_added
                 FROM main
                 WHERE isbn = ?
-                ORDER BY call_number_type
+                ORDER BY call_number_type, source, date_added DESC
                 """,
                 (isbn,),
             ).fetchall()
-
-        return self._aggregate_main_rows(rows)
 
     def find_isbns_by_call_number(
         self,
@@ -685,10 +729,9 @@ class DatabaseManager:
             """
             INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(isbn, call_number_type) DO UPDATE SET
+            ON CONFLICT(isbn, call_number_type, source) DO UPDATE SET
                 call_number = excluded.call_number,
                 classification = excluded.classification,
-                source = excluded.source,
                 date_added = excluded.date_added
             """,
             rows,
@@ -1072,10 +1115,10 @@ class DatabaseManager:
                 """
                 SELECT call_number, classification, source, date_added
                 FROM main
-                WHERE isbn = ? AND call_number_type = ?
+                WHERE isbn = ? AND call_number_type = ? AND source = ?
                 LIMIT 1
                 """,
-                (lowest_isbn, row["call_number_type"]),
+                (lowest_isbn, row["call_number_type"], row["source"] or ""),
             ).fetchone()
             existing_date = normalize_to_yyyymmdd(existing["date_added"]) if existing else 0
             row_date = normalize_to_yyyymmdd(row["date_added"]) or 0
@@ -1103,7 +1146,7 @@ class DatabaseManager:
                 ON CONFLICT(isbn, call_number_type) DO UPDATE SET
                     call_number = excluded.call_number,
                     classification = excluded.classification,
-                    source = excluded.source,
+                    source = excluded.source
                     date_added = excluded.date_added
                 """,
                 (
@@ -1111,7 +1154,7 @@ class DatabaseManager:
                     merged_call_number,
                     row["call_number_type"],
                     merged_classification,
-                    merged_source,
+                    row["source"] or "",
                     merged_date,
                 ),
             )

@@ -3,6 +3,7 @@ Module: profile_manager.py
 Manages configuration profiles for the LCCN Harvester.
 """
 import shutil
+import sqlite3
 from pathlib import Path
 from typing import List, Dict, Optional
 import json
@@ -21,6 +22,7 @@ class ProfileManager:
         self.default_profile_path = self.app_root / "config" / "default_profile.json"
         self.active_profile_path = self.app_root / "config" / "active_profile.txt"
         self.default_targets_path = self.app_root / "data" / "targets.tsv"
+        self.shared_db_path = self.app_root / "data" / "lccn_harvester.sqlite3"
 
         # Ensure default profile exists
         if not self.default_profile_path.exists():
@@ -74,18 +76,135 @@ class ProfileManager:
         """
         return self.app_root / "data" / self._profile_slug(name)
 
-    def get_db_path(self, name: str) -> Path:
-        """Return the profile-specific SQLite database path.
+    def _legacy_profile_db_path(self, name: str) -> Path:
+        """Return the older per-profile database path used before the shared-DB decision."""
+        return self.get_profile_data_dir(name) / "lccn_harvester.sqlite3"
 
-        Default Settings keeps the legacy root path for backward compatibility.
-        All other profiles use ``data/<slug>/lccn_harvester.sqlite3`` so their
-        results are fully isolated from every other profile.
-        """
+    def _legacy_db_merge_marker(self, name: str) -> Path:
+        """Marker file showing a legacy profile DB has already been merged into the shared DB."""
+        return self.get_profile_data_dir(name) / ".shared_db_merged"
+
+    def _merge_legacy_profile_db_into_shared(self, name: str) -> None:
+        """Best-effort one-time merge of an old profile-specific DB into the shared DB."""
         if name == "Default Settings":
-            return self.app_root / "data" / "lccn_harvester.sqlite3"
-        data_dir = self.get_profile_data_dir(name)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir / "lccn_harvester.sqlite3"
+            return
+
+        source_db = self._legacy_profile_db_path(name)
+        marker_path = self._legacy_db_merge_marker(name)
+
+        if not source_db.exists() or marker_path.exists():
+            return
+
+        shared_db = self.shared_db_path
+        if source_db.resolve() == shared_db.resolve():
+            return
+
+        try:
+            from database import DatabaseManager
+        except ImportError:
+            from src.database import DatabaseManager
+
+        DatabaseManager(shared_db).init_db()
+        DatabaseManager(source_db).init_db()
+
+        def _legacy_has_table(conn: sqlite3.Connection, table_name: str) -> bool:
+            row = conn.execute(
+                "SELECT 1 FROM legacy.sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+                (table_name,),
+            ).fetchone()
+            return row is not None
+
+        with sqlite3.connect(shared_db) as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("ATTACH DATABASE ? AS legacy", (str(source_db),))
+            try:
+                if _legacy_has_table(conn, "main"):
+                    main_rows = conn.execute(
+                        """
+                        SELECT isbn, call_number, call_number_type, classification, COALESCE(source, ''), date_added
+                        FROM legacy.main
+                        """
+                    ).fetchall()
+                    conn.executemany(
+                        """
+                        INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(isbn, call_number_type, source) DO UPDATE SET
+                            call_number = CASE
+                                WHEN excluded.date_added >= main.date_added THEN excluded.call_number
+                                ELSE main.call_number
+                            END,
+                            classification = CASE
+                                WHEN excluded.date_added >= main.date_added THEN excluded.classification
+                                ELSE main.classification
+                            END,
+                            source = CASE
+                                WHEN excluded.date_added >= main.date_added THEN excluded.source
+                                ELSE main.source
+                            END,
+                            date_added = CASE
+                                WHEN excluded.date_added >= main.date_added THEN excluded.date_added
+                                ELSE main.date_added
+                            END
+                        """,
+                        main_rows,
+                    )
+
+                if _legacy_has_table(conn, "attempted"):
+                    attempted_rows = conn.execute(
+                        """
+                        SELECT isbn, last_target, attempt_type, last_attempted, fail_count, last_error
+                        FROM legacy.attempted
+                        """
+                    ).fetchall()
+                    conn.executemany(
+                        """
+                        INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET
+                            last_attempted = CASE
+                                WHEN excluded.last_attempted >= attempted.last_attempted THEN excluded.last_attempted
+                                ELSE attempted.last_attempted
+                            END,
+                            fail_count = CASE
+                                WHEN excluded.fail_count >= attempted.fail_count THEN excluded.fail_count
+                                ELSE attempted.fail_count
+                            END,
+                            last_error = CASE
+                                WHEN excluded.last_attempted >= attempted.last_attempted THEN excluded.last_error
+                                ELSE attempted.last_error
+                            END
+                        """,
+                        attempted_rows,
+                    )
+
+                if _legacy_has_table(conn, "linked_isbns"):
+                    linked_rows = conn.execute(
+                        """
+                        SELECT lowest_isbn, other_isbn
+                        FROM legacy.linked_isbns
+                        """
+                    ).fetchall()
+                    conn.executemany(
+                        """
+                        INSERT INTO linked_isbns (lowest_isbn, other_isbn)
+                        VALUES (?, ?)
+                        ON CONFLICT(other_isbn) DO UPDATE SET
+                            lowest_isbn = excluded.lowest_isbn
+                        """,
+                        linked_rows,
+                    )
+            finally:
+                conn.commit()
+
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(datetime.now().isoformat(), encoding="utf-8")
+
+    def get_db_path(self, name: str) -> Path:
+        """Return the single shared SQLite database path used by every profile."""
+        self.shared_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._merge_legacy_profile_db_into_shared(name)
+        return self.shared_db_path
 
     def get_targets_file(self, name: str) -> Path:
         """Return the Path to the targets TSV file for the given profile.

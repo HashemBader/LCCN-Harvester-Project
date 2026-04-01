@@ -101,6 +101,7 @@ class HarvestOrchestrator:
         stop_rule: str = "stop_either",
         db_only: bool = False,
         both_stop_policy: str | None = None,
+        selected_sources: Optional[set[str]] = None,
     ):
         self.db = db
         self.retry_days = retry_days
@@ -114,9 +115,23 @@ class HarvestOrchestrator:
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
         # In db_only mode API targets are never consulted; bypass_cache_isbns is ignored.
         self.db_only = db_only
+        self.selected_sources = {
+            str(source).strip()
+            for source in (selected_sources or set())
+            if str(source).strip()
+        }
 
         # If no real targets wired yet, keep Sprint-2 behavior with a placeholder.
         self.targets: list[HarvestTarget] = targets if targets else [PlaceholderTarget()]
+        if not self.selected_sources:
+            self.selected_sources = {
+                str(getattr(target, "name", "")).strip()
+                for target in self.targets
+                if str(getattr(target, "name", "")).strip() and getattr(target, "name", "") != "(placeholder)"
+            }
+
+    def _allowed_cached_sources(self) -> Optional[set[str]]:
+        return self.selected_sources or None
 
     def _emit(self, event: str, payload: dict) -> None:
         if self.progress_cb:
@@ -332,7 +347,7 @@ class HarvestOrchestrator:
         attempted_rows: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
 
         if isbn not in self.bypass_cache_isbns:
-            cached_rec = self.db.get_main(store_isbn)
+            cached_rec = self.db.get_main(isbn, allowed_sources=self._allowed_cached_sources())
         if cached_rec is not None:
             found_lccn = cached_rec.lccn
             found_lccn_source = getattr(cached_rec, "lccn_source", None) or cached_rec.source
@@ -936,7 +951,7 @@ class HarvestOrchestrator:
                 found_nlmcn: Optional[str] = None
                 found_nlmcn_source: Optional[str] = None
                 if isbn not in self.bypass_cache_isbns:
-                    cached_rec = self.db.get_main(isbn)
+                    cached_rec = self.db.get_main(isbn, allowed_sources=self._allowed_cached_sources())
                 if cached_rec is not None:
                     found_lccn = cached_rec.lccn
                     found_lccn_source = getattr(cached_rec, "lccn_source", None) or cached_rec.source

@@ -1143,10 +1143,10 @@ class DatabaseManager:
                 """
                 INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
                 VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(isbn, call_number_type) DO UPDATE SET
+                ON CONFLICT(isbn, call_number_type, source) DO UPDATE SET
                     call_number = excluded.call_number,
                     classification = excluded.classification,
-                    source = excluded.source
+                    source = excluded.source,
                     date_added = excluded.date_added
                 """,
                 (

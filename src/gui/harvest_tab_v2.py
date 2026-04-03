@@ -248,7 +248,7 @@ class HarvestWorkerV2(QThread):
                     # )
                     pass
 
-                elif event == "cached":
+                elif event in ("cached", "linked_cached"):
                     # self.progress_update.emit(
                     #    isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
                     # )
@@ -274,7 +274,7 @@ class HarvestWorkerV2(QThread):
                     )
                     self.live_result.emit({
                         "isbn": isbn,
-                        "status": "Found",
+                        "status": "Linked ISBN" if event == "linked_cached" else "Found",
                         "detail": _src
                     })
                     self._update_processed()
@@ -316,7 +316,7 @@ class HarvestWorkerV2(QThread):
                     })
                     self._update_processed()
 
-                elif event == "success":
+                elif event in ("success", "linked_success"):
                     source = payload.get("target", "")
                     # self.progress_update.emit(isbn, "found", source, "Found")
                     _lccn = payload.get("lccn") or ""
@@ -341,7 +341,7 @@ class HarvestWorkerV2(QThread):
                     )
                     self.live_result.emit({
                         "isbn": isbn,
-                        "status": "Found",
+                        "status": "Linked ISBN" if event == "linked_success" else "Found",
                         "detail": _src
                     })
                     self._update_processed()

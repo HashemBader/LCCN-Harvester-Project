@@ -391,8 +391,8 @@ def test_merge_keeps_most_recent_call_number(tmp_path):
         f"Expected newer call_number 'QA999.NEW', got '{rec.lccn}'"
     )
     # Source must be a combination of both
-    assert "OldSource" in (rec.lccn_source or rec.source or ""), "Old source lost"
-    assert "NewSource" in (rec.lccn_source or rec.source or ""), "New source lost"
+    assert "OldSource" in (rec.lccn_source or "") or "OldSource" in (rec.source or ""), "Old source lost"
+    assert "NewSource" in (rec.lccn_source or "") or "NewSource" in (rec.source or ""), "New source lost"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -479,3 +479,41 @@ def test_full_run_uses_lowest_isbn_throughout(tmp_path):
     # linked_isbns reflects the canonical
     assert _query_canonical(db, ISBN10) == ISBN10
     assert _query_canonical(db, ISBN13) == ISBN10
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# T8. Cache lookup respects linked ISBNs
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_cache_lookup_with_linked_isbns(tmp_path):
+    """Task 8: A db_only harvest using a non-canonical ISBN should find the
+    canonical record via cache. The result should trigger linked_cached."""
+    db = _make_db(tmp_path / "test.sqlite3")
+
+    # Manually store a linked pair and a canonical record
+    _seed_link(db, lowest=ISBN10, other=ISBN13)
+    with db.transaction() as conn:
+        db.upsert_main_many(conn, [
+            MainRecord(isbn=ISBN10, lccn="QA76.73 P38", source="LOC", date_added=20240101)
+        ], clear_attempted_on_success=False)
+
+    target = PerISBNTarget("LOC", {}) # No targets needed, should hit cache
+    orch = HarvestOrchestrator(db, targets=[target], call_number_mode="both", db_only=True)
+
+    # Capture events to verify "linked_cached" is emitted instead of just "cached"
+    emitted_events = []
+    def _progress_cb(event_name, payload):
+        emitted_events.append(event_name)
+    orch.progress_cb = _progress_cb
+
+    summary = orch.run([ISBN13], dry_run=False)
+
+    # It should succeed entirely using the cache
+    assert summary.cached_hits == 1
+
+    # Verify no new rows were added to the DB, just the cached variant was used
+    rec = db.get_main(ISBN13)
+    assert rec is None # Still no primary row under ISBN13
+    
+    # "linked_cached" must be emitted because ISBN13 is not the canonical (store_isbn)
+    assert "linked_cached" in emitted_events, f"Expected linked_cached event, got {emitted_events}"

@@ -79,12 +79,12 @@ class TestSidebarTabsExist:
         assert main_window.btn_harvest.text() == "Harvest"
         assert main_window.btn_harvest.isVisible()
 
-    def test_ai_agent_tab_exists(self, main_window):
-        """Test AI Agent tab is created and accessible."""
-        assert hasattr(main_window, 'btn_ai')
-        assert main_window.btn_ai is not None
-        assert main_window.btn_ai.text() == "AI Agent"
-        assert main_window.btn_ai.isVisible()
+    def test_help_tab_exists(self, main_window):
+        """Test Help tab is created and accessible."""
+        assert hasattr(main_window, 'btn_help')
+        assert main_window.btn_help is not None
+        assert main_window.btn_help.text() == "Help"
+        assert main_window.btn_help.isVisible()
 
 
 class TestTabSwitching:
@@ -132,11 +132,11 @@ class TestTabSwitching:
         assert main_window.stack.currentIndex() == 2
         assert main_window.page_title.text() == "Harvest"
 
-    def test_switch_to_ai(self, main_window):
-        """Test switching to AI Agent tab."""
-        main_window.btn_ai.click()
+    def test_switch_to_help(self, main_window):
+        """Test switching to Help tab."""
+        main_window.btn_help.click()
         assert main_window.stack.currentIndex() == 3
-        assert main_window.page_title.text() == "AI Agent"
+        assert main_window.page_title.text() == "Help"
 
 
 class TestThemeToggle:
@@ -283,9 +283,9 @@ class TestTabAccessibility:
         """Test Harvest button has accessible name."""
         assert main_window.btn_harvest.accessibleName() == "Open Harvest page"
 
-    def test_ai_agent_accessible_name(self, main_window):
-        """Test AI Agent button has accessible name."""
-        assert main_window.btn_ai.accessibleName() == "Open AI Agent page"
+    def test_help_accessible_name(self, main_window):
+        """Test Help button has accessible name."""
+        assert main_window.btn_help.accessibleName() == "Open Help page"
 
     def test_tab_buttons_have_tooltips(self, main_window):
         """Test that all tab buttons have tooltip text."""
@@ -293,7 +293,7 @@ class TestTabAccessibility:
             main_window.btn_dashboard,
             main_window.btn_configure,
             main_window.btn_harvest,
-            main_window.btn_ai,
+            main_window.btn_help,
         ]
         for btn in buttons:
             assert btn.toolTip() != ""

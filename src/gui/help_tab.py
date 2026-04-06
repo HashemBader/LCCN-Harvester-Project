@@ -414,8 +414,7 @@ class HelpTab(QWidget):
                 (f"{mod}+1", "Open Dashboard"),
                 (f"{mod}+2", "Open Configure"),
                 (f"{mod}+3", "Open Harvest"),
-                (f"{mod}+4", "Open AI Agent"),
-                (f"{mod}+5", "Open Help"),
+                (f"{mod}+4", "Open Help"),
             ]),
             ("Harvest Controls", [
                 (f"{mod}+H", "Start harvest"),

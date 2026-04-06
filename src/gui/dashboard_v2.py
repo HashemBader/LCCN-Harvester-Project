@@ -4,7 +4,7 @@ Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QBoxLayout, QLabel, QFrame,
-    QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
+    QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QSizePolicy, QMessageBox, QStackedWidget,
     QLineEdit, QTextEdit, QFormLayout
 )
@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QUrl
 from datetime import datetime
 from pathlib import Path
 from PyQt6.QtGui import QColor, QPainter, QPen, QDesktopServices
+import re
 
 from database import DatabaseManager
 from .combo_boxes import ConsistentComboBox
@@ -52,6 +53,19 @@ def _truncate_text(text: str, limit: int = 110) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _normalize_recent_detail(text: str) -> str:
+    parts: list[str] = []
+    for piece in re.split(r"[+,;|]", str(text or "")):
+        cleaned = piece.strip()
+        if cleaned.upper() == "UCB":
+            cleaned = "UBC"
+        elif cleaned.upper() == "UBC":
+            cleaned = "UBC"
+        if cleaned and cleaned not in parts:
+            parts.append(cleaned)
+    return " + ".join(parts) if parts else (str(text or "").strip() or "-")
 
 class DashboardCard(QFrame):
     """
@@ -125,6 +139,7 @@ class RecentResultsPanel(QFrame):
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.table.setWordWrap(False)
         self.table.setStyleSheet("background: transparent; border: none;")
@@ -145,18 +160,24 @@ class RecentResultsPanel(QFrame):
             # Status
             status = r['status']
             item_status = QTableWidgetItem(status)
-            if status == "Successful":
-                item_status.setForeground(QColor("#4CAF50")) # Safe accessible green
+            if status in {"Successful", "Found", "Linked ISBN"}:
+                item_status.setForeground(QColor("#2e7d32"))
             else:
-                item_status.setForeground(QColor("#E53935")) # Safe accessible red
+                item_status.setForeground(QColor("#c62828"))
             self.table.setItem(row_idx, 1, item_status)
             
             # Detail (Truncated with Tooltip)
-            detail_text = r.get('detail') or "-"
+            detail_text = _normalize_recent_detail(r.get('detail') or "-")
             item_detail = QTableWidgetItem(_truncate_text(detail_text, 90))
-            item_detail.setForeground(QColor("#a5adcb"))
             item_detail.setToolTip(detail_text) # Full text on hover
             self.table.setItem(row_idx, 2, item_detail)
+        self._fit_table_height()
+
+    def _fit_table_height(self):
+        header_height = self.table.horizontalHeader().height() or 34
+        row_height = self.table.verticalHeader().defaultSectionSize() or 26
+        visible_rows = max(10, self.table.rowCount())
+        self.table.setFixedHeight(header_height + (row_height * visible_rows) + 8)
 
 
 class ProfileSwitchCombo(QComboBox):
@@ -190,6 +211,7 @@ class DashboardTabV2(QWidget):
             "invalid": None,
             "failed": None,
             "problems": None,
+            "linked": None,
             "profile_dir": None,
         }
         self.current_profile = "default"
@@ -232,17 +254,9 @@ class DashboardTabV2(QWidget):
         _dash_layout = QVBoxLayout(_dash_page)
         _dash_layout.setContentsMargins(0, 0, 0, 0)
         _dash_layout.setSpacing(0)
-
-        _scroll = QScrollArea()
-        _scroll.setWidgetResizable(True)
-        _scroll.setFrameShape(QFrame.Shape.NoFrame)
-        _scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         _scr_content = QWidget()
-        _scr_content.setMinimumWidth(700)  # cards never compress below this
-        _scroll.setWidget(_scr_content)
-        _dash_layout.addWidget(_scroll)
+        _scr_content.setMinimumWidth(700)
+        _dash_layout.addWidget(_scr_content)
         self._main_stack.addWidget(_dash_page)
 
         # Page 1 built after the dashboard content so self.db is ready
@@ -287,24 +301,42 @@ class DashboardTabV2(QWidget):
         self.content_split = QHBoxLayout()
         self.content_split.setSpacing(20)
 
-        # Left: result-file actions
         left_col = QVBoxLayout()
         left_col.setSpacing(14)
-        left_col.addWidget(self._build_result_files_panel())
-        left_col.addStretch()
+        self.result_files_panel = self._build_result_files_panel()
+        left_col.addWidget(self.result_files_panel)
+        self.btn_browse_db = QPushButton("Browse Database")
+        self.btn_browse_db.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_browse_db.setMinimumHeight(42)
+        self.btn_browse_db.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_browse_db.setProperty("class", "SecondaryButton")
+        self.btn_browse_db.setToolTip("Browse all records in the harvester database")
+        self.btn_browse_db.clicked.connect(self._open_database_browser)
+        left_col.addWidget(self.btn_browse_db)
         self.left_col = left_col
-        self.content_split.addLayout(left_col, stretch=2)
-        
-        # Right: Recent Results (60%)
+        self.content_split.addLayout(left_col, stretch=1)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(14)
         self.recent_panel = RecentResultsPanel()
         self.recent_panel.setMinimumWidth(320)
-        self.recent_panel.setMinimumHeight(280)  # stays visible when stacked in compact mode
-        self.content_split.addWidget(self.recent_panel, stretch=3)
+        right_col.addWidget(self.recent_panel)
+        self.btn_linked_isbns = QPushButton("Linked ISBNs")
+        self.btn_linked_isbns.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_linked_isbns.setMinimumHeight(42)
+        self.btn_linked_isbns.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_linked_isbns.setProperty("class", "SecondaryButton")
+        self.btn_linked_isbns.setToolTip("Query, link, or merge linked ISBN rows")
+        self.btn_linked_isbns.clicked.connect(self._go_to_linked_isbn_page)
+        right_col.addWidget(self.btn_linked_isbns)
+        self.right_col = right_col
+        self.content_split.addLayout(right_col, stretch=1)
         
         main_layout.addLayout(self.content_split)
         
         main_layout.addStretch()
         self._apply_responsive_layout(self.width() or 1200)
+        QTimer.singleShot(0, self._sync_panel_heights)
         self._refresh_result_file_buttons()
 
         # ── Page 1: Linked ISBNs full panel ───────────────────────
@@ -313,6 +345,7 @@ class DashboardTabV2(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_responsive_layout(event.size().width())
+        self._sync_panel_heights()
 
     def _apply_responsive_layout(self, width: int):
         mode = "compact" if width < 900 else "wide"
@@ -344,6 +377,20 @@ class DashboardTabV2(QWidget):
         else:
             for col in range(4):
                 self.kpi_layout.setColumnStretch(col, 1)
+        self._sync_panel_heights()
+
+    def _sync_panel_heights(self):
+        if not hasattr(self, "result_files_panel") or not hasattr(self, "recent_panel"):
+            return
+        panel_height = max(
+            self.result_files_panel.sizeHint().height(),
+            self.recent_panel.sizeHint().height(),
+        )
+        if panel_height > 0:
+            self.result_files_panel.setMinimumHeight(panel_height)
+            self.result_files_panel.setMaximumHeight(panel_height)
+            self.recent_panel.setMinimumHeight(panel_height)
+            self.recent_panel.setMaximumHeight(panel_height)
 
     def _build_result_files_panel(self):
         panel = QFrame()
@@ -383,41 +430,24 @@ class DashboardTabV2(QWidget):
         self.btn_open_successful = self._create_result_open_button("Open successful", "successful")
         self.btn_open_failed = self._create_result_open_button("Open failed", "failed")
         self.btn_open_invalid = self._create_result_open_button("Open invalid", "invalid")
-        self.btn_open_problems = self._create_result_open_button(
-            _problems_button_label(self.current_profile, include_profile=False).replace(".tsv", ""),
-            "problems",
-        )
+        self.btn_open_problems = self._create_result_open_button("Open problem targets", "problems")
         
         layout.addWidget(self.btn_open_successful)
         layout.addWidget(self.btn_open_failed)
         layout.addWidget(self.btn_open_invalid)
         layout.addWidget(self.btn_open_problems)
 
-        self.btn_open_linked_isbns = QPushButton("Export linked ISBNs")
+        self.btn_open_linked_isbns = QPushButton("Open linked ISBNs")
         self.btn_open_linked_isbns.setProperty("class", "SecondaryButton")
         self.btn_open_linked_isbns.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_open_linked_isbns.setMinimumHeight(42)
+        self.btn_open_linked_isbns.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_open_linked_isbns.setEnabled(False)
         self.btn_open_linked_isbns.setToolTip(
             "Export the ISBN → canonical ISBN mapping table and open it"
         )
-        self.btn_open_linked_isbns.clicked.connect(self._export_linked_isbns)
+        self.btn_open_linked_isbns.clicked.connect(lambda: self._open_result_file("linked"))
         layout.addWidget(self.btn_open_linked_isbns)
-
-        self.btn_browse_db = QPushButton("Browse Database")
-        self.btn_browse_db.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_browse_db.setMinimumHeight(42)
-        self.btn_browse_db.setProperty("class", "SecondaryButton")
-        self.btn_browse_db.setToolTip("Browse all records in the harvester database")
-        self.btn_browse_db.clicked.connect(self._open_database_browser)
-        layout.addWidget(self.btn_browse_db)
-
-        self.btn_linked_isbns = QPushButton("Linked ISBNs")
-        self.btn_linked_isbns.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_linked_isbns.setMinimumHeight(42)
-        self.btn_linked_isbns.setProperty("class", "SecondaryButton")
-        self.btn_linked_isbns.setToolTip("Query, link, or merge linked ISBN rows")
-        self.btn_linked_isbns.clicked.connect(self._go_to_linked_isbn_page)
-        layout.addWidget(self.btn_linked_isbns)
 
         self.btn_reset_stats = QPushButton("Reset Dashboard Stats")
         self.btn_reset_stats.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -444,6 +474,7 @@ class DashboardTabV2(QWidget):
             "invalid": Path(paths["invalid"]) if paths.get("invalid") else None,
             "failed": Path(paths["failed"]) if paths.get("failed") else None,
             "problems": Path(paths["problems"]) if paths.get("problems") else None,
+            "linked": Path(paths["linked"]) if paths.get("linked") else None,
             "profile_dir": Path(paths["profile_dir"]) if paths.get("profile_dir") else self._profile_dir_path(),
         }
         self._refresh_result_file_buttons()
@@ -455,13 +486,15 @@ class DashboardTabV2(QWidget):
             "successful": "Open successful",
             "failed": "Open failed",
             "invalid": "Open invalid",
-            "problems": "Open targets problems",
+            "problems": "Open problem targets",
+            "linked": "Open linked ISBNs",
         }
         mapping = {
             "successful": self.btn_open_successful,
             "failed": self.btn_open_failed,
             "invalid": self.btn_open_invalid,
             "problems": self.btn_open_problems,
+            "linked": self.btn_open_linked_isbns,
         }
         
         is_csv = getattr(self, "format_combo", None) and self.format_combo.currentText().startswith("CSV")
@@ -474,20 +507,30 @@ class DashboardTabV2(QWidget):
                 check_path = path.with_suffix(ext)
                 
                 # If CSV is requested but not finalized, we can enable the button as long as the base TSV exists.
-                if is_csv:
+                if key == "linked":
+                    enabled = self._result_file_has_content(path.with_suffix(ext))
+                elif is_csv:
                     enabled = path.exists() 
                 else:
                     enabled = check_path.exists()
                     
                 btn.setEnabled(enabled)
                 
-                # Append extension cleanly
-                base_label = default_labels[key]
-                btn.setText(f"{base_label}{ext}")
+                btn.setText(default_labels[key])
             else:
                 btn.setEnabled(False)
         profile_dir = self.result_files.get("profile_dir") or self._profile_dir_path()
         self.btn_open_profile_folder.setEnabled(profile_dir is not None and profile_dir.exists())
+
+    def _result_file_has_content(self, path: Path | None) -> bool:
+        if path is None or not path.exists():
+            return False
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                next(handle, None)
+                return next(handle, None) is not None
+        except Exception:
+            return False
 
     def _open_result_file(self, key):
         path = self.result_files[key]
@@ -543,7 +586,7 @@ class DashboardTabV2(QWidget):
         out_dir = self._profile_dir_path()
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = _dt.now().strftime("%Y-%m-%d-%H-%M-%S")
-        out_path = out_dir / f"linked-isbns-{stamp}{ext}"
+        out_path = out_dir / f"{_safe_filename(self.current_profile)}-linked-isbns-{stamp}{ext}"
 
         try:
             delimiter = "," if is_csv else "\t"
@@ -860,45 +903,34 @@ class DashboardTabV2(QWidget):
     def record_harvest_event(self, isbn: str, status: str, detail: str):
         if status not in ("found", "failed", "cached", "skipped"):
             return
-        self.session_stats["processed"] += 1
-        if status in ("found", "cached"):
-            self.session_stats["successful"] += 1
-        elif status in ("failed", "skipped"):
-            self.session_stats["failed"] += 1
         self._append_recent_result(isbn, status, detail)
-        self._render_session_stats()
 
     def apply_run_stats(self, stats):
         """Accept either a dict (legacy) or a RunStats dataclass."""
         # Prefer the embedded RunStats object when available in a dict
         if isinstance(stats, dict) and hasattr(stats.get("run_stats"), 'processed_unique'):
             stats = stats["run_stats"]
-        base = getattr(self, '_baseline_stats', {})
-        b_proc = base.get('processed', 0)
-        b_found = base.get('found', 0)
-        b_failed_total = base.get('failed', 0)
-        b_invalid = base.get('invalid', 0)
-        b_true_failed = max(0, b_failed_total - b_invalid)
-
         if hasattr(stats, 'processed_unique'):  # RunStats dataclass
             found = getattr(stats, 'found', 0)
             failed = getattr(stats, 'failed', 0)
             skipped = getattr(stats, 'skipped', 0)
             invalid = getattr(stats, 'invalid', 0)
-            processed = getattr(stats, 'processed_unique', 0) + invalid
+            processed = found + failed + skipped
             self.session_stats = {
-                "processed": b_proc + processed,
-                "successful": b_found + found,
-                "failed": b_true_failed + failed + skipped,
-                "invalid": b_invalid + invalid,
+                "processed": processed,
+                "successful": found,
+                "failed": failed + skipped,
+                "invalid": invalid,
             }
         else:  # legacy dict
             stats = stats or {}
+            successful = int(stats.get("found", 0)) + int(stats.get("cached", 0))
+            failed = int(stats.get("failed", 0)) + int(stats.get("skipped", 0))
             self.session_stats = {
-                "processed": b_proc + int(stats.get("found", 0)) + int(stats.get("failed", 0)) + int(stats.get("cached", 0)) + int(stats.get("skipped", 0)) + int(stats.get("invalid", 0)),
-                "successful": b_found + int(stats.get("found", 0)) + int(stats.get("cached", 0)),
-                "failed": b_true_failed + int(stats.get("failed", 0)) + int(stats.get("skipped", 0)),
-                "invalid": b_invalid + int(stats.get("invalid", 0)),
+                "processed": successful + failed,
+                "successful": successful,
+                "failed": failed,
+                "invalid": int(stats.get("invalid", 0)),
             }
         self._render_session_stats()
 
@@ -907,23 +939,16 @@ class DashboardTabV2(QWidget):
         if not hasattr(stats, 'processed_unique'):
             return  # Only handle RunStats dataclass
             
-        base = getattr(self, '_baseline_stats', {})
-        b_proc = base.get('processed', 0)
-        b_found = base.get('found', 0)
-        b_failed_total = base.get('failed', 0)
-        b_invalid = base.get('invalid', 0)
-        b_true_failed = max(0, b_failed_total - b_invalid)
-        
         found = getattr(stats, 'found', 0)
         failed = getattr(stats, 'failed', 0)
         skipped = getattr(stats, 'skipped', 0)
         invalid = getattr(stats, 'invalid', 0)
-        processed = getattr(stats, 'processed_unique', 0) + invalid
+        processed = found + failed + skipped
         self.session_stats = {
-            "processed": b_proc + processed,
-            "successful": b_found + found,
-            "failed": b_true_failed + failed + skipped,
-            "invalid": b_invalid + invalid,
+            "processed": processed,
+            "successful": found,
+            "failed": failed + skipped,
+            "invalid": invalid,
         }
         self._render_session_stats()
 
@@ -983,6 +1008,7 @@ class DashboardTabV2(QWidget):
                 "invalid": None,
                 "failed": None,
                 "problems": None,
+                "linked": None,
                 "profile_dir": None,
             }
         self.result_files["profile_dir"] = self._profile_dir_path()
@@ -998,6 +1024,14 @@ class DashboardTabV2(QWidget):
 
     def set_running(self):
         self._is_running = True
+        self.session_stats = {
+            "processed": 0,
+            "successful": 0,
+            "failed": 0,
+            "invalid": 0,
+        }
+        self.session_recent = []
+        self.recent_panel.update_data([])
         self._refresh_result_file_buttons()
         self.lbl_run_status.setText("● RUNNING")
         self.lbl_run_status.setProperty("state", "running")

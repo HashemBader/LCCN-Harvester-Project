@@ -70,6 +70,10 @@ class ModernMainWindow(QMainWindow):
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
         self._profile_manager = ProfileManager()
         self._theme_manager = ThemeManager()
+        try:
+            self._profile_manager.set_active_profile("Default Settings")
+        except Exception:
+            pass
         
         # Core Services
         self.notification_manager = NotificationManager(self)
@@ -131,14 +135,14 @@ class ModernMainWindow(QMainWindow):
         self.nav_group.buttonClicked.connect(self._on_nav_clicked)
 
         # Navigation Buttons (Icon + Text)
-        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
-        self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
-        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
+        self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 0)
+        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 1)
+        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 2)
         self.btn_help = self._create_nav_btn("Help", SVG_RESULTS, 3)
 
-        sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_configure)
         sidebar_layout.addWidget(self.btn_harvest)
+        sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_help)
 
         sidebar_layout.addStretch() # Spacer
@@ -173,7 +177,7 @@ class ModernMainWindow(QMainWindow):
         content_layout.setSpacing(20)
 
         # Page Header (Dynamic)
-        self.page_title = QLabel("Dashboard")
+        self.page_title = QLabel("Configure")
         self.page_title.setObjectName("PageTitle")
         content_layout.addWidget(self.page_title)
 
@@ -189,9 +193,9 @@ class ModernMainWindow(QMainWindow):
         self.harvest_tab = HarvestTabV2()
         self.help_tab = HelpTab(shortcut_modifier=self._shortcut_modifier)
 
-        self.stack.addWidget(self.dashboard_tab)         # 0
-        self.stack.addWidget(self.targets_config_tab)    # 1
-        self.stack.addWidget(self.harvest_tab)           # 2
+        self.stack.addWidget(self.targets_config_tab)    # 0
+        self.stack.addWidget(self.harvest_tab)           # 1
+        self.stack.addWidget(self.dashboard_tab)         # 2
         self.stack.addWidget(self.help_tab)              # 3
 
         content_layout.addWidget(self.stack)
@@ -217,7 +221,8 @@ class ModernMainWindow(QMainWindow):
         self._sync_tab_state()
         
         # Select default
-        self.btn_dashboard.setChecked(True)
+        self.btn_configure.setChecked(True)
+        self.stack.setCurrentIndex(0)
 
     def _create_nav_btn(self, text, svg_icon, index):
         btn = QPushButton(text)
@@ -259,9 +264,9 @@ class ModernMainWindow(QMainWindow):
 
         add_mod_shortcut("B", self._toggle_sidebar)
         add_mod_shortcut("Q", self.close)
-        add_mod_shortcut("1", lambda: self.btn_dashboard.click())
-        add_mod_shortcut("2", lambda: self.btn_configure.click())
-        add_mod_shortcut("3", lambda: self.btn_harvest.click())
+        add_mod_shortcut("1", lambda: self.btn_configure.click())
+        add_mod_shortcut("2", lambda: self.btn_harvest.click())
+        add_mod_shortcut("3", lambda: self.btn_dashboard.click())
         add_mod_shortcut("4", lambda: self.btn_help.click())
 
         add_mod_shortcut("Shift+D", lambda: self.btn_dashboard.click())
@@ -360,7 +365,29 @@ class ModernMainWindow(QMainWindow):
             self._set_sidebar_collapsed(False, animated=False)
 
     def _on_nav_clicked(self, btn):
+        if btn is None:
+            return
+
+        current_index = self.stack.currentIndex()
         index = btn.property("page_index")
+        if current_index == 0 and index != 0:
+            if not self.targets_config_tab.resolve_unsaved_changes():
+                current_button = next(
+                    (
+                        candidate
+                        for candidate in self.nav_group.buttons()
+                        if candidate.property("page_index") == current_index
+                    ),
+                    None,
+                )
+                if current_button is not None:
+                    current_button.blockSignals(True)
+                    current_button.setChecked(True)
+                    current_button.blockSignals(False)
+                btn.blockSignals(True)
+                btn.setChecked(False)
+                btn.blockSignals(False)
+                return
         self.stack.setCurrentIndex(index)
         self.page_title.setText(btn.property("full_text"))
 
@@ -496,11 +523,11 @@ class ModernMainWindow(QMainWindow):
 
     def _on_page_changed(self, index):
         """Refresh dependent tabs on navigation to keep views current."""
-        if index == 0:  # Dashboard
-            self.dashboard_tab.refresh_data()
-        elif index == 1:  # Configure (Targets + Settings)
+        if index == 0:  # Configure (Targets + Settings)
             self.targets_tab.refresh_targets()
             self.config_tab.refresh_targets_preview()
+        elif index == 2:  # Dashboard
+            self.dashboard_tab.refresh_data()
 
     # --- Logic ---
 
@@ -621,17 +648,21 @@ class ModernMainWindow(QMainWindow):
             else:
                 self.setStyleSheet(qss)
 
+            # Persist selection
+            try:
+                self._theme_manager.set_theme(mode)
+            except Exception:
+                pass
+
             # Notify tabs that use inline theme-specific styles
             try:
                 colors = CATPPUCCIN_LIGHT if mode == "light" else CATPPUCCIN_DARK
                 if hasattr(self, "help_tab"):
                     self.help_tab.refresh_theme(colors)
-            except Exception:
-                pass
-
-            # Persist selection
-            try:
-                self._theme_manager.set_theme(mode)
+                if hasattr(self, "harvest_tab") and hasattr(self.harvest_tab, "_apply_db_only_checkbox_style"):
+                    self.harvest_tab._apply_db_only_checkbox_style()
+                if hasattr(self, "targets_tab"):
+                    self.targets_tab.refresh_targets()
             except Exception:
                 pass
         except Exception:

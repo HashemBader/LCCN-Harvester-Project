@@ -50,7 +50,21 @@ class ShortcutsDialog(QDialog):
         theme_mgr = ThemeManager()
         mode = theme_mgr.get_theme()
         palette = CATPPUCCIN_DARK if mode == "dark" else CATPPUCCIN_LIGHT
-        self.setStyleSheet(generate_stylesheet(palette))
+        category_color = "#ffffff" if mode == "dark" else "#000000"
+        self.setStyleSheet(
+            generate_stylesheet(palette)
+            + f"""
+            QLabel#CategoryHeader {{
+                color: {category_color};
+                font-size: 15px;
+                font-weight: 800;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                padding-top: 8px;
+                padding-bottom: 4px;
+            }}
+            """
+        )
 
     def _setup_ui(self):
         layout = QVBoxLayout()
@@ -166,10 +180,10 @@ class ShortcutsDialog(QDialog):
                 ("Ctrl+R", "Refresh dashboard"),
             ]),
             ("Navigation", [
-                ("Ctrl+1", "Dashboard tab"),
-                ("Ctrl+2", "Configure tab (Targets + Settings)"),
-                ("Ctrl+3", "Harvest tab"),
-                ("Ctrl+4", "AI Agent tab"),
+                ("Ctrl+1", "Configure tab (Targets + Settings)"),
+                ("Ctrl+2", "Harvest tab"),
+                ("Ctrl+3", "Dashboard tab"),
+                ("Ctrl+4", "Help tab"),
                 ("Ctrl+Shift+D", "Jump to Dashboard"),
                 ("Ctrl+Shift+H", "Jump to Harvest"),
             ]),

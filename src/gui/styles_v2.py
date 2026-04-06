@@ -14,7 +14,7 @@ CATPPUCCIN_DARK = {
     
     # Text
     "text": "#f9fafb",             # Tailwind Gray-50 (Crisp white)
-    "text_muted": "#9ca3af",       # Tailwind Gray-400 (Readable secondary text)
+    "text_muted": "#f9fafb",       # Match visible white-on-dark requirement
     
     # Semantic States
     "primary": "#3b82f6",          # Blue
@@ -38,7 +38,7 @@ CATPPUCCIN_LIGHT = {
     
     # Text
     "text": "#0f172a",             # Slate-900 (Near black)
-    "text_muted": "#64748b",       # Slate-500 (Clear secondary text)
+    "text_muted": "#0f172a",       # Match visible black-on-light requirement
     
     # Semantic States
     "primary": "#2563eb",          # Blue
@@ -91,7 +91,7 @@ QWidget {{
 /* Prevent blocky background rectangles behind text labels */
 QLabel {{
     background: transparent;
-    color: {t['text_muted']};
+    color: {t['text']};
 }}
 
 /* --- Sidebar: Gradient Depth --- */
@@ -149,8 +149,8 @@ QPushButton[class="NavButton"]:focus, QPushButton.NavButton:focus, QPushButton#N
 
 /* Tooltips */
 QToolTip {{
-    background-color: {t['surface']};
-    color: {t['text_muted']};
+    background-color: #000000;
+    color: #ffffff;
     border: 1px solid {t['primary']};
     padding: 4px 8px;
     border-radius: 4px;
@@ -578,16 +578,28 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 /* --- BUTTON SYSTEM (VIBRANT) --- */
 
 QPushButton {{
+    background-color: {t['surface2']};
+    color: {t['text']};
     border-radius: 8px;
     padding: 10px 20px;
     font-weight: 700;
     font-size: 14px;
-    border: 1px solid transparent;
+    border: 1px solid {t['border_strong']};
     outline: none;
 }}
 
+QPushButton:hover {{
+    background-color: {t['hover']};
+    border-color: {t['primary']};
+}}
+
+QPushButton:pressed {{
+    background-color: {t['surface']};
+    border-color: {t['primary']};
+}}
+
 QPushButton:focus {{
-    border: 2px solid {t['surface2']};
+    border: 2px solid {t['focus']};
     outline: none;
 }}
 
@@ -612,9 +624,9 @@ QPushButton[class="PrimaryButton"]:disabled, QPushButton.PrimaryButton:disabled,
 
 /* 2. Secondary: Neutral / Surface */
 QPushButton[class="SecondaryButton"], QPushButton.SecondaryButton, QPushButton#SecondaryButton {{
-    background-color: {t['surface']}; 
+    background-color: {t['surface2']};
     color: {t['text']};
-    border: 1px solid {t['border']};
+    border: 1px solid {t['border_strong']};
 }}
 QPushButton[class="SecondaryButton"]:hover, QPushButton.SecondaryButton:hover, QPushButton#SecondaryButton:hover {{
     background-color: {t['hover']};
@@ -801,34 +813,52 @@ QLabel[class="Banner"], QLabel.Banner {{
 }}
 
 QWidget[class="SearchContainer"], QWidget.SearchContainer {{
-    background-color: {t['bg']};
-    border: 1px solid {t['border']};
-    border-radius: 4px;
+    background-color: {t['surface']};
+    border: 2px solid {t['border_strong']};
+    border-radius: 10px;
+    min-height: 44px;
 }}
 QWidget[class="SearchContainer"] QLineEdit, QWidget.SearchContainer QLineEdit {{
     background-color: transparent;
     border: none;
     color: {t['text']};
-    padding: 4px 8px;
+    padding: 10px 14px;
     min-width: 180px;
+    font-size: 15px;
+    font-weight: 600;
+}}
+QWidget[class="SearchContainer"] QLineEdit::placeholder, QWidget.SearchContainer QLineEdit::placeholder {{
+    color: {t['text']};
 }}
 QWidget[class="SearchContainer"] QToolButton, QWidget.SearchContainer QToolButton {{
     background-color: transparent;
     border: none;
-    border-radius: 2px;
+    border-radius: 6px;
     color: {t['text']};
     font-weight: bold;
     font-size: 16px;
+    min-width: 32px;
+    min-height: 32px;
+    margin-right: 6px;
 }}
 QWidget[class="SearchContainer"] QToolButton:hover, QWidget.SearchContainer QToolButton:hover {{
-    background-color: {t['border']};
-    color: {t['text']};
+    background-color: {t['hover']};
+    color: {t['primary']};
+}}
+QWidget[class="SearchContainer"]:hover, QWidget.SearchContainer:hover {{
+    border-color: {t['primary']};
+}}
+QWidget[class="SearchContainer"]:focus-within, QWidget.SearchContainer:focus-within {{
+    border-color: {t['focus']};
+    background-color: {t['surface']};
 }}
 
 QPushButton[class="IconButton"], QPushButton.IconButton {{
-    background-color: {t['bg']};
-    border: 2px solid {t['border']};
+    background-color: {t['surface2']};
+    color: {t['text']};
+    border: 2px solid {t['border_strong']};
     border-radius: 8px;
+    padding: 8px 12px;
 }}
 QPushButton[class="IconButton"]:hover, QPushButton.IconButton:hover {{
     background-color: {t['hover']};

@@ -112,13 +112,13 @@ class TestTabSwitching:
     def test_switch_to_dashboard(self, main_window):
         """Test switching to Dashboard tab."""
         main_window.btn_dashboard.click()
-        assert main_window.stack.currentIndex() == 0
+        assert main_window.stack.currentIndex() == 2
         assert main_window.page_title.text() == "Dashboard"
 
     def test_switch_to_configure(self, main_window):
         """Test switching to Configure tab (merged Targets + Settings)."""
         main_window.btn_configure.click()
-        assert main_window.stack.currentIndex() == 1
+        assert main_window.stack.currentIndex() == 0
         assert main_window.page_title.text() == "Configure"
 
     def test_configure_inner_tab_switch_to_targets(self, main_window):
@@ -129,7 +129,7 @@ class TestTabSwitching:
     def test_switch_to_harvest(self, main_window):
         """Test switching to Harvest tab."""
         main_window.btn_harvest.click()
-        assert main_window.stack.currentIndex() == 2
+        assert main_window.stack.currentIndex() == 1
         assert main_window.page_title.text() == "Harvest"
 
     def test_switch_to_help(self, main_window):

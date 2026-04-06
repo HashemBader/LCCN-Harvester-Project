@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from pathlib import Path
+import shutil
 import sys
 
 # Add src to path
@@ -23,12 +24,13 @@ from .styles_v2 import CATPPUCCIN_THEME
 class CreateProfileDialog(QDialog):
     """Profile creation dialog with inline settings controls."""
 
-    def __init__(self, parent=None, initial_settings=None):
+    def __init__(self, profile_manager: ProfileManager, parent=None, initial_source="Default Settings"):
         super().__init__(parent)
+        self.profile_manager = profile_manager
         self.setWindowTitle("Create Profile")
         self.setModal(True)
         self.setMinimumWidth(480)
-        self._initial_settings = initial_settings or {}
+        self._selected_source = initial_source or "Default Settings"
         self._setup_ui()
 
     def _setup_ui(self):
@@ -43,6 +45,17 @@ class CreateProfileDialog(QDialog):
         subtitle = QLabel("Choose a profile name and starting settings.")
         subtitle.setStyleSheet(f" font-size: 12px;")
         layout.addWidget(subtitle)
+
+        source_label = QLabel("Copy Settings And Targets From")
+        source_label.setStyleSheet(f"font-weight: 600; ")
+        layout.addWidget(source_label)
+
+        self.source_combo = ConsistentComboBox()
+        self.source_combo.addItems(self.profile_manager.list_profiles())
+        source_index = self.source_combo.findText(self._selected_source)
+        self.source_combo.setCurrentIndex(source_index if source_index >= 0 else 0)
+        self.source_combo.currentTextChanged.connect(self._on_source_changed)
+        layout.addWidget(self.source_combo)
 
         name_label = QLabel("Profile Name")
         name_label.setStyleSheet(f"font-weight: 600; ")
@@ -70,7 +83,6 @@ class CreateProfileDialog(QDialog):
         self.retry_spin.setRange(0, 365)
         self.retry_spin.setSuffix(" days")
         self.retry_spin.setFixedWidth(120)
-        self.retry_spin.setValue(int(self._initial_settings.get("retry_days", 7)))
         retry_row.addWidget(retry_label)
         retry_row.addStretch()
         retry_row.addWidget(self.retry_spin)
@@ -84,9 +96,6 @@ class CreateProfileDialog(QDialog):
         self.mode_combo.addItem("LCCN only", "lccn")
         self.mode_combo.addItem("NLMCN only", "nlmcn")
         self.mode_combo.addItem("Both", "both")
-        initial_mode = self._initial_settings.get("call_number_mode", "lccn")
-        idx = self.mode_combo.findData(initial_mode)
-        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         mode_row.addWidget(mode_label)
         mode_row.addStretch()
         mode_row.addWidget(self.mode_combo)
@@ -108,6 +117,7 @@ class CreateProfileDialog(QDialog):
         layout.addWidget(buttons)
 
         # Inherit app theme — no hardcoded colours
+        self._on_source_changed(self.source_combo.currentText())
 
     def _validate_and_accept(self):
         if not self.name_edit.text().strip():
@@ -116,8 +126,30 @@ class CreateProfileDialog(QDialog):
             return
         self.accept()
 
+    def _load_source_settings(self, source_name: str) -> dict:
+        profile = self.profile_manager.load_profile(source_name)
+        settings = profile.get("settings", {}) if isinstance(profile, dict) else {}
+        if not isinstance(settings, dict):
+            settings = {}
+        return settings
+
+    def _on_source_changed(self, source_name: str):
+        self._selected_source = source_name or "Default Settings"
+        settings = self._load_source_settings(self._selected_source)
+        self.retry_spin.blockSignals(True)
+        self.mode_combo.blockSignals(True)
+        self.retry_spin.setValue(int(settings.get("retry_days", 7)))
+        mode = settings.get("call_number_mode", "lccn")
+        idx = self.mode_combo.findData(mode)
+        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.retry_spin.blockSignals(False)
+        self.mode_combo.blockSignals(False)
+
     def profile_name(self) -> str:
         return self.name_edit.text().strip()
+
+    def source_profile_name(self) -> str:
+        return self._selected_source or "Default Settings"
 
     def profile_settings(self) -> dict:
         mode = self.mode_combo.currentData()
@@ -363,21 +395,56 @@ class ConfigTabV2(QWidget):
         self.profile_changed.emit(profile_name)
         self.config_changed.emit(self.get_config())
 
+    def has_pending_changes(self) -> bool:
+        return bool(self.has_unsaved_changes)
+
+    def resolve_unsaved_changes(self, action_label: str = "continue") -> bool:
+        if not self.has_unsaved_changes:
+            return True
+
+        if self.current_profile_name == "Default Settings":
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Unsaved Changes")
+            msg.setText(
+                "You have unsaved changes in Default Settings.\n\n"
+                "Default Settings cannot be modified, so these changes must be discarded before you "
+                f"{action_label}."
+            )
+            discard_btn = msg.addButton("Discard Changes", QMessageBox.ButtonRole.DestructiveRole)
+            discard_btn.setProperty("class", "DangerButton")
+            msg.setDefaultButton(discard_btn)
+            msg.exec()
+            self._load_profile(self.current_profile_name)
+            return True
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Unsaved Changes")
+        msg.setText(
+            f"You have unsaved changes in '{self.current_profile_name}'.\n\n"
+            f"Do you want to save or discard them before you {action_label}?"
+        )
+        save_btn = msg.addButton("Save Changes", QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = msg.addButton("Discard Changes", QMessageBox.ButtonRole.DestructiveRole)
+        save_btn.setProperty("class", "PrimaryButton")
+        discard_btn.setProperty("class", "DangerButton")
+        msg.setDefaultButton(save_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked is save_btn:
+            return self._save_current_profile(show_confirmation=False)
+        self._load_profile(self.current_profile_name)
+        return True
+
     def _on_profile_selected(self, name):
         if not name: return
-        if self.has_unsaved_changes:
-            reply = QMessageBox.question(
-                self, "Unsaved Changes",
-                "You have unsaved changes. Save them before switching?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                self.profile_combo.blockSignals(True)
-                self.profile_combo.setCurrentText(self.current_profile_name)
-                self.profile_combo.blockSignals(False)
-                return
-            if reply == QMessageBox.StandardButton.Yes:
-                self._save_current_profile()
+        if not self.resolve_unsaved_changes("switch profiles"):
+            self.profile_combo.blockSignals(True)
+            self.profile_combo.setCurrentText(self.current_profile_name)
+            self.profile_combo.blockSignals(False)
+            return
         
         self.profile_manager.set_active_profile(name)
         self._load_profile(name)
@@ -386,14 +453,15 @@ class ConfigTabV2(QWidget):
         self.has_unsaved_changes = True
         self.btn_save.setEnabled(True)
 
-    def _save_current_profile(self):
+    def _save_current_profile(self, *, show_confirmation: bool = True) -> bool:
         if self.current_profile_name == "Default Settings":
-            QMessageBox.information(
-                self,
-                "Cannot Modify Default",
-                "The Default Settings profile cannot be modified.\n\nCreate a new profile and save there."
-            )
-            return
+            if show_confirmation:
+                QMessageBox.information(
+                    self,
+                    "Cannot Modify Default",
+                    "The Default Settings profile cannot be modified.\n\nCreate a new profile and save there."
+                )
+            return False
 
         mode = self._current_call_number_mode()
         config = {
@@ -407,10 +475,15 @@ class ConfigTabV2(QWidget):
         self.has_unsaved_changes = False
         self.btn_save.setEnabled(False)
         self.config_changed.emit(config)
-        QMessageBox.information(self, "Saved", f"Profile '{self.current_profile_name}' saved.")
+        if show_confirmation:
+            QMessageBox.information(self, "Saved", f"Profile '{self.current_profile_name}' saved.")
+        return True
 
     def _create_new_profile(self):
-        dialog = CreateProfileDialog(self, initial_settings=self.get_config())
+        if not self.resolve_unsaved_changes("create a new profile"):
+            return
+
+        dialog = CreateProfileDialog(self.profile_manager, self, initial_source="Default Settings")
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -419,17 +492,18 @@ class ConfigTabV2(QWidget):
             QMessageBox.warning(self, "Duplicate Name", "A profile with that name already exists.")
             return
 
+        source_profile = dialog.source_profile_name()
+        source_payload = self.profile_manager.load_profile(source_profile)
+        base_settings = self._extract_profile_settings(source_payload).copy()
         new_settings = dialog.profile_settings()
-        matching_profile = self._find_profile_with_same_settings(new_settings)
-        if matching_profile:
-            QMessageBox.information(
-                self,
-                "Matching Settings Found",
-                f"These settings already exist under '{matching_profile}'.\n\n"
-                "You can still create this profile if you want a separate copy."
-            )
+        base_settings.update(new_settings)
 
-        self.profile_manager.save_profile(name, new_settings)
+        self.profile_manager.save_profile(name, base_settings)
+        source_targets = self.profile_manager.get_targets_file(source_profile)
+        dest_targets = self.profile_manager.get_targets_file(name)
+        dest_targets.parent.mkdir(parents=True, exist_ok=True)
+        if source_targets.exists():
+            shutil.copy2(source_targets, dest_targets)
         self._refresh_profile_list()
         self.profile_combo.setCurrentText(name) # Will trigger load
 

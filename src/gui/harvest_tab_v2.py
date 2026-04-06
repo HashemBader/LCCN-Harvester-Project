@@ -58,6 +58,7 @@ from src.database import DatabaseManager, today_yyyymmdd
 from src.database.db_manager import yyyymmdd_to_iso_date
 from src.config.profile_manager import ProfileManager
 from src.utils import messages
+from .theme_manager import ThemeManager
 
 
 def _write_csv_rows(rows_with_header: list, path: str) -> None:
@@ -83,6 +84,24 @@ def _safe_filename(s: str) -> str:
 def _display_date(value) -> str:
     """Format storage dates for TSV/live display."""
     return yyyymmdd_to_iso_date(value) or ""
+
+
+def _looks_like_header_cell(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"isbn", "isbn-10", "isbn-13", "isbn10", "isbn13", "world isbn", "book isbn"}
+
+
+def _dedupe_source_text(value: str) -> str:
+    parts: list[str] = []
+    for piece in re.split(r"[+,;|]", str(value or "")):
+        cleaned = piece.strip()
+        if cleaned.upper() == "UCB":
+            cleaned = "UBC"
+        elif cleaned.upper() == "UBC":
+            cleaned = "UBC"
+        if cleaned and cleaned not in parts:
+            parts.append(cleaned)
+    return " + ".join(parts)
 
 
 def _select_marc_values_for_mode(lccn: str | None, nlmcn: str | None, mode: str) -> tuple[str | None, str | None]:
@@ -256,7 +275,7 @@ class HarvestWorkerV2(QThread):
                     _lccn_source = payload.get("lccn_source") or payload.get("source") or "Cache"
                     _nlmcn = payload.get("nlmcn") or ""
                     _nlmcn_source = payload.get("nlmcn_source") or payload.get("source") or "Cache"
-                    _src = payload.get("source") or "Cache"
+                    _src = _dedupe_source_text(payload.get("source") or "Cache")
                     self._session_success.append(self._build_success_row(
                         isbn,
                         lccn=_lccn,
@@ -323,7 +342,7 @@ class HarvestWorkerV2(QThread):
                     _lccn_source = payload.get("lccn_source") or payload.get("source") or source or "Target"
                     _nlmcn = payload.get("nlmcn") or ""
                     _nlmcn_source = payload.get("nlmcn_source") or payload.get("source") or source or "Target"
-                    _src = payload.get("source") or source or "Target"
+                    _src = _dedupe_source_text(payload.get("source") or source or "Target")
                     self._session_success.append(self._build_success_row(
                         isbn,
                         lccn=_lccn,
@@ -457,6 +476,7 @@ class HarvestWorkerV2(QThread):
         """Update processed count and emit stats/milestones."""
         self.processed_count += 1
         self.run_stats.processed_unique = self.processed_count
+        self._refresh_live_linked_isbns_file()
 
         # Emit stats update for UI
         if self.processed_count % 5 == 0 or self.processed_count == getattr(self.run_stats, 'valid_rows', 0):
@@ -480,6 +500,7 @@ class HarvestWorkerV2(QThread):
             writer.writerow(header)
             fh.flush()
             self._live_result_handles[key] = fh
+        self._refresh_live_linked_isbns_file()
 
     def _close_live_result_files(self):
         saved_paths = []
@@ -521,6 +542,32 @@ class HarvestWorkerV2(QThread):
     def _write_invalid_live_rows(self, invalid_list):
         for raw_isbn in invalid_list or []:
             self._append_live_row("invalid", [raw_isbn])
+
+    def _refresh_live_linked_isbns_file(self):
+        linked_path_raw = self.live_paths.get("linked")
+        if not linked_path_raw:
+            return
+        linked_path = Path(linked_path_raw)
+        linked_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        try:
+            db = DatabaseManager(self.db_path)
+            with db.connect() as conn:
+                rows = conn.execute(
+                    "SELECT other_isbn AS isbn, lowest_isbn AS canonical_isbn "
+                    "FROM linked_isbns ORDER BY lowest_isbn, other_isbn"
+                ).fetchall()
+        except Exception:
+            rows = []
+
+        try:
+            with open(linked_path, "w", newline="", encoding="utf-8-sig") as fh:
+                writer = csv.writer(fh, delimiter="\t")
+                writer.writerow(["ISBN", "Canonical ISBN"])
+                writer.writerows(rows)
+            _write_csv_rows([["ISBN", "Canonical ISBN"], *rows], str(linked_path.with_suffix(".csv")))
+        except Exception:
+            pass
 
     def _successful_headers(self):
         mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
@@ -671,7 +718,7 @@ class HarvestWorkerV2(QThread):
             or "unreachable" in lowered
         ):
             return "Offline"
-        return None
+        return text
 
     def _append_live_problem_rows(
         self,
@@ -721,6 +768,8 @@ class HarvestWorkerV2(QThread):
         return ("Unknown", text or "Unknown error")
 
     def _append_live_problem(self, target, problem):
+        if target and str(target).strip().lower() == "retryrule":
+            return
         row = (target or "Unknown", problem or "Unknown error")
         if row in self._live_problem_rows_written:
             return
@@ -1017,7 +1066,7 @@ class HarvestTabV2(QWidget):
         self.btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_browse.clicked.connect(self._browse_file)
         self.btn_clear_file = QPushButton("Clear")
-        self.btn_clear_file.setProperty("class", "SecondaryButton")
+        self.btn_clear_file.setProperty("class", "DangerButton")
         self.btn_clear_file.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_file.clicked.connect(self._clear_input)
         self.btn_clear_file.setVisible(False)
@@ -1075,6 +1124,7 @@ class HarvestTabV2(QWidget):
         self.chk_db_only.setToolTip("Skip APIs and Z39.50 targets and search only the existing SQLite database")
         self.chk_db_only.setCursor(Qt.CursorShape.PointingHandCursor)
         setup_grid.addWidget(self.chk_db_only, 3, 1)
+        self._apply_db_only_checkbox_style()
 
         self.combo_run_mode.currentTextChanged.connect(self._toggle_stop_rule_visibility)
         self.chk_db_only.toggled.connect(self._toggle_stop_rule_visibility)
@@ -1147,13 +1197,13 @@ class HarvestTabV2(QWidget):
         self._btn_browse_marc.setProperty("class", "PrimaryButton")
         self._btn_browse_marc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_browse_marc.clicked.connect(self._browse_marc_file)
-        self._btn_import_marc = QPushButton("Import Records")
+        self._btn_import_marc = QPushButton("Run")
         self._btn_import_marc.setProperty("class", "PrimaryButton")
         self._btn_import_marc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_import_marc.clicked.connect(self._import_marc_file)
         self._btn_import_marc.setEnabled(False)
         self._btn_clear_marc = QPushButton("Clear")
-        self._btn_clear_marc.setProperty("class", "SecondaryButton")
+        self._btn_clear_marc.setProperty("class", "DangerButton")
         self._btn_clear_marc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_clear_marc.clicked.connect(self._clear_marc_file)
         self._btn_clear_marc.setVisible(False)
@@ -1172,15 +1222,15 @@ class HarvestTabV2(QWidget):
         stats_grid = QGridLayout()
         stats_grid.setSpacing(10)
         stat_defs = [
-            ("Valid (unique)", "lbl_val_loaded"),
-            ("Valid rows",     "lbl_val_rows_valid"),
-            ("Duplicates",     "lbl_val_duplicates"),
-            ("Invalid rows",   "lbl_val_invalid"),
-            ("Total rows",     "lbl_val_rows"),
-            ("File size",      "lbl_val_size"),
+            ("Total rows", "lbl_val_rows", 0, 0),
+            ("Valid rows", "lbl_val_rows_valid", 0, 1),
+            ("Invalid rows", "lbl_val_invalid", 0, 2),
+            ("Valid (unique)", "lbl_val_loaded", 1, 0),
+            ("Duplicates", "lbl_val_duplicates", 1, 1),
+            ("File size", "lbl_val_size", 1, 2),
         ]
 
-        for i, (label_text, attr_name) in enumerate(stat_defs):
+        for label_text, attr_name, row_idx, col_idx in stat_defs:
             tile = QWidget()
             tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             tile.setProperty("class", "StatTile")
@@ -1196,7 +1246,7 @@ class HarvestTabV2(QWidget):
             lbl_cat.setProperty("class", "StatTileLabel")
             tile_layout.addWidget(lbl_val)
             tile_layout.addWidget(lbl_cat)
-            stats_grid.addWidget(tile, i // 3, i % 3)
+            stats_grid.addWidget(tile, row_idx, col_idx)
             setattr(self, attr_name, lbl_val)
 
         stats_card_layout.addLayout(stats_grid)
@@ -1211,16 +1261,8 @@ class HarvestTabV2(QWidget):
         preview_toolbar = QHBoxLayout()
         self.lbl_preview_filename = QLabel("No file selected")
         self.lbl_preview_filename.setStyleSheet("font-size: 10px; font-style: italic;")
-        self.btn_copy_preview = QPushButton("Copy")
-        self.btn_copy_preview.setFixedHeight(24)
-        self.btn_copy_preview.setStyleSheet(
-            "background: transparent; font-size: 11px; font-weight: bold; padding: 0 10px;"
-        )
-        self.btn_copy_preview.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_copy_preview.clicked.connect(self._copy_preview_content)
         preview_toolbar.addWidget(self.lbl_preview_filename)
         preview_toolbar.addStretch()
-        preview_toolbar.addWidget(self.btn_copy_preview)
         preview_frame_layout.addLayout(preview_toolbar)
 
         # Table view with row numbers and status column
@@ -1241,7 +1283,7 @@ class HarvestTabV2(QWidget):
         )
         # Show placeholder headers before any file is loaded
         self.preview_table.setColumnCount(2)
-        self.preview_table.setHorizontalHeaderLabels(["Value", "Status"])
+        self.preview_table.setHorizontalHeaderLabels(["ISBN", "Status"])
         self.preview_table.setRowCount(0)
         preview_frame_layout.addWidget(self.preview_table, stretch=1)
 
@@ -1285,7 +1327,7 @@ class HarvestTabV2(QWidget):
         top_row.addWidget(self.lbl_run_status)
 
         lbl_elapsed_label = QLabel("Elapsed:")
-        lbl_elapsed_label.setStyleSheet("color: grey; font-size: 11px;")
+        lbl_elapsed_label.setStyleSheet("font-size: 11px;")
         top_row.addWidget(lbl_elapsed_label)
         top_row.addWidget(self.lbl_run_elapsed)
         top_row.addStretch()
@@ -1298,7 +1340,7 @@ class HarvestTabV2(QWidget):
         self.log_output = QLabel("Ready…")
         self.log_output.setProperty("class", "CardHelper")
         self.log_output.setAccessibleName("Harvest status message")
-        self.log_output.setStyleSheet("font-size: 11px; color: grey; font-style: italic; min-width: 250px;")
+        self.log_output.setStyleSheet("font-size: 11px; font-style: italic; min-width: 250px;")
         top_row.addWidget(self.log_output)
 
         BTN_H = 36
@@ -1360,7 +1402,7 @@ class HarvestTabV2(QWidget):
         is_both = mode_text == "Both (LCCN & NLM)"
         db_only_for_run = getattr(self, "chk_db_only", None) is not None and self.chk_db_only.isChecked()
         stop_rule_active = is_both and not db_only_for_run
-        self.lbl_stop_rule.setEnabled(stop_rule_active)
+        self.lbl_stop_rule.setEnabled(True)
         self.combo_stop_rule.setEnabled(stop_rule_active)
 
         if stop_rule_active:
@@ -1370,7 +1412,6 @@ class HarvestTabV2(QWidget):
             self.combo_stop_rule.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             # Visually mute — grey text, faded background, blocked cursor
-            muted_label = "color: rgba(120, 120, 140, 0.55); font-size: 11px;"
             muted_combo = (
                 "QComboBox {"
                 "  color: rgba(120, 120, 140, 0.55);"
@@ -1381,7 +1422,7 @@ class HarvestTabV2(QWidget):
                 "QComboBox::drop-down { border: none; }"
                 "QComboBox::down-arrow { opacity: 0.3; }"
             )
-            self.lbl_stop_rule.setStyleSheet(muted_label)
+            self.lbl_stop_rule.setStyleSheet("")
             self.combo_stop_rule.setStyleSheet(muted_combo)
             self.combo_stop_rule.setCursor(Qt.CursorShape.ForbiddenCursor)
 
@@ -1460,6 +1501,9 @@ class HarvestTabV2(QWidget):
             self.btn_pause.setVisible(True)
             self.btn_pause.setEnabled(True)
             self.btn_pause.setText("Pause")
+            self.btn_pause.setStyleSheet(
+                "background-color: #f97316; color: #ffffff; border: 1px solid #ea580c; border-radius: 10px; font-weight: 700; padding: 8px 16px;"
+            )
             self.btn_stop.setVisible(True)
             self.btn_stop.setEnabled(True)
 
@@ -1474,6 +1518,9 @@ class HarvestTabV2(QWidget):
             self.btn_pause.setVisible(True)
             self.btn_pause.setEnabled(True)
             self.btn_pause.setText("Resume")
+            self.btn_pause.setStyleSheet(
+                "background-color: #f97316; color: #ffffff; border: 1px solid #ea580c; border-radius: 10px; font-weight: 700; padding: 8px 16px;"
+            )
             self.btn_stop.setVisible(True)
             self.btn_stop.setEnabled(True)
 
@@ -1509,6 +1556,8 @@ class HarvestTabV2(QWidget):
         self.lbl_run_status.style().polish(self.lbl_run_status)
         self.lbl_banner_title.style().unpolish(self.lbl_banner_title)
         self.lbl_banner_title.style().polish(self.lbl_banner_title)
+        if state not in (UIState.RUNNING, UIState.PAUSED):
+            self.btn_pause.setStyleSheet("")
 
         self.lbl_banner_title.setText(title_text)
         self.lbl_banner_stats.setVisible(show_stats)
@@ -1616,7 +1665,7 @@ class HarvestTabV2(QWidget):
 
             self.file_path_edit.setText(path_obj.name)
             self.btn_clear_file.setVisible(True)
-            self._load_file_preview()
+            self._load_file_preview_v2()
 
             self._check_start_conditions(unique_valid)
 
@@ -1714,6 +1763,72 @@ class HarvestTabV2(QWidget):
         self.preview_table.setHorizontalHeaderLabels(["Info"])
         self.preview_table.setItem(0, 0, QTableWidgetItem(msg))
 
+    def _apply_db_only_checkbox_style(self):
+        is_dark = ThemeManager().get_theme() == "dark"
+        text_color = "#f9fafb" if is_dark else "#000000"
+        self.chk_db_only.setStyleSheet(
+            "QCheckBox { color: " + text_color + "; font-weight: 600; spacing: 8px; }"
+        )
+
+    def _load_file_preview_v2(self):
+        """Load a preview using ISBN-aware row numbering and optional header skipping."""
+        self.preview_table.clearContents()
+        self.preview_table.setRowCount(0)
+        if not self.input_file:
+            return
+
+        path_obj = Path(self.input_file)
+        if not path_obj.exists():
+            self._show_preview_message("Error: File does not exist.")
+            return
+
+        try:
+            preview_rows = []
+            total_read = 0
+            skipped_header = False
+
+            with open(path_obj, "r", encoding="utf-8-sig") as handle:
+                for line in handle:
+                    total_read += 1
+                    row = line.rstrip("\n\r").split("\t")
+                    first_cell = row[0].strip() if row else ""
+                    if not first_cell:
+                        continue
+
+                    normalized = normalize_isbn(first_cell.replace("-", ""))
+                    if normalized:
+                        preview_rows.append((row, True))
+                    elif not skipped_header and _looks_like_header_cell(first_cell):
+                        skipped_header = True
+                        continue
+                    else:
+                        preview_rows.append((row, False))
+
+                    if len(preview_rows) >= 20:
+                        break
+
+            if not preview_rows:
+                return
+
+            truncated = total_read > len(preview_rows)
+            self.preview_table.setColumnCount(2)
+            self.preview_table.setRowCount(len(preview_rows))
+            self.preview_table.setHorizontalHeaderLabels(["ISBN", "Status"])
+
+            for row_index, (row, is_valid) in enumerate(preview_rows):
+                first_cell = row[0].strip() if row else ""
+                self.preview_table.setItem(row_index, 0, QTableWidgetItem(first_cell))
+                status_item = QTableWidgetItem("Valid" if is_valid else "Invalid")
+                status_item.setForeground(QBrush(QColor("#22c55e" if is_valid else "#ef4444")))
+                self.preview_table.setItem(row_index, 1, status_item)
+
+            self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            self.preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            name = path_obj.name + (" (first 20 rows)" if truncated else "")
+            self.lbl_preview_filename.setText(name)
+        except Exception as e:
+            self._show_preview_message(f"Error reading preview: {e}")
+
     def _copy_preview_content(self):
         """Copy preview table content as tab-separated text."""
         lines = []
@@ -1736,6 +1851,10 @@ class HarvestTabV2(QWidget):
 
     def _clear_input(self):
         """Reset input state."""
+        self.run_timer.stop()
+        self.run_time = QTime(0, 0, 0)
+        self.lbl_run_elapsed.setText("00:00:00")
+        self.timer_is_paused = False
         self.input_file = None
         self.file_path_edit.clear()
         self.file_path_edit.setStyleSheet("")
@@ -1912,6 +2031,11 @@ class HarvestTabV2(QWidget):
         if self.worker and self.worker.isRunning():
             return
 
+        self.run_timer.stop()
+        self.run_time = QTime(0, 0, 0)
+        self.lbl_run_elapsed.setText("00:00:00")
+        self.timer_is_paused = False
+
         # Compute timestamped output file names for this run
         profile = "default"
         if self._profile_getter:
@@ -1931,11 +2055,12 @@ class HarvestTabV2(QWidget):
                 "failed": str(live_dir / f"{profile}-failed-{run_stamp}.tsv"),
                 "problems": str(live_dir / f"{profile}-problems-{run_stamp}.tsv"),
                 "invalid": str(live_dir / f"{profile}-invalid-{run_stamp}.tsv"),
+                "linked": str(live_dir / f"{profile}-linked-isbns-{run_stamp}.tsv"),
                 "profile_dir": str(live_dir),
             }
             if not any(
                 Path(candidate_paths[key]).exists()
-                for key in ("successful", "failed", "problems", "invalid")
+                for key in ("successful", "failed", "problems", "invalid", "linked")
             ):
                 self._run_live_paths = candidate_paths
                 break
@@ -1967,16 +2092,11 @@ class HarvestTabV2(QWidget):
         self.worker.status_message.connect(self._on_status)
         self.worker.live_result.connect(self.live_result_ready.emit)
 
-        self.worker.start()
-
         self._transition_state(UIState.RUNNING)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0/0 (0%)")
 
-        # Clear specific widgets for fresh run
-        self.run_time = QTime(0, 0, 0)
-        self.lbl_run_elapsed.setText("00:00:00")
-        self.timer_is_paused = False
+        self.worker.start()
         self.run_timer.start(1000)
 
         self.harvest_started.emit()

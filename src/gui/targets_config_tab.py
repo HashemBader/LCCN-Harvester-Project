@@ -36,6 +36,7 @@ class TargetsConfigTab(QWidget):
         self.targets_tab.profile_selected.connect(self.profile_selected)
         self.config_tab.config_changed.connect(self.config_changed)
         self.config_tab.profile_changed.connect(self.profile_changed)
+        self.targets_tab.before_mutation = self._resolve_before_target_change
 
     def get_config(self):
         return self.config_tab.get_config()
@@ -63,6 +64,12 @@ class TargetsConfigTab(QWidget):
 
     def refresh_targets(self):
         self.targets_tab.refresh_targets()
+
+    def resolve_unsaved_changes(self, action_label: str = "continue") -> bool:
+        return self.config_tab.resolve_unsaved_changes(action_label)
+
+    def _resolve_before_target_change(self, action_label: str = "change targets") -> bool:
+        return self.config_tab.resolve_unsaved_changes(action_label)
 
     def create_new_profile(self):
         self.config_tab.create_new_profile()

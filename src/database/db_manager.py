@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1224,8 +1225,16 @@ class DatabaseManager:
         parts: list[str] = []
         for value in values:
             text = str(value or "").strip()
-            if text and text not in parts:
-                parts.append(text)
+            if not text:
+                continue
+            for piece in re.split(r"[+,;|]", text):
+                cleaned = piece.strip()
+                if cleaned.upper() == "UCB":
+                    cleaned = "UBC"
+                elif cleaned.upper() == "UBC":
+                    cleaned = "UBC"
+                if cleaned and cleaned not in parts:
+                    parts.append(cleaned)
         if not parts:
             return None
         return " + ".join(parts)

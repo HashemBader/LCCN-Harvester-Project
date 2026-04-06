@@ -38,6 +38,7 @@ class HelpTab(QWidget):
         self._panel_frames: list[QFrame] = []   # main panels — no hover border
         self._desc_labels: list[QLabel] = []              # shortcut descriptions + accessibility items
         self._plus_labels: list[QLabel] = []              # "+" separators between key badges
+        self._section_labels: list[QLabel] = []           # section headers inside help panels
         self._text_labels: list[tuple[QLabel, str]] = []  # heading/value labels — (label, fmt with {color})
 
         self._setup_ui()
@@ -62,6 +63,9 @@ class HelpTab(QWidget):
         plus_style = self._plus_style()
         for lbl in self._plus_labels:
             lbl.setStyleSheet(plus_style)
+        section_style = self._section_title_style()
+        for lbl in self._section_labels:
+            lbl.setStyleSheet(section_style)
         text_color = colors.get("text", "#f9fafb")
         for lbl, fmt in self._text_labels:
             lbl.setStyleSheet(fmt.format(color=text_color))
@@ -132,9 +136,10 @@ class HelpTab(QWidget):
         self._text_labels.append((lbl, fmt))
 
     def _section_title_style(self) -> str:
+        section_color = "#ffffff" if self._colors.get("bg", "").lower() == CATPPUCCIN_DARK.get("bg", "").lower() else "#000000"
         return (
             "font-size: 12px; font-weight: 800; letter-spacing: 1.3px;"
-            f"color: {self._colors.get('text_muted', '#9ca3af')};"
+            f"color: {section_color};"
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -228,6 +233,7 @@ class HelpTab(QWidget):
             cat_row.setContentsMargins(0, 6, 0, 6)
             cat_lbl = QLabel(category.upper())
             cat_lbl.setStyleSheet(self._section_title_style())
+            self._section_labels.append(cat_lbl)
             cat_lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             cat_row.addWidget(cat_lbl)
             div = QFrame()
@@ -411,9 +417,9 @@ class HelpTab(QWidget):
                 (f"{mod}+R", "Refresh dashboard"),
             ]),
             ("Navigation", [
-                (f"{mod}+1", "Open Dashboard"),
-                (f"{mod}+2", "Open Configure"),
-                (f"{mod}+3", "Open Harvest"),
+                (f"{mod}+1", "Open Configure"),
+                (f"{mod}+2", "Open Harvest"),
+                (f"{mod}+3", "Open Dashboard"),
                 (f"{mod}+4", "Open Help"),
             ]),
             ("Harvest Controls", [

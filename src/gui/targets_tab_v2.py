@@ -42,6 +42,7 @@ from config.profile_manager import ProfileManager
 from z3950.session_manager import validate_connection
 from gui.combo_boxes import ConsistentComboBox
 from gui.theme_manager import ThemeManager
+from gui.icons import get_icon
 
 
 class TargetDialog(QDialog):
@@ -326,6 +327,7 @@ class TargetsTabV2(QWidget):
     def __init__(self):
         super().__init__()
         self._profile_manager = ProfileManager()
+        self.before_mutation = None
         active_profile = self._profile_manager.get_active_profile()
         targets_file = self._profile_manager.get_targets_file(active_profile)
         self.manager = TargetsManager(targets_file=targets_file)
@@ -464,6 +466,11 @@ class TargetsTabV2(QWidget):
     def _emit_targets_changed(self):
         self.targets_changed.emit(self.get_targets())
 
+    def _can_mutate_targets(self, action_label: str = "change targets") -> bool:
+        if callable(self.before_mutation):
+            return bool(self.before_mutation(action_label))
+        return True
+
     @staticmethod
     def _check_api_online(target_name: str) -> bool:
         """Check if a built-in API target is reachable via HTTP."""
@@ -595,12 +602,13 @@ class TargetsTabV2(QWidget):
             # Edit button (pencil icon)
             edit_btn = QPushButton()
             edit_btn.setMinimumHeight(32)
-            edit_btn.setMinimumWidth(36)
+            edit_btn.setMinimumWidth(40)
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             edit_btn.setToolTip("Edit target")
-            _pencil_icon_path = str(Path(__file__).parent / "icons" / "pencil.svg")
-            edit_btn.setIcon(QIcon(_pencil_icon_path))
+            pencil_svg = (Path(__file__).parent / "icons" / "pencil.svg").read_text(encoding="utf-8")
+            pencil_color = "#ffffff" if ThemeManager().get_theme() == "dark" else "#000000"
+            edit_btn.setIcon(get_icon(pencil_svg, pencil_color))
             edit_btn.setIconSize(QSize(18, 18))
             edit_btn.setProperty("class", "IconButton")
             edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
@@ -672,6 +680,9 @@ class TargetsTabV2(QWidget):
     def _on_rank_changed(self, new_rank, target):
         if not new_rank or new_rank == target.rank:
             return
+        if not self._can_mutate_targets("change target priority"):
+            self.refresh_targets()
+            return
 
         all_targets = sorted(
             self.manager.get_all_targets(),
@@ -693,6 +704,8 @@ class TargetsTabV2(QWidget):
         self.refresh_targets()
 
     def add_target(self):
+        if not self._can_mutate_targets("add a target"):
+            return
         all_targets = self.manager.get_all_targets()
         total = len(all_targets) + 1  # +1 to include the new slot
         dialog = TargetDialog(self, total_targets=total)
@@ -739,6 +752,8 @@ class TargetsTabV2(QWidget):
         if target.target_type == "API":
             QMessageBox.information(self, "Info", "Built-in API targets cannot be edited.")
             return
+        if not self._can_mutate_targets("edit a target"):
+            return
 
         all_targets_now = self.manager.get_all_targets()
         total = len(all_targets_now)
@@ -782,6 +797,8 @@ class TargetsTabV2(QWidget):
         if target.target_type == "API":
             QMessageBox.warning(self, "Restricted", "Cannot remove built-in API targets.")
             return
+        if not self._can_mutate_targets("remove a target"):
+            return
 
         confirm = QMessageBox.question(
             self,
@@ -796,6 +813,9 @@ class TargetsTabV2(QWidget):
 
     def _toggle_target_active(self, target):
         """Toggle target active status from the table button."""
+        if not self._can_mutate_targets("change targets"):
+            self.refresh_targets()
+            return
         target.selected = not target.selected
         self.manager.modify_target(target)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
-from src.database import DatabaseManager, MainRecord, utc_now_iso, today_yyyymmdd
+from src.database import DatabaseManager, MainRecord, now_datetime_str
 from src.utils.isbn_validator import pick_lowest_isbn
 from concurrent.futures import ThreadPoolExecutor
 
@@ -66,7 +66,7 @@ class HarvestSummary:
 class ProcessOutcome:
     status: str
     record: Optional[MainRecord]
-    attempted_rows: tuple[tuple[str, Optional[str], str, Optional[int], Optional[str]], ...]
+    attempted_rows: tuple[tuple[str, Optional[str], str, Optional[str], Optional[str]], ...]
 
 
 class HarvestCancelled(Exception):
@@ -274,7 +274,7 @@ class HarvestOrchestrator:
         target: str,
         call_number_type: str,
         reason: str,
-        attempted_date: Optional[int] = None,
+        attempted_date: Optional[str] = None,
     ) -> None:
         self._emit(
             "attempt_failed",
@@ -282,7 +282,7 @@ class HarvestOrchestrator:
                 "isbn": isbn,
                 "target": target,
                 "attempt_type": call_number_type,
-                "attempted_date": attempted_date or today_yyyymmdd(),
+                "attempted_date": attempted_date or now_datetime_str(),
                 "reason": reason,
             },
         )
@@ -330,7 +330,7 @@ class HarvestOrchestrator:
         *,
         dry_run: bool,
         pending_main: list[MainRecord],
-        pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> ProcessOutcome:
         self._check_cancelled()
         self._emit("isbn_start", {"isbn": isbn})
@@ -345,7 +345,7 @@ class HarvestOrchestrator:
         found_lccn_source: Optional[str] = None
         found_nlmcn: Optional[str] = None
         found_nlmcn_source: Optional[str] = None
-        attempted_rows: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
+        attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
 
         if isbn not in self.bypass_cache_isbns:
             cached_rec = self.db.get_main(store_isbn, allowed_sources=self._allowed_cached_sources())
@@ -401,7 +401,7 @@ class HarvestOrchestrator:
 
             self._emit("target_start", {"isbn": isbn, "target": last_target})
             raw_result = target.lookup(isbn)
-            attempt_time = today_yyyymmdd()
+            attempt_time = now_datetime_str()
             source_name = raw_result.source or last_target
 
             if self.call_number_mode == "lccn":
@@ -567,7 +567,7 @@ class HarvestOrchestrator:
         *,
         dry_run: bool,
         pending_main: list[MainRecord],
-        pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
         pending_linked: Optional[list[tuple[str, str]]] = None,
     ) -> str:
         outcome = self._process_isbn_internal(
@@ -591,7 +591,7 @@ class HarvestOrchestrator:
         *,
         dry_run: bool,
         pending_main: list[MainRecord],
-        pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
         pending_linked: list[tuple[str, str]],
     ) -> str:
         """Try primary_isbn then each linked variant in order until a call number is found.
@@ -818,7 +818,7 @@ class HarvestOrchestrator:
 
         # --- Sprint 5: batching buffers ---
         pending_main: list[MainRecord] = []
-        pending_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
+        pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
         pending_linked: list[tuple[str, str]] = []
 
         dynamic_batch_size = max(self.DEFAULT_FLUSH_BATCH_SIZE, min(1000, len(isbns) // 100))
@@ -936,7 +936,7 @@ class HarvestOrchestrator:
                 variants = _linked.get(isbn)
                 if variants:
                     local_main: list[MainRecord] = []
-                    local_attempted: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
+                    local_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
                     local_linked: list[tuple[str, str]] = []
                     status = self.process_isbn_group(
                         isbn,
@@ -986,7 +986,7 @@ class HarvestOrchestrator:
                 not_found_targets: list[str] = []
                 other_errors: list[tuple[str, str]] = []
                 skipped_retry_targets: list[str] = []
-                attempted_rows: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
+                attempted_rows: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
 
                 # Accumulate best results and apply stop_rule (mirrors process_isbn)
                 best_lccn: Optional[str] = found_lccn
@@ -1016,7 +1016,7 @@ class HarvestOrchestrator:
                     self._emit("target_start", {"isbn": isbn, "target": last_target})
 
                     raw_result = target.lookup(isbn)
-                    attempt_time = today_yyyymmdd()
+                    attempt_time = now_datetime_str()
                     result = self._filter_result_by_mode(raw_result) if self.call_number_mode != "both" else raw_result
                     if result.success:
                         if result.lccn and not best_lccn:

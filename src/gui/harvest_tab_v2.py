@@ -54,7 +54,7 @@ from src.harvester.run_harvest import run_harvest, parse_isbn_file, RunStats
 from src.harvester.marc_import import MarcImportService, ParsedMarcImportRecord
 from src.harvester.targets import create_target_from_config
 from src.harvester.orchestrator import HarvestCancelled
-from src.database import DatabaseManager, today_yyyymmdd
+from src.database import DatabaseManager, now_datetime_str
 from src.database.db_manager import yyyymmdd_to_iso_date
 from src.config.profile_manager import ProfileManager
 from src.utils import messages
@@ -587,7 +587,7 @@ class HarvestWorkerV2(QThread):
         nlmcn_source=None,
     ):
         classification = _extract_lc_classification(lccn or "")
-        date_added = _display_date(today_yyyymmdd())
+        date_added = _display_date(now_datetime_str())
         normalized_isbn = str(isbn or "").replace("-", "").strip()
         mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
         if mode == "nlmcn":
@@ -681,7 +681,7 @@ class HarvestWorkerV2(QThread):
 
     def _append_failed_attempt_row(self, isbn, attempt_type, target, reason, attempted_date=None):
         normalized_isbn = str(isbn or "").replace("-", "").strip()
-        attempt_value = _display_date(attempted_date or today_yyyymmdd())
+        attempt_value = _display_date(attempted_date or now_datetime_str())
         for label in self._failed_type_labels(attempt_type):
             row = [label, normalized_isbn, target or "-", attempt_value, reason or "Unknown error"]
             self._session_failed.append(row)
@@ -689,7 +689,7 @@ class HarvestWorkerV2(QThread):
 
     def _append_retry_skip_rows(self, isbn, targets, attempt_type, reason):
         normalized_isbn = str(isbn or "").replace("-", "").strip()
-        attempt_value = _display_date(today_yyyymmdd())
+        attempt_value = _display_date(now_datetime_str())
         for target_name in targets or ["RetryRule"]:
             for label in self._failed_type_labels(attempt_type):
                 row = [label, normalized_isbn, target_name or "RetryRule", attempt_value, reason]
@@ -809,7 +809,7 @@ class HarvestWorkerV2(QThread):
                         "VALUES (?, ?, ?, ?, 1, 'Invalid ISBN') "
                         "ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET "
                         "last_attempted=excluded.last_attempted, fail_count=fail_count+1, last_error='Invalid ISBN'",
-                        (raw_isbn[:20], "Validation", "validation", today_yyyymmdd()),
+                        (raw_isbn[:20], "Validation", "validation", now_datetime_str()),
                     )
         except Exception:
             pass
@@ -2519,7 +2519,7 @@ class HarvestTabV2(QWidget):
             mode=mode,
             source_name=source_name,
         )
-        date_added = today_yyyymmdd()
+        date_added = now_datetime_str()
 
         profile_name = None
         if self._profile_getter:

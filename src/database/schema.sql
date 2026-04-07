@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS main (
     call_number_type TEXT NOT NULL, -- 'lccn' or 'nlmcn'
     classification  TEXT,
     source          TEXT NOT NULL DEFAULT '',
-    date_added      INTEGER NOT NULL, -- yyyymmdd (e.g. 20260317)
+    date_added      DATETIME NOT NULL, -- ISO-8601 string (e.g. 2026-03-17 12:00:00)
     PRIMARY KEY (isbn, call_number_type, source)
 );
 
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS attempted (
     isbn              TEXT NOT NULL,
     last_target       TEXT NOT NULL,
     attempt_type      TEXT NOT NULL DEFAULT 'both',
-    last_attempted    INTEGER NOT NULL,  -- yyyymmdd (e.g. 20260317)
+    last_attempted    DATETIME NOT NULL,  -- ISO-8601 string (e.g. 2026-03-17 12:00:00)
     fail_count        INTEGER NOT NULL DEFAULT 1,
     last_error        TEXT,
     PRIMARY KEY (isbn, last_target, attempt_type)

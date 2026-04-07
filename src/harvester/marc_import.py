@@ -6,7 +6,7 @@ from typing import Iterable, Optional
 import xml.etree.ElementTree as ET
 
 from src.config.profile_manager import ProfileManager
-from src.database.db_manager import DatabaseManager, MainRecord, today_yyyymmdd
+from src.database.db_manager import DatabaseManager, MainRecord, now_datetime_str
 from src.utils.isbn_validator import pick_lowest_isbn
 from src.utils.marc_parser import (
     extract_call_numbers_from_json,
@@ -70,7 +70,7 @@ class MarcImportService:
         records: Iterable[dict],
         *,
         source_name: str,
-        import_date: Optional[int] = None,
+        import_date: Optional[str] = None,
         save_source_to_active_profile: bool = True,
     ) -> MarcImportSummary:
         parsed_records = [
@@ -90,7 +90,7 @@ class MarcImportService:
         *,
         source_name: str,
         namespaces: Optional[dict[str, str]] = None,
-        import_date: Optional[int] = None,
+        import_date: Optional[str] = None,
         save_source_to_active_profile: bool = True,
     ) -> MarcImportSummary:
         parsed_records = [
@@ -109,7 +109,7 @@ class MarcImportService:
         records: Iterable[ParsedMarcImportRecord],
         *,
         source_name: str,
-        import_date: Optional[int] = None,
+        import_date: Optional[str] = None,
         save_source_to_active_profile: bool = True,
     ) -> MarcImportSummary:
         self.db.init_db()
@@ -120,13 +120,13 @@ class MarcImportService:
                 self.profile_name = self.profile_manager.get_active_profile()
             self.profile_manager.set_active_profile_setting("last_marc_import_source", normalized_source)
 
-        date_value = import_date or today_yyyymmdd()
+        date_value = import_date or now_datetime_str()
         main_rows = 0
         attempted_rows = 0
         skipped_records = 0
 
         with self.db.transaction() as conn:
-            attempted_batch: list[tuple[str, Optional[str], str, Optional[int], Optional[str]]] = []
+            attempted_batch: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
             main_batch: list[MainRecord] = []
 
             for record in records:

@@ -19,10 +19,10 @@ Lazy exports to avoid RuntimeWarning when running:
 
 from typing import TYPE_CHECKING, Any
 
-__all__ = ["DatabaseManager", "MainRecord", "AttemptedRecord", "utc_now_iso", "today_yyyymmdd"]
+__all__ = ["DatabaseManager", "MainRecord", "AttemptedRecord", "now_datetime_str"]
 
 if TYPE_CHECKING:
-    from .db_manager import DatabaseManager, MainRecord, AttemptedRecord, utc_now_iso, today_yyyymmdd
+    from .db_manager import DatabaseManager, MainRecord, AttemptedRecord, now_datetime_str
 
 
 def __getattr__(name: str) -> Any:
@@ -35,11 +35,14 @@ def __getattr__(name: str) -> Any:
     if name == "AttemptedRecord":
         from .db_manager import AttemptedRecord
         return AttemptedRecord
-    if name == "utc_now_iso":
-        from .db_manager import utc_now_iso
-        return utc_now_iso
-    if name == "today_yyyymmdd":
-        from .db_manager import today_yyyymmdd
-        return today_yyyymmdd
+    if name == "now_datetime_str":
+        from .db_manager import now_datetime_str
+        return now_datetime_str
+    if name == "today_yyyymmdd": # Alias for compatibility during migration
+        from .db_manager import now_datetime_str
+        return now_datetime_str
+    if name == "utc_now_iso": # Alias for compatibility
+        from .db_manager import now_datetime_str
+        return now_datetime_str
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

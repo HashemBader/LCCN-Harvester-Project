@@ -12,47 +12,43 @@ from typing import Optional, Iterable, Sequence
 
 
 
-def utc_now_iso() -> str:
-    """Return current UTC time as ISO-8601 string (no microseconds).
-
-    Deprecated: kept for any callers that still need ISO strings.
-    New code should use today_yyyymmdd() instead.
-    """
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+def now_datetime_str() -> str:
+    """Return current local datetime as an ISO-8601 string (e.g. 2026-03-17 12:00:00)."""
+    return datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def today_yyyymmdd() -> int:
-    """Return today's local date as a yyyymmdd integer (e.g. 20260317)."""
-    return int(datetime.now().strftime("%Y%m%d"))
-
-
-def normalize_to_yyyymmdd(value: Optional[int | str]) -> Optional[int]:
-    """Convert supported date values to a yyyymmdd integer."""
+def normalize_to_datetime_str(value: Optional[int | str]) -> Optional[str]:
+    """Convert supported date values to an ISO-8601 datetime string."""
     if value in (None, ""):
         return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        # If already in YYYY-MM-DD HH:MM:SS format
+        if len(text) == 19 and text[4] == "-" and text[10] == " " and text[13] == ":":
+            return text
+        # If bare yyyymmdd string
+        if len(text) == 8 and text.isdigit():
+            return f"{text[:4]}-{text[4:6]}-{text[6:8]} 00:00:00"
+        
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return text
+    
     if isinstance(value, int):
-        return value
-
-    text = str(value).strip()
-    if not text:
-        return None
-    if len(text) == 8 and text.isdigit():
-        return int(text)
-
-    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    return int(dt.strftime("%Y%m%d"))
+        s = str(value)
+        if len(s) == 8:
+            return f"{s[:4]}-{s[4:6]}-{s[6:8]} 00:00:00"
+    
+    return str(value)
 
 
 def yyyymmdd_to_iso_date(value: Optional[int | str]) -> Optional[str]:
-    """Convert yyyymmdd storage values into an ISO date string."""
-    if value in (None, ""):
-        return None
-
-    text = str(value).strip()
-    if len(text) == 8 and text.isdigit():
-        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
-
-    return text
+    """Deprecated: Convert legacy values into an ISO date string."""
+    return normalize_to_datetime_str(value)
 
 
 def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
@@ -82,7 +78,7 @@ class MainRecord:
     nlmcn_source: Optional[str] = None
     classification: Optional[str] = None
     source: Optional[str] = None
-    date_added: Optional[int | str] = None  # stored as yyyymmdd, returned compatibly for callers
+    date_added: Optional[str] = None  # stored as ISO-8601 string
 
 
 @dataclass(frozen=True)
@@ -90,7 +86,7 @@ class AttemptedRecord:
     isbn: str
     last_target: Optional[str] = None
     attempt_type: str = "both"
-    last_attempted: Optional[int] = None  # yyyymmdd integer (e.g. 20260317)
+    last_attempted: Optional[str] = None  # ISO-8601 string
     fail_count: int = 1
     last_error: Optional[str] = None
 
@@ -247,7 +243,7 @@ class DatabaseManager:
             self._migrate_main_schema_if_needed(conn)
             self._migrate_attempted_schema_if_needed(conn)
             self._migrate_linked_isbns_schema_if_needed(conn)
-            self._migrate_dates_to_yyyymmdd(conn)
+            self._migrate_dates_to_datetime(conn)
 
     def _migrate_main_schema_if_needed(self, conn: sqlite3.Connection) -> None:
         """Ensure main table supports multiple source rows per ISBN + type."""
@@ -307,7 +303,7 @@ class DatabaseManager:
             """
         ).fetchall()
         for row in legacy_rows:
-            date_added = normalize_to_yyyymmdd(row["date_added"]) or today_yyyymmdd()
+            date_added = normalize_to_datetime_str(row["date_added"]) or now_datetime_str()
             if row["lccn"]:
                 conn.execute(
                     """
@@ -367,7 +363,7 @@ class DatabaseManager:
                 isbn              TEXT NOT NULL,
                 last_target       TEXT NOT NULL,
                 attempt_type      TEXT NOT NULL DEFAULT 'both',
-                last_attempted    TEXT NOT NULL,
+                last_attempted    DATETIME NOT NULL,
                 fail_count        INTEGER NOT NULL DEFAULT 1,
                 last_error        TEXT,
                 PRIMARY KEY (isbn, last_target, attempt_type)
@@ -463,64 +459,36 @@ class DatabaseManager:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_lowest ON linked_isbns(lowest_isbn)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_other ON linked_isbns(other_isbn)")
 
-    def _migrate_dates_to_yyyymmdd(self, conn: sqlite3.Connection) -> None:
+    def _migrate_dates_to_datetime(self, conn: sqlite3.Connection) -> None:
         """
-        One-off migration: convert any legacy ISO text dates stored in
-        main.date_added and attempted.last_attempted to yyyymmdd integers.
-
-        A row is considered a legacy ISO string when the stored value is TEXT
-        (typeof) and contains a '-' character (e.g. '2025-06-01T12:00:00+00:00').
-        Rows that already hold an 8-digit integer are left untouched.
-
-        Safe to call repeatedly — it skips rows that are already integers.
+        One-off migration: convert any legacy yyyymmdd integers stored in
+        main.date_added and attempted.last_attempted to ISO datetime strings.
         """
         import logging
         log = logging.getLogger(__name__)
 
-        def _iso_to_yyyymmdd(value: str) -> Optional[int]:
-            """Parse a date string and return yyyymmdd int, or None on failure.
-            Handles both ISO strings ('2026-03-08T...') and bare yyyymmdd strings ('20260308').
-            """
-            try:
-                s = str(value).strip()
-                # Already a bare yyyymmdd string — just cast directly
-                if len(s) == 8 and s.isdigit():
-                    return int(s)
-                # Accept both date-only '2025-06-01' and full datetime strings
-                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-                return int(dt.strftime("%Y%m%d"))
-            except Exception:
-                return None
+        def _to_datetime_str(value) -> Optional[str]:
+            return normalize_to_datetime_str(value)
 
         # -- main.date_added --
         rows_main = conn.execute(
-            "SELECT rowid, date_added FROM main WHERE typeof(date_added) = 'text'"
+            "SELECT rowid, date_added FROM main WHERE typeof(date_added) IN ('integer', 'text')"
         ).fetchall()
         for row in rows_main:
-            new_val = _iso_to_yyyymmdd(row["date_added"])
-            if new_val is not None:
+            old_val = row["date_added"]
+            new_val = _to_datetime_str(old_val)
+            if new_val and new_val != str(old_val):
                 conn.execute("UPDATE main SET date_added = ? WHERE rowid = ?", (new_val, row["rowid"]))
-            else:
-                log.warning("Could not convert main.date_added=%r for rowid=%s", row["date_added"], row["rowid"])
 
         # -- attempted.last_attempted --
         rows_att = conn.execute(
-            "SELECT isbn, last_target, attempt_type, last_attempted "
-            "FROM attempted WHERE typeof(last_attempted) = 'text'"
+            "SELECT rowid, last_attempted FROM attempted WHERE typeof(last_attempted) IN ('integer', 'text')"
         ).fetchall()
         for row in rows_att:
-            new_val = _iso_to_yyyymmdd(row["last_attempted"])
-            if new_val is not None:
-                conn.execute(
-                    "UPDATE attempted SET last_attempted = ? "
-                    "WHERE isbn = ? AND last_target = ? AND attempt_type = ?",
-                    (new_val, row["isbn"], row["last_target"], row["attempt_type"]),
-                )
-            else:
-                log.warning(
-                    "Could not convert attempted.last_attempted=%r for isbn=%s",
-                    row["last_attempted"], row["isbn"],
-                )
+            old_val = row["last_attempted"]
+            new_val = _to_datetime_str(old_val)
+            if new_val and new_val != str(old_val):
+                conn.execute("UPDATE attempted SET last_attempted = ? WHERE rowid = ?", (new_val, row["rowid"]))
 
         if rows_main or rows_att:
             log.info(
@@ -582,9 +550,9 @@ class DatabaseManager:
             source = row["source"]
             if source and source not in sources:
                 sources.append(source)
-            row_date = normalize_to_yyyymmdd(row["date_added"])
-            current_latest = normalize_to_yyyymmdd(latest_date)
-            latest_date = max(current_latest or 0, row_date or 0) or latest_date
+            row_date = normalize_to_datetime_str(row["date_added"])
+            current_latest = normalize_to_datetime_str(latest_date)
+            latest_date = max(current_latest or "", row_date or "") or latest_date
             if call_type == "lccn":
                 if lccn is None:
                     lccn = call_number
@@ -603,13 +571,12 @@ class DatabaseManager:
             nlmcn_source=nlmcn_source,
             classification=classification,
             source=DatabaseManager._combine_sources(*sources),
-            date_added=yyyymmdd_to_iso_date(latest_date),
+            date_added=latest_date,
         )
 
-    @staticmethod
-    def _explode_main_record(record: MainRecord) -> list[tuple[str, str, str, Optional[str], Optional[str], int]]:
-        date_added = normalize_to_yyyymmdd(record.date_added) or today_yyyymmdd()
-        rows: list[tuple[str, str, str, Optional[str], Optional[str], int]] = []
+    def _explode_main_record(self, record: MainRecord) -> list[tuple[str, str, str, Optional[str], Optional[str], str]]:
+        date_added = normalize_to_datetime_str(record.date_added) or now_datetime_str()
+        rows: list[tuple[str, str, str, Optional[str], Optional[str], str]] = []
         if record.lccn:
             rows.append(
                 (
@@ -716,7 +683,7 @@ class DatabaseManager:
         if not records:
             return
 
-        rows: list[tuple[str, str, str, Optional[str], Optional[str], int]] = []
+        rows: list[tuple[str, str, str, Optional[str], Optional[str], str]] = []
         successful_pairs: list[tuple[str, str]] = []
         for r in records:
             exploded = self._explode_main_record(r)
@@ -901,8 +868,8 @@ class DatabaseManager:
     def should_skip_retry(self, isbn: str, last_target: str, attempt_type: str, retry_days: int) -> bool:
         """Return True if this ISBN+target+type key was attempted within retry window.
 
-        last_attempted is stored as a yyyymmdd integer; compare as a date by parsing
-        it back to a date object.
+        last_attempted is stored as a DATETIME string; compare as a date by parsing
+        it back to a datetime object.
         """
         att = self.get_attempted_for(isbn, last_target, attempt_type)
         if att is None or not att.last_attempted:
@@ -910,18 +877,22 @@ class DatabaseManager:
 
         last_val = att.last_attempted
         try:
-            # Support both legacy ISO strings (migration period) and new yyyymmdd integers
-            if isinstance(last_val, int) or (isinstance(last_val, str) and last_val.isdigit() and len(last_val) == 8):
-                last_str = str(last_val)
-                last_date = datetime(int(last_str[:4]), int(last_str[4:6]), int(last_str[6:8]), tzinfo=timezone.utc)
+            if isinstance(last_val, str):
+                if " " in last_val:
+                    last_date = datetime.strptime(last_val, "%Y-%m-%d %H:%M:%S")
+                else:
+                    last_date = datetime.fromisoformat(last_val.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+            elif isinstance(last_val, int) and len(str(last_val)) == 8:
+                s = str(last_val)
+                last_date = datetime(int(s[:4]), int(s[4:6]), int(s[6:8]))
+            elif isinstance(last_val, str) and last_val.isdigit() and len(last_val) == 8:
+                last_date = datetime(int(last_val[:4]), int(last_val[4:6]), int(last_val[6:8]))
             else:
-                last_date = datetime.fromisoformat(str(last_val))
-                if last_date.tzinfo is None:
-                    last_date = last_date.replace(tzinfo=timezone.utc)
+                return False
         except Exception:
             return False
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         return (now - last_date) < timedelta(days=retry_days)
 
     def upsert_attempted(
@@ -931,7 +902,7 @@ class DatabaseManager:
         last_target: Optional[str],
         attempt_type: str = "both",
         last_error: Optional[str] = None,
-        attempted_time: Optional[int] = None,
+        attempted_time: Optional[str] = None,
     ) -> None:
         with self.transaction() as conn:
             self._upsert_attempted_conn(
@@ -946,14 +917,14 @@ class DatabaseManager:
     def upsert_attempted_many(
         self,
         conn: sqlite3.Connection,
-        rows: Sequence[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        rows: Sequence[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> None:
         """
         Batch upsert attempted rows within an existing transaction connection.
 
         rows items are:
           (isbn, last_target, attempt_type, attempted_time, last_error)
-          where attempted_time is a yyyymmdd integer (e.g. 20260317)
+          where attempted_time is an ISO-8601 string (e.g. 2026-03-17 12:00:00)
         """
         if not rows:
             return
@@ -965,7 +936,7 @@ class DatabaseManager:
                     isbn,
                     last_target or "",
                     attempt_type or "both",
-                    attempted_time or today_yyyymmdd(),
+                    attempted_time or now_datetime_str(),
                     last_error,
                 )
             )
@@ -992,9 +963,9 @@ class DatabaseManager:
         last_target: Optional[str],
         attempt_type: str,
         last_error: Optional[str],
-        attempted_time: Optional[int],
+        attempted_time: Optional[str],
     ) -> None:
-        attempted_time = attempted_time or today_yyyymmdd()
+        attempted_time = attempted_time or now_datetime_str()
 
         conn.execute(
             """
@@ -1121,8 +1092,8 @@ class DatabaseManager:
                 """,
                 (lowest_isbn, row["call_number_type"], row["source"] or ""),
             ).fetchone()
-            existing_date = normalize_to_yyyymmdd(existing["date_added"]) if existing else 0
-            row_date = normalize_to_yyyymmdd(row["date_added"]) or 0
+            existing_date = normalize_to_datetime_str(existing["date_added"]) if existing else ""
+            row_date = normalize_to_datetime_str(row["date_added"]) or ""
             # Keep the call_number from the more recent row; prefer other_isbn on tie
             # so a freshly harvested result always wins over an older canonical row.
             merged_call_number = (
@@ -1139,7 +1110,7 @@ class DatabaseManager:
                 if existing and existing["classification"]
                 else row["classification"]
             )
-            merged_date = max(existing_date, row_date) or today_yyyymmdd()
+            merged_date = max(existing_date, row_date) or now_datetime_str()
             conn.execute(
                 """
                 INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)

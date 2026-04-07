@@ -58,8 +58,10 @@ def export_main_to_tsv(db_path: Union[str, Path], out_path: Union[str, Path]) ->
         rows = cursor.fetchall()
 
     def _fmt_date(val) -> str:
-        """Format yyyymmdd integer (e.g. 20260317) → '2026-03-17'. Pass through anything else."""
+        """Format datetime string or yyyymmdd integer (legacy) → 'YYYY-MM-DD'."""
         s = str(val).strip()
+        if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+            return s[:10]  # Take YYYY-MM-DD
         if len(s) == 8 and s.isdigit():
             return f"{s[:4]}-{s[4:6]}-{s[6:]}"
         return s

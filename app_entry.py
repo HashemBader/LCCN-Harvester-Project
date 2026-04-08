@@ -41,6 +41,8 @@ def _bootstrap_path() -> None:
 
 
 _bootstrap_path()
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
+ensure_pyz3950_importable()
 
 
 # ---------------------------------------------------------------------------

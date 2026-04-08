@@ -16,6 +16,9 @@ import sys
 import csv
 from pathlib import Path
 
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
+ensure_pyz3950_importable()
+
 from src.database import DatabaseManager
 from src.harvester.run_harvest import run_harvest, parse_isbn_file
 from src.utils import isbn_validator

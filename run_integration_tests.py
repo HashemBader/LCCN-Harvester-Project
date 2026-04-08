@@ -11,6 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
+ensure_pyz3950_importable()
+
 def test_imports():
     """Test that all required modules can be imported"""
     print("=" * 60)

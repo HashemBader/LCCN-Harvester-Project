@@ -18,6 +18,9 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from z3950.pyz3950_compat import ensure_pyz3950_importable
+ensure_pyz3950_importable()
+
 from PyQt6.QtWidgets import QApplication
 from gui.modern_window import ModernMainWindow
 

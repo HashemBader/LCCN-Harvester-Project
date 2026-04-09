@@ -1,23 +1,66 @@
 """
-Module: lccn_validator.py
+lccn_validator.py
+
+Validates Library of Congress Classification (LCC) call numbers against the
+MARC 050 field format.
+
+Background
+----------
+The LC Classification system assigns a call number to every item catalogued
+by the Library of Congress.  Call numbers are stored in MARC field 050 and
+follow a hierarchical structure:
+
+    <Class letters><Class digits>[.<Decimal>] [<Cutter>] [<Year>] ...
+
+Examples of valid LC call numbers:
+    QA76              — class letters + class digits only
+    QA76.73           — class with decimal subdivision
+    QA76.73.P38       — class + decimal + Cutter number
+    HF5726.B27 1980   — class + Cutter + publication year
+
+The validator here uses a character-by-character approach rather than a
+single large regex so that each rule is explicit and easy to adjust.
+
+Important note on terminology
+------------------------------
+The abbreviation "LCCN" in this project refers to LC **Classification** call
+numbers (MARC 050), NOT to LC **Control** Numbers (MARC 010, e.g. "2007039987").
+These are two completely different things that share a similar acronym.
+
 Part of the LCCN Harvester Project.
 """
 
 
 def is_valid_lccn(call_number: str) -> bool:
     """
-    Validate an LCCN call number.
+    Return ``True`` if ``call_number`` is a structurally valid LC Classification call number.
 
-    LCCN Format (per MARC 050):
-    - Class: 1-3 letters (A-Z, excluding I and O) followed by 1-3 digits
-    - Optional Cutter: . + letter + digits (e.g., .P38, .B27)
-    - Optional Additional Parts: Further cutters, decimal points with digits/letters, years, etc.
+    Validation rules (per MARC 050 / LC Classification schedule)
+    -------------------------------------------------------------
+    1. The **class letters** must be 1–3 uppercase letters from the LC
+       alphabet (A–Z excluding ``I`` and ``O``, which are not assigned in the
+       LC schedule).
+    2. Immediately after the letters, there must be 1–4 digits (the class
+       number, up to 9999 in the current schedule).
+    3. After the class digits, an optional **decimal subdivision** may follow,
+       beginning with ``.`` and containing alphanumeric segments.
+    4. Remaining space-separated tokens are validated as one of:
+       - A **Cutter number**: starts with ``.``, followed by a letter, then
+         alphanumeric characters (e.g., ``.P38``, ``.B27``).
+       - A **year**: exactly 4 digits.
+       - A **supplementary number**: 1–3 digits.
+       - Any alphanumeric/period token (permissive to handle edge cases in
+         real cataloguing data).
 
-    Examples:
-    - QA76 (class only)
-    - QA76.73 (class + decimal)
-    - QA76.73.P38 (class + decimal + cutter)
-    - HF5726.B27 1980 (class + cutter + year)
+    Parameters
+    ----------
+    call_number : str
+        Candidate call number string (may contain leading/trailing whitespace).
+
+    Returns
+    -------
+    bool
+        ``True`` if the call number passes all structural checks.
     """
     if not call_number:
         return False
@@ -27,47 +70,45 @@ def is_valid_lccn(call_number: str) -> bool:
     if not call_number:
         return False
 
-    # Split into space-separated components
+    # Split on whitespace; each token is validated separately below.
     parts = call_number.split()
 
     if len(parts) < 1:
         return False
 
-    # Part 1: Class (letters + numbers, possibly with decimal)
+    # The first token holds the class letters and class number (possibly with
+    # a decimal subdivision), e.g. "QA76", "QA76.73", "QA76.73.P38".
     class_part = parts[0]
 
     if not class_part:
         return False
 
-    # Extract initial letters and numbers (before any decimal)
+    # --- Step 1: Parse class letters ---
     letters = ""
-    numbers = ""
     i = 0
 
-    # Get leading letters
     while i < len(class_part) and class_part[i].isalpha():
         if class_part[i] not in "ABCDEFGHJKLMNPQRSTUVWXYZ":
-            return False  # Excludes I and O
+            # The LC schedule never assigns classes starting with I or O.
+            return False
         letters += class_part[i]
         i += 1
 
-    # Validate we have 1-3 letters
+    # LC classes are 1, 2, or 3 letters (e.g., Q, QA, QAB).
     if not (1 <= len(letters) <= 3):
         return False
 
-    # Get digits (and decimal parts)
+    # --- Step 2: Parse class digits ---
     remainder = class_part[i:]
 
-    # The remainder should be valid LCCN continuation:
-    # digits, then optionally: .digits, .letters+digits, etc.
+    # A class letter block must be followed by at least one digit.
     if not remainder:
         return False
 
-    # First character after letters must be a digit
     if not remainder[0].isdigit():
         return False
 
-    # Collect leading digits (up to 4, matching the LC classification schedule)
+    # Consume up to 4 digits (LC class numbers range from 1 to ~9999).
     j = 0
     digit_count = 0
     while j < len(remainder) and remainder[j].isdigit() and digit_count < 4:
@@ -77,53 +118,39 @@ def is_valid_lccn(call_number: str) -> bool:
     if digit_count == 0:
         return False
 
-    # After the required digits, we can have:
-    # - Nothing (valid)
-    # - Space-separated parts (handled below)
-    # - .digits, .letters+digits, etc. (part of class_part)
-
-    # Validate remainder after initial digits (decimal notation)
+    # --- Step 3: Validate optional decimal subdivision within the first token ---
+    # e.g., ".73" in "QA76.73" or ".73.P38" in "QA76.73.P38"
     rest = remainder[j:]
     if rest:
-        # Must follow decimal notation pattern: .X.X.X etc
-        # where X can be letters, digits, or combinations
         if not _is_valid_lccn_remainder(rest):
             return False
 
-    # Validate remaining space-separated parts
+    # --- Step 4: Validate subsequent space-separated tokens ---
     for part in parts[1:]:
         if not part:
             continue
 
-        # Can be:
-        # 1. Cutter: .X## (e.g., .P38, .B27)
-        # 2. Year: YYYY
-        # 3. Other variations
-
         if part.startswith("."):
-            # Cutter format: .X## or similar
+            # Cutter number format: .X## where X is a letter and ## are digits/letters.
+            # Minimum valid cutter: ".A1" (3 chars).
             if len(part) < 2:
                 return False
-            # After the dot, should start with a letter
             if not part[1].isalpha():
                 return False
-            # Rest should be alphanumeric
             for ch in part[2:]:
                 if not ch.isalnum():
                     return False
         elif part.isdigit():
-            # Could be year or class number
+            # A 4-digit token is almost certainly a publication year.
+            # 1–3 digit tokens can be supplementary numeric parts.
             if len(part) == 4:
-                # Likely a year
-                pass
+                pass  # Year — always valid here
             elif 1 <= len(part) <= 3:
-                # Could be a number component
-                pass
+                pass  # Short numeric component — valid
             else:
                 return False
         else:
-            # Other formats - be permissive but check structure
-            # Allow letters and digits mixed, with periods
+            # Permissive catch-all for mixed alphanumeric tokens (e.g., "vol.2").
             for ch in part:
                 if not (ch.isalnum() or ch == "."):
                     return False
@@ -133,27 +160,42 @@ def is_valid_lccn(call_number: str) -> bool:
 
 def _is_valid_lccn_remainder(remainder: str) -> bool:
     """
-    Validate the remainder after the initial class letters and digits.
+    Validate the portion of a MARC 050 class token that follows the initial digits.
 
-    This includes patterns like: .73.P38, .A1, etc.
+    This covers the decimal subdivision and inline Cutter, e.g. ``".73"``,
+    ``".73.P38"``, ``".A1"`` appended directly to the class number without a
+    space.
+
+    The rule is simple: the remainder must start with a period, and every
+    dot-separated segment must be entirely alphanumeric (empty segments from
+    double periods are tolerated to handle edge cases in real records).
+
+    Parameters
+    ----------
+    remainder : str
+        The substring after the mandatory leading digits in the first
+        space-token of the call number.
+
+    Returns
+    -------
+    bool
     """
     if not remainder:
         return True
 
-    # Must start with a period
+    # Remainder must begin with a decimal point.
     if not remainder.startswith("."):
         return False
 
-    # Split by periods to validate each segment
+    # Split on "." and validate each non-empty segment.
     segments = remainder.split(".")
 
-    # First segment is empty (from leading period)
+    # segments[0] is always "" because of the leading "."; skip it.
     for i, segment in enumerate(segments[1:], 1):
         if not segment:
-            # Double period or trailing period - could be valid in some cases
+            # Empty segment from a double period or trailing period — tolerated.
             continue
 
-        # Each segment should be alphanumeric
         for ch in segment:
             if not ch.isalnum():
                 return False

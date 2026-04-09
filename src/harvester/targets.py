@@ -1,6 +1,20 @@
 """
-Module: targets.py
-Harvest target implementations that conform to the HarvestTarget protocol.
+Concrete HarvestTarget implementations for the LCCN Harvester.
+
+Each class in this module wraps a specific lookup source (Z39.50 server or
+HTTP API) and exposes a uniform ``lookup(isbn) -> TargetResult`` interface so
+the orchestrator can treat all sources identically.
+
+Classes:
+    Z3950Target              -- Generic Z39.50 lookup using the Z3950Client.
+    LibraryOfCongressTarget  -- Library of Congress JSON API.
+    HarvardLibraryCloudTarget -- Harvard LibraryCloud metadata API.
+    OpenLibraryTarget        -- Internet Archive OpenLibrary API.
+    APITarget                -- Placeholder for unconfigured generic API targets.
+
+The module-level ``create_target_from_config`` factory constructs the
+appropriate target instance from a GUI-supplied configuration dict, so the
+orchestrator does not need to know which concrete class to instantiate.
 """
 
 from __future__ import annotations
@@ -21,7 +35,13 @@ Z3950Client = None
 
 
 class Z3950Target:
-    """Z39.50 target implementation."""
+    """Z39.50 lookup target.
+
+    Connects to a Z39.50 server, searches by ISBN, and extracts LC/NLM call
+    numbers from the returned MARC records.  The Z3950Client is imported
+    lazily to prevent app startup failures on systems where PyZ3950 is not
+    installed.
+    """
 
     def __init__(self, name: str, host: str, port: int, database: str):
         self.name = name
@@ -30,7 +50,13 @@ class Z3950Target:
         self.database = database
 
     def lookup(self, isbn: str) -> TargetResult:
-        """Lookup ISBN using Z39.50."""
+        """Look up *isbn* against this Z39.50 target and return call number data.
+
+        Returns:
+            A ``TargetResult`` with ``success=True`` and ``lccn``/``nlmcn``
+            fields populated if MARC 050/060 fields were found; otherwise
+            ``success=False`` with an error message.
+        """
         # Lazy import Z3950Client to avoid crash if PyZ3950 has issues
         global Z3950_AVAILABLE, Z3950Client
         if Z3950_AVAILABLE is None:
@@ -108,7 +134,11 @@ class Z3950Target:
 
 
 class LibraryOfCongressTarget:
-    """Library of Congress JSON API target wrapper."""
+    """Library of Congress catalog JSON API target.
+
+    Uses the ``LocApiClient`` to query ``loc.gov`` and returns LC/NLM call
+    numbers from the response.
+    """
 
     name = "Library of Congress"
 
@@ -153,7 +183,11 @@ class LibraryOfCongressTarget:
 
 
 class HarvardLibraryCloudTarget:
-    """Harvard LibraryCloud API target wrapper."""
+    """Harvard LibraryCloud metadata API target.
+
+    Uses the ``HarvardApiClient`` to query Harvard's bibliographic metadata
+    service and returns LC/NLM call numbers.
+    """
 
     name = "Harvard LibraryCloud"
 
@@ -198,7 +232,11 @@ class HarvardLibraryCloudTarget:
 
 
 class OpenLibraryTarget:
-    """OpenLibrary API target wrapper."""
+    """Internet Archive OpenLibrary bibliographic API target.
+
+    Uses ``OpenLibraryApiClient`` to retrieve call number data from
+    openlibrary.org.
+    """
 
     name = "OpenLibrary"
 
@@ -252,8 +290,7 @@ class APITarget:
         self.name = name
 
     def lookup(self, isbn: str) -> TargetResult:
-        """Placeholder API lookup."""
-        # TODO: Implement real API lookups
+        """Placeholder lookup — always returns failure until a concrete API is wired in."""
         return TargetResult(
             success=False,
             source=self.name,

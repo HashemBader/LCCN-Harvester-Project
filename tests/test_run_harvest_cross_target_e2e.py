@@ -100,6 +100,7 @@ def test_full_run_cross_target_sources_dates_stop_rule_and_process_outcome(tmp_p
         call_number_mode="both",
         stop_rule="continue_both",
         both_stop_policy="both",
+        selected_sources={"LoC-A", "NLM-B"},
     )
     outcome = orch._process_isbn_internal(
         isbn,

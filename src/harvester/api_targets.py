@@ -1,3 +1,19 @@
+"""
+HTTP API target adapters for the LCCN Harvester.
+
+This module provides:
+
+  ApiClientTarget          -- A generic ``HarvestTarget`` adapter that wraps any
+                              ``BaseApiClient`` implementation.
+  build_default_api_targets -- Factory that reads ``data/targets.json`` (or
+                               falls back to hardcoded defaults) and returns an
+                               ordered list of ``HarvestTarget`` instances ready
+                               for use by the orchestrator.
+
+The module reads ``data/targets.json`` to determine which API targets are
+enabled and in what order.  If the file is absent or unreadable, it defaults
+to LoC → Harvard → OpenLibrary.
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _as_bool(value: object, default: bool = True) -> bool:
+    """Coerce a config value to a Python bool, accepting common truthy string literals."""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -21,13 +38,23 @@ def _as_bool(value: object, default: bool = True) -> bool:
 
 @dataclass
 class ApiClientTarget(HarvestTarget):
-    """
-    Adapter: wraps a BaseApiClient and exposes HarvestTarget.lookup().
+    """Adapter that wraps a ``BaseApiClient`` and exposes the ``HarvestTarget.lookup()`` interface.
+
+    Attributes:
+        client: Any concrete ``BaseApiClient`` subclass (LoC, Harvard, OpenLibrary, …).
+        name:   Display name forwarded to ``TargetResult.source``.
     """
     client: BaseApiClient
     name: str
 
     def lookup(self, isbn: str) -> TargetResult:
+        """Query *isbn* via the wrapped client and translate the result into a ``TargetResult``.
+
+        Returns:
+            ``TargetResult(success=True, ...)`` when the client returns a
+            ``"success"`` status with at least one call number;
+            ``TargetResult(success=False, ...)`` otherwise.
+        """
         r: ApiResult = self.client.search(isbn)
 
         if r.status == "success" and (r.lccn or r.nlmcn):
@@ -38,7 +65,7 @@ class ApiClientTarget(HarvestTarget):
                 source=r.source,
             )
 
-        # not found / error
+        # A "success" status with no call numbers is treated as not-found.
         msg = r.error_message or r.status
         return TargetResult(
             success=False,
@@ -48,9 +75,22 @@ class ApiClientTarget(HarvestTarget):
 
 
 def build_default_api_targets() -> list[HarvestTarget]:
-    """
-    Best-effort: build targets that exist in the repo.
-    If none are available, fall back to PlaceholderTarget.
+    """Build an ordered list of API ``HarvestTarget`` instances from config.
+
+    Reads ``data/targets.json`` for the active target list.  Only rows with
+    ``"type": "api"`` and ``"selected": true`` (or truthy equivalent) are
+    included, sorted by their ``rank`` integer.  If the file is absent,
+    unreadable, or yields no targets, falls back to the hardcoded default
+    order: Library of Congress → Harvard → OpenLibrary.
+
+    Client constructors are called lazily via inner factory functions so an
+    import error for one client (e.g. a missing optional dependency) does not
+    prevent other targets from loading.
+
+    Returns:
+        An ordered list of ``ApiClientTarget`` instances ready for the
+        orchestrator.  Falls back to ``[PlaceholderTarget()]`` if no targets
+        can be instantiated at all.
     """
     def _make_loc() -> ApiClientTarget:
         from src.api.loc_api import LocApiClient
@@ -79,10 +119,12 @@ def build_default_api_targets() -> list[HarvestTarget]:
         try:
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))
             if isinstance(raw, list):
+                # Keep only rows with type=="api"; Z39.50 rows are handled by z3950_targets.py
                 api_rows = [
                     row for row in raw
                     if isinstance(row, dict) and str(row.get("type", "")).strip().lower() == "api"
                 ]
+                # Sort by rank integer; non-numeric ranks default to 999 (lowest priority)
                 api_rows.sort(
                     key=lambda row: int(str(row.get("rank", 999)).strip())
                     if str(row.get("rank", "")).strip().isdigit()

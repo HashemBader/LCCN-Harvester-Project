@@ -1,107 +1,64 @@
+"""
+Database access layer for the LCCN Harvester project.
+
+This module owns all read/write access to the SQLite database and is the
+single source of truth for three logical data stores:
+
+  main          -- Successful harvests: ISBN → call number (LCCN / NLM CN),
+                   one row per (isbn, call_number_type, source) triple.
+  attempted     -- Failed/pending lookups and retry counters, keyed by
+                   (isbn, last_target, attempt_type).
+  linked_isbns  -- Canonical ISBN grouping: maps every non-canonical ISBN to
+                   its "lowest" (canonical) sibling so duplicate editions can
+                   share a single result row.
+
+Key design decisions:
+  - Every public method opens its own short-lived connection via
+    ``connect()`` and commits/rolls back atomically.
+  - Batch operations accept an open ``sqlite3.Connection`` so the caller can
+    wrap multiple operations in a single transaction via ``transaction()``.
+  - Schema migrations are run automatically on ``init_db()`` so the app
+    tolerates databases created by older releases.
+  - All date values are stored as ``YYYYMMDD`` integers; conversion helpers
+    live in ``date_utils``.
+"""
+
 from __future__ import annotations
 
+import logging
+import re
 import sqlite3
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Iterable, Sequence
 
+logger = logging.getLogger(__name__)
 
-
-
-def utc_now_iso() -> str:
-    """Return current UTC time as ISO-8601 string (no microseconds).
-
-    Deprecated: kept for any callers that still need ISO strings.
-    New code should use today_yyyymmdd() instead.
-    """
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def today_yyyymmdd() -> int:
-    """Return today's local date as a yyyymmdd integer (e.g. 20260317)."""
-    return int(datetime.now().strftime("%Y%m%d"))
-
-
-def normalize_to_yyyymmdd(value: Optional[int | str]) -> Optional[int]:
-    """Convert supported date values to a yyyymmdd integer."""
-    if value in (None, ""):
-        return None
-    if isinstance(value, int):
-        return value
-
-    text = str(value).strip()
-    if not text:
-        return None
-    if len(text) == 8 and text.isdigit():
-        return int(text)
-
-    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    return int(dt.strftime("%Y%m%d"))
-
-
-def yyyymmdd_to_iso_date(value: Optional[int | str]) -> Optional[str]:
-    """Convert yyyymmdd storage values into an ISO date string."""
-    if value in (None, ""):
-        return None
-
-    text = str(value).strip()
-    if len(text) == 8 and text.isdigit():
-        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
-
-    return text
-
-
-def classification_from_lccn(lccn: Optional[str]) -> Optional[str]:
-    """
-    Best-effort: derive LoC classification letters (1-3 leading letters) from an LCCN.
-    Example: 'QA76.73.P98' -> 'QA'
-    """
-    if not lccn:
-        return None
-    letters: list[str] = []
-    for ch in lccn.strip():
-        if ch.isalpha():
-            letters.append(ch.upper())
-            if len(letters) == 3:
-                break
-        else:
-            break
-    return "".join(letters) if letters else None
-
-
-@dataclass(frozen=True)
-class MainRecord:
-    isbn: str
-    lccn: Optional[str] = None
-    lccn_source: Optional[str] = None
-    nlmcn: Optional[str] = None
-    nlmcn_source: Optional[str] = None
-    classification: Optional[str] = None
-    source: Optional[str] = None
-    date_added: Optional[int | str] = None  # stored as yyyymmdd, returned compatibly for callers
-
-
-@dataclass(frozen=True)
-class AttemptedRecord:
-    isbn: str
-    last_target: Optional[str] = None
-    attempt_type: str = "both"
-    last_attempted: Optional[int] = None  # yyyymmdd integer (e.g. 20260317)
-    fail_count: int = 1
-    last_error: Optional[str] = None
-
+from .date_utils import (
+    classification_from_lccn,
+    normalize_to_datetime_str,
+    normalize_to_yyyymmdd_int,
+    now_datetime_str,
+    today_yyyymmdd,
+    yyyymmdd_to_iso_date,
+)
+from .records import AttemptedRecord, MainRecord
 
 class DatabaseManager:
-    """
-    SQLite manager for:
-      - main: successful ISBN -> call number results
-      - attempted: failed lookups + retry tracking
+    """SQLite access layer for the LCCN Harvester's three core tables.
 
-    Sprint 5 requirement:
-      - provide transactions + batch upserts for performance and atomicity.
+    Manages all reads and writes to the ``main``, ``attempted``, and
+    ``linked_isbns`` tables.  Every public method that does not accept an
+    explicit ``conn`` argument opens its own short-lived connection via
+    ``connect()``, commits on success, and rolls back + closes on any error.
+    Methods that accept a ``conn`` argument are intended to be called from
+    within a ``transaction()`` block so multiple operations can be grouped
+    into a single atomic write.
+
+    Attributes:
+        db_path: Resolved ``Path`` to the SQLite database file.
     """
 
     def __init__(self, db_path: Path | str = "data/lccn_harvester.sqlite3"):
@@ -154,15 +111,21 @@ class DatabaseManager:
 
     @contextmanager
     def connect(self):
-        """
-        Open a connection, yield it, commit on success, rollback on error,
-        and ALWAYS close it.
+        """Open a connection, yield it, then always commit-or-rollback and close.
 
-        ``sqlite3.Connection`` used as a plain ``with`` statement only commits
-        or rolls back – it never closes the connection.  That leaks open handles
-        which keep the WAL file active and can corrupt the database if the
-        process is killed.  This wrapper guarantees the connection is closed
-        after every ``with self.connect() as conn:`` block.
+        Using ``sqlite3.Connection`` as a plain ``with`` statement only commits
+        or rolls back - it never closes the handle.  That leaves the WAL file
+        active and can corrupt the database if the process is killed.  This
+        context manager guarantees the connection is closed after every
+        ``with self.connect() as conn:`` block regardless of whether an
+        exception is raised.
+
+        Yields:
+            An open ``sqlite3.Connection`` configured with ``Row`` factory and
+            safety/performance PRAGMAs (WAL, FULL sync, busy timeout).
+
+        Raises:
+            Any exception raised inside the block (after rolling back).
         """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -200,29 +163,35 @@ class DatabaseManager:
 
     def _reset_db_files(self) -> None:
         """Delete the DB and any WAL/SHM side-files so it can be recreated clean."""
-        import logging
         for suffix in ("", "-shm", "-wal"):
             path = self.db_path.parent / (self.db_path.name + suffix)
             try:
                 if path.exists():
                     path.unlink()
-                    logging.getLogger(__name__).warning("Deleted corrupt DB file: %s", path)
+                    logger.warning("Deleted corrupt DB file: %s", path)
             except Exception as exc:
-                logging.getLogger(__name__).error("Could not delete %s: %s", path, exc)
+                logger.error("Could not delete %s: %s", path, exc)
 
     def init_db(self, schema_path: Optional[Path] = None) -> None:
-        """
-        Initialize database using schema.sql.
-        If schema_path is None, it loads schema.sql from the same folder as this file.
-        If the database file is corrupt, it is automatically deleted and recreated.
+        """Initialise the database from ``schema.sql`` and run any pending migrations.
+
+        Loads ``schema.sql`` (auto-resolved if not supplied), applies the DDL,
+        then runs the three Python-level migration helpers to handle databases
+        created by older releases.  If the existing database file fails the
+        ``PRAGMA quick_check``, it is automatically deleted and recreated from
+        scratch before the schema is applied.
+
+        Args:
+            schema_path: Optional explicit path to the SQL schema file.
+                         Defaults to ``schema.sql`` in the same directory as
+                         this module (with PyInstaller-aware fallback paths).
         """
         if schema_path is None:
             schema_path = self._default_schema_path()
 
         # Auto-repair: if the existing file is malformed, wipe and start fresh
         if not self._is_db_healthy():
-            import logging
-            logging.getLogger(__name__).error(
+            logger.error(
                 "Database at %s is malformed – resetting to a clean state.", self.db_path
             )
             self._reset_db_files()
@@ -249,13 +218,36 @@ class DatabaseManager:
             self._migrate_dates_to_yyyymmdd(conn)
 
     def _migrate_main_schema_if_needed(self, conn: sqlite3.Connection) -> None:
-        """Ensure main table uses the MVP per-ISBN+type schema."""
+        """Migrate ``main`` to the multi-row-per-ISBN schema if the table is outdated.
+
+        Older releases stored a single row per ISBN with separate ``lccn`` and
+        ``nlmcn`` columns.  The current schema stores one row per
+        ``(isbn, call_number_type, source)`` triple so multiple sources can be
+        recorded for the same ISBN.  This method renames the old table to
+        ``main_legacy``, creates the new schema, migrates existing rows, then
+        drops the legacy table.
+
+        Args:
+            conn: An open database connection from ``connect()`` or ``transaction()``.
+        """
         cols = conn.execute("PRAGMA table_info(main)").fetchall()
         if not cols:
             return
 
         col_names = {row["name"] for row in cols}
-        if "call_number_type" in col_names and "call_number" in col_names:
+        pk_cols = [
+            row["name"]
+            for row in sorted(cols, key=lambda row: int(row["pk"]))
+            if int(row["pk"]) > 0
+        ]
+        desired_pk = ["isbn", "call_number_type", "source"]
+
+        if (
+            "call_number_type" in col_names
+            and "call_number" in col_names
+            and "source" in col_names
+            and pk_cols == desired_pk
+        ):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_main_source ON main(source)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_main_date_added ON main(date_added)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_main_type ON main(call_number_type)")
@@ -269,9 +261,9 @@ class DatabaseManager:
                 call_number      TEXT NOT NULL,
                 call_number_type TEXT NOT NULL,
                 classification   TEXT,
-                source           TEXT,
+                source           TEXT NOT NULL DEFAULT '',
                 date_added       INTEGER NOT NULL,
-                PRIMARY KEY (isbn, call_number_type)
+                PRIMARY KEY (isbn, call_number_type, source)
             )
             """
         )
@@ -294,7 +286,7 @@ class DatabaseManager:
             """
         ).fetchall()
         for row in legacy_rows:
-            date_added = normalize_to_yyyymmdd(row["date_added"]) or today_yyyymmdd()
+            date_added = normalize_to_yyyymmdd_int(row["date_added"])
             if row["lccn"]:
                 conn.execute(
                     """
@@ -306,7 +298,7 @@ class DatabaseManager:
                         row["isbn"],
                         row["lccn"],
                         row["classification"] or classification_from_lccn(row["lccn"]),
-                        row["lccn_source"] if "lccn_source" in row.keys() else row["source"],
+                        (row["lccn_source"] if "lccn_source" in row.keys() else row["source"]) or "",
                         date_added,
                     ),
                 )
@@ -321,7 +313,7 @@ class DatabaseManager:
                         row["isbn"],
                         row["nlmcn"],
                         None,
-                        row["nlmcn_source"] if "nlmcn_source" in row.keys() else row["source"],
+                        (row["nlmcn_source"] if "nlmcn_source" in row.keys() else row["source"]) or "",
                         date_added,
                     ),
                 )
@@ -332,9 +324,14 @@ class DatabaseManager:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_main_type ON main(call_number_type)")
 
     def _migrate_attempted_schema_if_needed(self, conn: sqlite3.Connection) -> None:
-        """
-        Ensure attempted table uses target/type-specific primary key:
-          PRIMARY KEY (isbn, last_target, attempt_type)
+        """Migrate ``attempted`` to the composite primary key schema if outdated.
+
+        Older releases keyed ``attempted`` on ``isbn`` alone.  The current
+        schema uses ``PRIMARY KEY (isbn, last_target, attempt_type)`` so each
+        target/type combination can be tracked and retried independently.
+
+        Args:
+            conn: An open database connection from ``connect()`` or ``transaction()``.
         """
         cols = conn.execute("PRAGMA table_info(attempted)").fetchall()
         if not cols:
@@ -354,33 +351,51 @@ class DatabaseManager:
                 isbn              TEXT NOT NULL,
                 last_target       TEXT NOT NULL,
                 attempt_type      TEXT NOT NULL DEFAULT 'both',
-                last_attempted    TEXT NOT NULL,
+                last_attempted    INTEGER NOT NULL,
                 fail_count        INTEGER NOT NULL DEFAULT 1,
                 last_error        TEXT,
                 PRIMARY KEY (isbn, last_target, attempt_type)
             )
             """
         )
-        conn.execute(
+
+        legacy_rows = conn.execute(
             """
-            INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
-            SELECT
-                isbn,
-                COALESCE(last_target, ''),
-                'both',
-                last_attempted,
-                fail_count,
-                last_error
+            SELECT isbn, last_target, last_attempted, fail_count, last_error
             FROM attempted_legacy
             """
-        )
+        ).fetchall()
+        for row in legacy_rows:
+            conn.execute(
+                """
+                INSERT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error)
+                VALUES (?, ?, 'both', ?, ?, ?)
+                """,
+                (
+                    row["isbn"],
+                    row["last_target"] or "",
+                    normalize_to_yyyymmdd_int(row["last_attempted"]),
+                    row["fail_count"] or 1,
+                    row["last_error"],
+                ),
+            )
         conn.execute("DROP TABLE attempted_legacy")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_last_attempted ON attempted(last_attempted)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_last_target ON attempted(last_target)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attempted_isbn ON attempted(isbn)")
 
     def _migrate_linked_isbns_schema_if_needed(self, conn: sqlite3.Connection) -> None:
-        """Ensure linked_isbns uses lowest/other columns and preserves legacy mappings."""
+        """Migrate ``linked_isbns`` to the current schema if the table is outdated.
+
+        The current schema uses ``lowest_isbn`` / ``other_isbn`` column names,
+        a composite primary key ``(lowest_isbn, other_isbn)``, and a
+        ``UNIQUE`` constraint on ``other_isbn`` alone (so each non-canonical
+        ISBN maps to exactly one canonical).  Older releases used different
+        column names or lacked the unique constraint.
+
+        Args:
+            conn: An open database connection from ``connect()`` or ``transaction()``.
+        """
         cols = conn.execute("PRAGMA table_info(linked_isbns)").fetchall()
         if not cols:
             return
@@ -389,6 +404,8 @@ class DatabaseManager:
         pk_cols = [row["name"] for row in sorted(cols, key=lambda row: int(row["pk"])) if int(row["pk"]) > 0]
         desired_pk = ["lowest_isbn", "other_isbn"]
         has_other_unique = False
+        # Inspect every index on the table to find whether a UNIQUE index on
+        # exactly the single column "other_isbn" already exists.
         for idx in conn.execute("PRAGMA index_list(linked_isbns)").fetchall():
             if int(idx["unique"]) != 1:
                 continue
@@ -451,87 +468,54 @@ class DatabaseManager:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_other ON linked_isbns(other_isbn)")
 
     def _migrate_dates_to_yyyymmdd(self, conn: sqlite3.Connection) -> None:
-        """
-        One-off migration: convert any legacy ISO text dates stored in
-        main.date_added and attempted.last_attempted to yyyymmdd integers.
-
-        A row is considered a legacy ISO string when the stored value is TEXT
-        (typeof) and contains a '-' character (e.g. '2025-06-01T12:00:00+00:00').
-        Rows that already hold an 8-digit integer are left untouched.
-
-        Safe to call repeatedly — it skips rows that are already integers.
-        """
-        import logging
-        log = logging.getLogger(__name__)
-
-        def _iso_to_yyyymmdd(value: str) -> Optional[int]:
-            """Parse a date string and return yyyymmdd int, or None on failure.
-            Handles both ISO strings ('2026-03-08T...') and bare yyyymmdd strings ('20260308').
-            """
-            try:
-                s = str(value).strip()
-                # Already a bare yyyymmdd string — just cast directly
-                if len(s) == 8 and s.isdigit():
-                    return int(s)
-                # Accept both date-only '2025-06-01' and full datetime strings
-                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-                return int(dt.strftime("%Y%m%d"))
-            except Exception:
-                return None
-
+        """Normalize stored date fields to ``YYYYMMDD`` integers."""
         # -- main.date_added --
         rows_main = conn.execute(
-            "SELECT isbn, date_added FROM main WHERE typeof(date_added) = 'text'"
+            "SELECT rowid, date_added FROM main WHERE typeof(date_added) IN ('integer', 'text')"
         ).fetchall()
         for row in rows_main:
-            new_val = _iso_to_yyyymmdd(row["date_added"])
-            if new_val is not None:
-                conn.execute("UPDATE main SET date_added = ? WHERE isbn = ?", (new_val, row["isbn"]))
-            else:
-                log.warning("Could not convert main.date_added=%r for isbn=%s", row["date_added"], row["isbn"])
+            old_val = row["date_added"]
+            new_val = normalize_to_yyyymmdd_int(old_val)
+            if new_val != old_val:
+                conn.execute("UPDATE main SET date_added = ? WHERE rowid = ?", (new_val, row["rowid"]))
 
         # -- attempted.last_attempted --
         rows_att = conn.execute(
-            "SELECT isbn, last_target, attempt_type, last_attempted "
-            "FROM attempted WHERE typeof(last_attempted) = 'text'"
+            "SELECT rowid, last_attempted FROM attempted WHERE typeof(last_attempted) IN ('integer', 'text')"
         ).fetchall()
         for row in rows_att:
-            new_val = _iso_to_yyyymmdd(row["last_attempted"])
-            if new_val is not None:
-                conn.execute(
-                    "UPDATE attempted SET last_attempted = ? "
-                    "WHERE isbn = ? AND last_target = ? AND attempt_type = ?",
-                    (new_val, row["isbn"], row["last_target"], row["attempt_type"]),
-                )
-            else:
-                log.warning(
-                    "Could not convert attempted.last_attempted=%r for isbn=%s",
-                    row["last_attempted"], row["isbn"],
-                )
+            old_val = row["last_attempted"]
+            new_val = normalize_to_yyyymmdd_int(old_val)
+            if new_val != old_val:
+                conn.execute("UPDATE attempted SET last_attempted = ? WHERE rowid = ?", (new_val, row["rowid"]))
 
         if rows_main or rows_att:
-            log.info(
+            logger.info(
                 "_migrate_dates_to_yyyymmdd: converted %d main rows and %d attempted rows",
                 len(rows_main), len(rows_att),
             )
 
     @contextmanager
     def transaction(self):
-        """
-        Open a transaction connection.
-        - Commits if the block succeeds
-        - Rolls back if an exception is raised
-        - Always closes the connection (delegates to connect())
+        """Open a transactional connection for use with batch ``*_many`` methods.
+
+        A thin alias over ``connect()`` that exists so call sites can express
+        intent: ``transaction()`` signals a multi-operation batch, while
+        ``connect()`` signals a single-operation read.  Commit/rollback/close
+        semantics are identical to ``connect()``.
+
+        Yields:
+            An open ``sqlite3.Connection`` (same as ``connect()``).
         """
         with self.connect() as conn:
             yield conn
 
     def close(self) -> None:
-        """
-        Compatibility no-op.
+        """No-op kept for API compatibility with older call sites.
 
-        This manager uses short-lived connections for single ops,
-        and explicit transaction() for batch operations.
+        ``DatabaseManager`` uses short-lived per-operation connections via
+        ``connect()`` and explicit batch transactions via ``transaction()``;
+        there is no persistent connection to close.
         """
         return
 
@@ -542,6 +526,7 @@ class DatabaseManager:
     # -------------------------
     @staticmethod
     def _record_success_types(record: MainRecord) -> tuple[str, ...]:
+        """Return which call-number types are populated in *record* (e.g. ``('lccn',)``)."""
         types: list[str] = []
         if record.lccn:
             types.append("lccn")
@@ -551,6 +536,22 @@ class DatabaseManager:
 
     @staticmethod
     def _aggregate_main_rows(rows: Sequence[sqlite3.Row]) -> Optional[MainRecord]:
+        """Collapse multiple per-type DB rows for one ISBN into a single ``MainRecord``.
+
+        The ``main`` table stores one row per ``(isbn, call_number_type, source)``.
+        This method merges all rows for the same ISBN into the combined
+        ``MainRecord`` shape expected by callers (lccn, nlmcn, source, date_added).
+
+        The first ``lccn`` row and first ``nlmcn`` row encountered win; the
+        latest ``date_added`` across all rows is used as the record's date.
+
+        Args:
+            rows: Raw ``sqlite3.Row`` objects from the ``main`` table for a
+                  single ISBN, ordered by ``date_added DESC, call_number_type, source``.
+
+        Returns:
+            A combined ``MainRecord``, or ``None`` if *rows* is empty.
+        """
         if not rows:
             return None
 
@@ -569,14 +570,18 @@ class DatabaseManager:
             source = row["source"]
             if source and source not in sources:
                 sources.append(source)
-            latest_date = row["date_added"]
+            row_date = normalize_to_datetime_str(row["date_added"])
+            current_latest = normalize_to_datetime_str(latest_date)
+            latest_date = max(current_latest or "", row_date or "") or latest_date
             if call_type == "lccn":
-                lccn = call_number
-                lccn_source = source
-                classification = row["classification"] or classification_from_lccn(call_number)
+                if lccn is None:
+                    lccn = call_number
+                    lccn_source = source
+                    classification = row["classification"] or classification_from_lccn(call_number)
             elif call_type == "nlmcn":
-                nlmcn = call_number
-                nlmcn_source = source
+                if nlmcn is None:
+                    nlmcn = call_number
+                    nlmcn_source = source
 
         return MainRecord(
             isbn=isbn,
@@ -589,9 +594,19 @@ class DatabaseManager:
             date_added=yyyymmdd_to_iso_date(latest_date),
         )
 
-    @staticmethod
-    def _explode_main_record(record: MainRecord) -> list[tuple[str, str, str, Optional[str], Optional[str], int]]:
-        date_added = normalize_to_yyyymmdd(record.date_added) or today_yyyymmdd()
+    def _explode_main_record(self, record: MainRecord) -> list[tuple[str, str, str, Optional[str], Optional[str], int]]:
+        """Expand a combined ``MainRecord`` into the row-per-type tuples stored in ``main``.
+
+        A single ``MainRecord`` can contain both an LCCN and an NLMCN.  The
+        ``main`` table stores these as separate rows, so this method produces
+        up to two tuples: one for ``call_number_type='lccn'`` and one for
+        ``call_number_type='nlmcn'``.
+
+        Returns:
+            A list of ``(isbn, call_number, call_number_type, classification,
+            source, date_added_int)`` tuples ready for ``executemany``.
+        """
+        date_added = normalize_to_yyyymmdd_int(record.date_added)
         rows: list[tuple[str, str, str, Optional[str], Optional[str], int]] = []
         if record.lccn:
             rows.append(
@@ -600,7 +615,7 @@ class DatabaseManager:
                     record.lccn,
                     "lccn",
                     record.classification or classification_from_lccn(record.lccn),
-                    record.lccn_source or record.source,
+                    record.lccn_source or record.source or "",
                     date_added,
                 )
             )
@@ -611,25 +626,67 @@ class DatabaseManager:
                     record.nlmcn,
                     "nlmcn",
                     None,
-                    record.nlmcn_source or record.source,
+                    record.nlmcn_source or record.source or "",
                     date_added,
                 )
             )
         return rows
 
-    def get_main(self, isbn: str) -> Optional[MainRecord]:
+    def get_main(self, isbn: str, *, allowed_sources: Optional[Iterable[str]] = None) -> Optional[MainRecord]:
+        """Fetch the combined MainRecord for *isbn*, optionally filtered by source list.
+
+        Args:
+            isbn: The ISBN to look up.
+            allowed_sources: When provided, only rows whose ``source`` column
+                matches one of these values are included.  An explicit empty
+                iterable (not ``None``) means "no allowed sources" and always
+                returns ``None``.
+
+        Returns:
+            A ``MainRecord`` aggregated from all matching rows, or ``None`` if
+            no rows exist (or none survive the source filter).
+        """
+        allowed = None if allowed_sources is None else [str(source).strip() for source in allowed_sources if str(source).strip()]
+        if allowed_sources is not None and not allowed:
+            return None
+
         with self.connect() as conn:
-            rows = conn.execute(
+            if allowed is None:
+                rows = conn.execute(
+                    """
+                    SELECT isbn, call_number, call_number_type, classification, source, date_added
+                    FROM main
+                    WHERE isbn = ?
+                    ORDER BY date_added DESC, call_number_type, source
+                    """,
+                    (isbn,),
+                ).fetchall()
+            else:
+                placeholders = ",".join("?" for _ in allowed)
+                rows = conn.execute(
+                    f"""
+                    SELECT isbn, call_number, call_number_type, classification, source, date_added
+                    FROM main
+                    WHERE isbn = ? AND source IN ({placeholders})
+                    ORDER BY date_added DESC, call_number_type, source
+                    """,
+                    (isbn, *allowed),
+                ).fetchall()
+
+        return self._aggregate_main_rows(rows)
+
+    def get_main_rows(self, isbn: str) -> list[sqlite3.Row]:
+        """Return raw ``main`` table rows for *isbn* (one per call_number_type/source pair)."""
+        with self.connect() as conn:
+            return conn.execute(
                 """
                 SELECT isbn, call_number, call_number_type, classification, source, date_added
                 FROM main
                 WHERE isbn = ?
-                ORDER BY call_number_type
+                ORDER BY call_number_type, source, date_added DESC
                 """,
                 (isbn,),
             ).fetchall()
-
-        return self._aggregate_main_rows(rows)
 
     def find_isbns_by_call_number(
         self,
@@ -657,6 +714,14 @@ class DatabaseManager:
         return [str(row["isbn"]) for row in rows]
 
     def upsert_main(self, record: MainRecord, *, clear_attempted_on_success: bool = True) -> None:
+        """Insert or update a single MainRecord in its own transaction.
+
+        Args:
+            record: The successful harvest result to persist.
+            clear_attempted_on_success: When ``True`` (default), any matching
+                rows in ``attempted`` are removed so the ISBN is no longer
+                treated as a failed lookup.
+        """
         with self.transaction() as conn:
             self._upsert_main_conn(conn, record, clear_attempted_on_success=clear_attempted_on_success)
 
@@ -667,11 +732,24 @@ class DatabaseManager:
         *,
         clear_attempted_on_success: bool = True,
     ) -> None:
-        """Batch upsert main records within an existing transaction connection."""
+        """Batch upsert combined ``MainRecord`` objects within an existing transaction.
+
+        Each ``MainRecord`` is first exploded into its per-type rows via
+        ``_explode_main_record``, then written with ``INSERT … ON CONFLICT DO
+        UPDATE`` so existing rows are updated rather than duplicated.  When
+        ``clear_attempted_on_success=True`` any ``attempted`` rows for the
+        successfully written (isbn, call_number_type) pairs are removed.
+
+        Args:
+            conn:                       An open connection from ``transaction()``.
+            records:                    ``MainRecord`` objects to persist.
+            clear_attempted_on_success: Remove corresponding ``attempted`` rows
+                                        after a successful upsert.
+        """
         if not records:
             return
 
-        rows: list[tuple[str, str, str, Optional[str], Optional[str], int]] = []
+        rows: list[tuple[str, str, str, Optional[str], Optional[str], str]] = []
         successful_pairs: list[tuple[str, str]] = []
         for r in records:
             exploded = self._explode_main_record(r)
@@ -685,10 +763,9 @@ class DatabaseManager:
             """
             INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(isbn, call_number_type) DO UPDATE SET
+            ON CONFLICT(isbn, call_number_type, source) DO UPDATE SET
                 call_number = excluded.call_number,
                 classification = excluded.classification,
-                source = excluded.source,
                 date_added = excluded.date_added
             """,
             rows,
@@ -855,10 +932,11 @@ class DatabaseManager:
         )
 
     def should_skip_retry(self, isbn: str, last_target: str, attempt_type: str, retry_days: int) -> bool:
-        """Return True if this ISBN+target+type key was attempted within retry window.
+        """Return True when the retry window for this ISBN/target/type is still active.
 
-        last_attempted is stored as a yyyymmdd integer; compare as a date by parsing
-        it back to a date object.
+        ``attempted.last_attempted`` is normalized to a ``YYYYMMDD`` integer, but
+        older databases may still contain legacy ISO strings during migration.
+        This helper accepts both formats so retry behavior stays stable.
         """
         att = self.get_attempted_for(isbn, last_target, attempt_type)
         if att is None or not att.last_attempted:
@@ -866,18 +944,26 @@ class DatabaseManager:
 
         last_val = att.last_attempted
         try:
-            # Support both legacy ISO strings (migration period) and new yyyymmdd integers
-            if isinstance(last_val, int) or (isinstance(last_val, str) and last_val.isdigit() and len(last_val) == 8):
-                last_str = str(last_val)
-                last_date = datetime(int(last_str[:4]), int(last_str[4:6]), int(last_str[6:8]), tzinfo=timezone.utc)
+            # Parse the stored date accepting multiple historical formats:
+            # "YYYY-MM-DD HH:MM:SS"  -- ISO datetime string (legacy storage)
+            # "YYYY-MM-DDT..." / "...Z"  -- ISO-8601 with optional Z suffix
+            # 20240315 (int) or "20240315" (str) -- current compact integer format
+            if isinstance(last_val, str):
+                if " " in last_val:
+                    last_date = datetime.strptime(last_val, "%Y-%m-%d %H:%M:%S")
+                else:
+                    last_date = datetime.fromisoformat(last_val.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+            elif isinstance(last_val, int) and len(str(last_val)) == 8:
+                s = str(last_val)
+                last_date = datetime(int(s[:4]), int(s[4:6]), int(s[6:8]))
+            elif isinstance(last_val, str) and last_val.isdigit() and len(last_val) == 8:
+                last_date = datetime(int(last_val[:4]), int(last_val[4:6]), int(last_val[6:8]))
             else:
-                last_date = datetime.fromisoformat(str(last_val))
-                if last_date.tzinfo is None:
-                    last_date = last_date.replace(tzinfo=timezone.utc)
+                return False  # Unrecognised format — do not suppress retry
         except Exception:
-            return False
+            return False  # Any parse error: allow the retry to proceed
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         return (now - last_date) < timedelta(days=retry_days)
 
     def upsert_attempted(
@@ -887,8 +973,21 @@ class DatabaseManager:
         last_target: Optional[str],
         attempt_type: str = "both",
         last_error: Optional[str] = None,
-        attempted_time: Optional[int] = None,
+        attempted_time: Optional[str] = None,
     ) -> None:
+        """Record a failed lookup attempt in its own transaction.
+
+        If a row already exists for the (isbn, last_target, attempt_type) key,
+        ``fail_count`` is incremented and the error/timestamp are updated.
+
+        Args:
+            isbn: The ISBN that was attempted.
+            last_target: Identifier of the lookup target that was tried.
+            attempt_type: ``'lccn'``, ``'nlmcn'``, or ``'both'`` (default).
+            last_error: Human-readable error message from the failed attempt.
+            attempted_time: ISO datetime string or ``YYYYMMDD`` integer string
+                for when the attempt occurred; defaults to today if ``None``.
+        """
         with self.transaction() as conn:
             self._upsert_attempted_conn(
                 conn,
@@ -902,14 +1001,20 @@ class DatabaseManager:
     def upsert_attempted_many(
         self,
         conn: sqlite3.Connection,
-        rows: Sequence[tuple[str, Optional[str], str, Optional[int], Optional[str]]],
+        rows: Sequence[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> None:
-        """
-        Batch upsert attempted rows within an existing transaction connection.
+        """Batch upsert failed-lookup rows within an existing transaction.
 
-        rows items are:
-          (isbn, last_target, attempt_type, attempted_time, last_error)
-          where attempted_time is a yyyymmdd integer (e.g. 20260317)
+        On conflict (same ``isbn``, ``last_target``, ``attempt_type`` key),
+        ``fail_count`` is incremented and the timestamp / error message are
+        updated to the most recent values.
+
+        Args:
+            conn: An open connection from ``transaction()``.
+            rows: Iterable of 5-tuples
+                  ``(isbn, last_target, attempt_type, attempted_time, last_error)``
+                  where *attempted_time* may be an ISO datetime string or a
+                  ``YYYYMMDD`` integer (or ``None`` to default to today).
         """
         if not rows:
             return
@@ -921,7 +1026,7 @@ class DatabaseManager:
                     isbn,
                     last_target or "",
                     attempt_type or "both",
-                    attempted_time or today_yyyymmdd(),
+                    normalize_to_yyyymmdd_int(attempted_time),
                     last_error,
                 )
             )
@@ -948,9 +1053,9 @@ class DatabaseManager:
         last_target: Optional[str],
         attempt_type: str,
         last_error: Optional[str],
-        attempted_time: Optional[int],
+        attempted_time: Optional[str],
     ) -> None:
-        attempted_time = attempted_time or today_yyyymmdd()
+        attempted_time = normalize_to_yyyymmdd_int(attempted_time)
 
         conn.execute(
             """
@@ -967,15 +1072,22 @@ class DatabaseManager:
         )
 
     def clear_attempted(self, isbn: str) -> None:
+        """Delete all attempted rows for *isbn* (all targets and types)."""
         with self.connect() as conn:
             conn.execute("DELETE FROM attempted WHERE isbn = ?", (isbn,))
 
     def clear_attempted_many(self, conn: sqlite3.Connection, isbns: Iterable[str]) -> None:
+        """Delete all attempted rows for the given ISBNs within an open connection.
+
+        Args:
+            conn: An open database connection (must be within a transaction).
+            isbns: ISBNs whose attempted rows should be removed.
+        """
         isbns_list = list(isbns)
         if not isbns_list:
             return
 
-        # SQLite has a limit on variables; chunk if needed
+        # SQLite caps bound variables per statement at ~999; chunk to stay safe
         CHUNK = 900
         for i in range(0, len(isbns_list), CHUNK):
             chunk = isbns_list[i : i + CHUNK]
@@ -983,6 +1095,7 @@ class DatabaseManager:
             conn.execute(f"DELETE FROM attempted WHERE isbn IN ({placeholders})", tuple(chunk))
 
     def clear_attempted_for(self, isbn: str, attempt_type: str) -> None:
+        """Delete attempted rows for *isbn* restricted to a specific *attempt_type*."""
         with self.connect() as conn:
             conn.execute(
                 "DELETE FROM attempted WHERE isbn = ? AND attempt_type = ?",
@@ -994,10 +1107,20 @@ class DatabaseManager:
         conn: sqlite3.Connection,
         pairs: Iterable[tuple[str, str]],
     ) -> None:
+        """Delete attempted rows matching (isbn, attempt_type) pairs within an open connection.
+
+        Used after a batch upsert of successful main results to clean up the
+        corresponding failure entries in one pass.
+
+        Args:
+            conn: An open database connection (must be within a transaction).
+            pairs: Iterable of ``(isbn, attempt_type)`` tuples to remove.
+        """
         pairs_list = [(isbn, attempt_type) for isbn, attempt_type in pairs if isbn and attempt_type]
         if not pairs_list:
             return
 
+        # Each pair needs 2 bound variables; keep total well below SQLite's ~999 limit
         CHUNK = 400
         for i in range(0, len(pairs_list), CHUNK):
             chunk = pairs_list[i : i + CHUNK]
@@ -1043,6 +1166,32 @@ class DatabaseManager:
         lowest_isbn: str,
         other_isbn: str,
     ) -> None:
+        """Merge all data rows from *other_isbn* into *lowest_isbn* and record the link.
+
+        Steps performed within the supplied connection:
+          1. For each ``main`` row under *other_isbn*, upsert it under
+             *lowest_isbn*, keeping the call_number from the more recent row.
+          2. Delete all ``main`` rows for *other_isbn*.
+          3. Copy ``attempted`` rows from *other_isbn* to *lowest_isbn``
+             (accumulating fail_count).
+          4. Delete all ``attempted`` rows for *other_isbn*.
+          5. Update any ``linked_isbns`` rows that still reference *other_isbn*
+             as their canonical to point at *lowest_isbn* instead.
+          6. Insert the ``(lowest_isbn, other_isbn)`` pair into ``linked_isbns``.
+
+        Foreign-key enforcement is temporarily disabled for this operation
+        because the ``subjects`` table has a legacy FK to ``main(isbn)`` on a
+        non-unique column which causes a ``"foreign key mismatch"`` error on
+        ``DELETE`` when FK enforcement is on.
+
+        Args:
+            conn:        An open connection from ``transaction()``.
+            lowest_isbn: The canonical ISBN that will own all merged data.
+            other_isbn:  The non-canonical ISBN being retired.
+
+        Raises:
+            ValueError: If either argument is empty or both are equal.
+        """
         lowest_isbn = (lowest_isbn or "").strip()
         other_isbn = (other_isbn or "").strip()
         if not lowest_isbn or not other_isbn:
@@ -1050,7 +1199,14 @@ class DatabaseManager:
         if lowest_isbn == other_isbn:
             return
 
+        # The subjects table has a legacy FK to main(isbn) where isbn is not
+        # unique (main's PK is composite).  SQLite raises "foreign key mismatch"
+        # on DELETE when FK enforcement is on, so we disable it for this
+        # operation.  This PRAGMA must be issued before the first DML statement
+        # so it takes effect before Python's sqlite3 module auto-begins a
+        # transaction.
         conn.execute("PRAGMA foreign_keys = OFF;")
+
         moved_main_rows = conn.execute(
             """
             SELECT call_number, call_number_type, classification, source, date_added
@@ -1063,13 +1219,22 @@ class DatabaseManager:
         for row in moved_main_rows:
             existing = conn.execute(
                 """
-                SELECT classification, source, date_added
+                SELECT call_number, classification, source, date_added
                 FROM main
-                WHERE isbn = ? AND call_number_type = ?
+                WHERE isbn = ? AND call_number_type = ? AND source = ?
                 LIMIT 1
                 """,
-                (lowest_isbn, row["call_number_type"]),
+                (lowest_isbn, row["call_number_type"], row["source"] or ""),
             ).fetchone()
+            existing_date = normalize_to_datetime_str(existing["date_added"]) if existing else ""
+            row_date = normalize_to_datetime_str(row["date_added"]) or ""
+            # Keep the call_number from the more recent row; prefer other_isbn on tie
+            # so a freshly harvested result always wins over an older canonical row.
+            merged_call_number = (
+                row["call_number"]
+                if row_date >= existing_date
+                else existing["call_number"]
+            )
             merged_source = self._combine_sources(
                 existing["source"] if existing else None,
                 row["source"],
@@ -1079,25 +1244,23 @@ class DatabaseManager:
                 if existing and existing["classification"]
                 else row["classification"]
             )
-            merged_date = max(
-                normalize_to_yyyymmdd(existing["date_added"]) if existing else None or 0,
-                normalize_to_yyyymmdd(row["date_added"]) or 0,
-            ) or today_yyyymmdd()
+            merged_date = max(existing_date, row_date) or now_datetime_str()
             conn.execute(
                 """
                 INSERT INTO main (isbn, call_number, call_number_type, classification, source, date_added)
                 VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(isbn, call_number_type) DO UPDATE SET
+                ON CONFLICT(isbn, call_number_type, source) DO UPDATE SET
+                    call_number = excluded.call_number,
                     classification = excluded.classification,
                     source = excluded.source,
                     date_added = excluded.date_added
                 """,
                 (
                     lowest_isbn,
-                    row["call_number"],
+                    merged_call_number,
                     row["call_number_type"],
                     merged_classification,
-                    merged_source,
+                    row["source"] or "",
                     merged_date,
                 ),
             )
@@ -1147,9 +1310,15 @@ class DatabaseManager:
         conn: sqlite3.Connection,
         pairs: Iterable[tuple[str, str]],
     ) -> None:
+        """Apply ``_rewrite_to_lowest_isbn_conn`` for every (lowest, other) pair.
+
+        Args:
+            conn: An open database connection (must be within a transaction).
+            pairs: Iterable of ``(lowest_isbn, other_isbn)`` tuples.
+                   Pairs where both values are equal or either is empty are skipped.
+        """
         if not pairs:
             return
-        conn.execute("PRAGMA foreign_keys = OFF;")
         for lowest_isbn, other_isbn in pairs:
             if lowest_isbn and other_isbn and lowest_isbn != other_isbn:
                 self._rewrite_to_lowest_isbn_conn(
@@ -1165,20 +1334,56 @@ class DatabaseManager:
 
     @staticmethod
     def _combine_sources(*values: Optional[str]) -> Optional[str]:
+        """Merge multiple source strings into a single ``" + "``-delimited string.
+
+        Each input value may itself be a delimited list (using ``+``, ``,``,
+        ``;``, or ``|`` as separators).  Duplicates are removed while
+        preserving first-seen order.  A known alias (``UCB`` → ``UBC``) is
+        normalised.
+
+        Returns:
+            A deduplicated source string like ``"LoC + Harvard"``, or ``None``
+            if all inputs are empty/None.
+        """
         parts: list[str] = []
         for value in values:
             text = str(value or "").strip()
-            if text and text not in parts:
-                parts.append(text)
+            if not text:
+                continue
+            # Split on any of the common source-list delimiters (+, comma, semicolon,
+            # pipe) so that existing composite strings like "LoC + Harvard" are
+            # expanded into individual tokens before deduplication.
+            for piece in re.split(r"[+,;|]", text):
+                cleaned = piece.strip()
+                # Normalise a known legacy alias: "UCB" should read as "UBC"
+                if cleaned.upper() == "UCB":
+                    cleaned = "UBC"
+                elif cleaned.upper() == "UBC":
+                    cleaned = "UBC"
+                if cleaned and cleaned not in parts:
+                    parts.append(cleaned)
         if not parts:
             return None
         return " + ".join(parts)
 
     # -------------------------
-    # V2 GUI COMPATIBILITY HELPERS
+    # GUI compatibility helpers
     # -------------------------
     def get_all_results(self, limit: int = 1000):
-        """Return successful records for results/dashboard views."""
+        """Return the most recent successful harvest results for dashboard/results views.
+
+        Pivots the multi-row ``main`` table into one aggregated row per ISBN
+        using conditional ``MAX()`` so both LCCN and NLMCN appear in the same
+        result row.
+
+        Args:
+            limit: Maximum number of rows to return (ordered by newest first).
+
+        Returns:
+            A list of ``sqlite3.Row`` objects with columns: ``isbn``,
+            ``lccn``, ``lccn_source``, ``nlmcn``, ``nlmcn_source``,
+            ``classification``, ``source``, ``date_added``.
+        """
         with self.connect() as conn:
             return conn.execute(
                 """
@@ -1200,7 +1405,19 @@ class DatabaseManager:
             ).fetchall()
 
     def get_failed_attempts(self, limit: int = 1000):
-        """Return failed/attempted records for results/dashboard views."""
+        """Return failed/attempted records for dashboard and results views.
+
+        Also classifies rows whose ``last_error`` contains ``"invalid isbn"``
+        with a ``status`` of ``'Invalid'`` rather than ``'Failed'``.
+
+        Args:
+            limit: Maximum number of rows to return (ordered by most recent first).
+
+        Returns:
+            A list of ``sqlite3.Row`` objects with columns: ``isbn``,
+            ``last_target``, ``last_attempted``, ``fail_count``,
+            ``last_error``, ``status``.
+        """
         with self.connect() as conn:
             return conn.execute(
                 """
@@ -1228,7 +1445,15 @@ class DatabaseManager:
             conn.execute("DELETE FROM attempted")
 
     def get_global_stats(self) -> dict:
-        """Return aggregate stats used by dashboard cards."""
+        """Return aggregate counts used by the dashboard summary cards.
+
+        Returns:
+            A dict with keys:
+              ``"processed"`` -- total distinct ISBNs seen (found + failed),
+              ``"found"``     -- distinct ISBNs with a call number in ``main``,
+              ``"failed"``    -- distinct ISBNs in ``attempted`` (no result yet),
+              ``"invalid"``   -- subset of failed whose error mentions ``"invalid isbn"``.
+        """
         with self.connect() as conn:
             found = conn.execute("SELECT COUNT(DISTINCT isbn) FROM main").fetchone()[0]
             failed = conn.execute("SELECT COUNT(DISTINCT isbn) FROM attempted").fetchone()[0]
@@ -1243,7 +1468,19 @@ class DatabaseManager:
         }
 
     def get_recent_results(self, limit: int = 10) -> list[dict]:
-        """Return merged recent successes/failures for dashboard activity list."""
+        """Return a merged chronological list of recent successes and failures.
+
+        Combines rows from both the ``main`` and ``attempted`` tables in a
+        single ``UNION ALL`` query so the activity list on the dashboard shows
+        all recent events in time order regardless of outcome.
+
+        Args:
+            limit: Maximum number of events to return (most recent first).
+
+        Returns:
+            A list of dicts with keys: ``isbn``, ``status``, ``detail``, ``time``.
+            ``status`` is one of ``"Found"``, ``"Failed"``, or ``"Invalid"``.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -1286,6 +1523,7 @@ class DatabaseManager:
 
 
 if __name__ == "__main__":
+    # Manual smoke test for local development when running this module directly.
     db = DatabaseManager("data/lccn_harvester.sqlite3")
     db.init_db()
 

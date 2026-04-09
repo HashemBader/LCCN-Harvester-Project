@@ -1,6 +1,22 @@
 """
-Module: call_number_validators.py
-Centralized validation and normalization for Library of Congress and NLM call numbers.
+call_number_validators.py
+
+Centralised entry point for validating LC and NLM call numbers before they
+are stored in the database or returned as harvest results.
+
+This module provides two styles of API:
+- ``validate_call_numbers`` — validates an (lccn, nlmcn) pair together and
+  returns a cleaned tuple; convenient for callers that hold both at once.
+- ``validate_lccn`` / ``validate_nlmcn`` — validate a single call number;
+  used by individual API clients after extraction.
+
+All validation logic is delegated to the specialised validator modules:
+- :mod:`src.utils.lccn_validator` — LC Classification (MARC 050) rules.
+- :mod:`src.utils.nlmcn_validator` — NLM Classification (MARC 060) rules.
+
+The ``source`` parameter accepted by every function is intentionally unused;
+it is kept for API compatibility with older call sites that passed a source
+label for logging.
 
 Part of the LCCN Harvester Project.
 """

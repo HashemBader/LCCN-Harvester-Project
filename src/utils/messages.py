@@ -1,15 +1,41 @@
 """
-Module: messages.py
-Purpose: Central repository for all application text strings.
-         Ensures consistency across Logs, UI, and Errors.
-"""
+messages.py
 
-# how to use this module
-"""
- import messages
- messages.SystemMessages.app_start
- messages.DatabaseMessages.record_found.format(isbn="1234567890")
+Central repository for all user-facing and log-facing text strings used
+throughout the LCCN Harvester application.
 
+Design rationale
+----------------
+Keeping every message string in one place ensures:
+- Consistent wording across the CLI, GUI status bar, log files, and dialogs.
+- Easy localisation: a future translator only needs to edit this file.
+- Avoidance of magic string literals scattered across the codebase.
+
+Organisation
+------------
+Messages are grouped into classes by subsystem:
+
+SystemMessages
+    Application lifecycle events (start, shutdown, config load).
+DatabaseMessages
+    SQLite connection and record persistence operations.
+NetworkMessages
+    API and Z39.50 connection status, outcomes, and errors.
+GuiMessages
+    Status-bar text and dialog titles/bodies shown to the end user.
+HarvestMessages
+    Progress and error messages specific to the harvest workflow.
+ConfigMessages
+    Target configuration CRUD and load/save events.
+
+Usage::
+
+    from src.utils import messages
+    print(messages.SystemMessages.app_start)
+    print(messages.DatabaseMessages.record_found.format(isbn="1234567890"))
+
+Dynamic messages (those containing ``{placeholder}`` fields) must be
+formatted with ``.format()`` before use.
 """
 
 class SystemMessages:

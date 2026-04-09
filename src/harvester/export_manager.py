@@ -1,6 +1,27 @@
 """
-Module: export_manager.py
-Handles data export in TSV/CSV/JSON formats.
+Data export service for the LCCN Harvester.
+
+Reads records from the local SQLite database and writes them to disk in
+TSV, CSV, or JSON format.  The caller passes a configuration dict that
+controls which table (``main`` or ``attempted``), which columns, and which
+output format to use.
+
+Usage example::
+
+    mgr = ExportManager("data/lccn_harvester.sqlite3")
+    result = mgr.export({
+        "source": "main",
+        "format": "tsv",
+        "columns": ["ISBN", "LCCN", "Source"],
+        "output_path": "exports/results.tsv",
+        "include_header": True,
+    })
+    if result["success"]:
+        print("Exported to", result["files"])
+
+When ``source="both"``, two files are written: one with ``_success`` appended
+to the stem (for the ``main`` table) and one with ``_failed`` (for the
+``attempted`` table).
 """
 import csv
 import json
@@ -11,13 +32,18 @@ from src.database.db_manager import DatabaseManager, MainRecord, AttemptedRecord
 
 
 class ExportManager:
-    """Manages the export of harvested data."""
+    """Serialise harvested data from SQLite to TSV, CSV, or JSON files.
+
+    All export operations are driven by a single configuration dict passed to
+    ``export()``.  The class handles file creation, column selection, and
+    optional header rows.
+    """
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path:
             self.db = DatabaseManager(db_path)
         else:
-            self.db = DatabaseManager() # Use default
+            self.db = DatabaseManager()  # Use default path
 
     def export(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -75,7 +101,7 @@ class ExportManager:
         return original_path.with_name(f"{original_path.stem}{suffix}{original_path.suffix}")
 
     def _export_source(self, source: str, config: Dict[str, Any], path: Path):
-        """Export a single source to a file."""
+        """Fetch data for *source* and write it to *path* in the configured format."""
         data, headers = self._fetch_data(source, config.get("columns", []))
         
         # Ensure parent directory exists
@@ -94,11 +120,21 @@ class ExportManager:
             raise ValueError(f"Unsupported export format: {format_type}")
 
     def _fetch_data(self, source: str, selected_columns: List[str]) -> tuple[List[List[Any]], List[str]]:
+        """Fetch rows from *source* and apply column selection.
+
+        Args:
+            source:           ``"main"`` or ``"attempted"``.
+            selected_columns: Display names of columns to include.  Falls back
+                              to all available columns when empty or invalid.
+
+        Returns:
+            A ``(data_rows, headers)`` tuple where each row in ``data_rows``
+            is a list of formatted cell values aligned to *headers*.
+
+        Raises:
+            ValueError: If *source* is not ``"main"`` or ``"attempted"``.
         """
-        Fetch data from database and filter columns.
-        Returns (data_rows, headers).
-        """
-        # Define field mappings (Display Name -> DB Field / Object Attr)
+        # Mapping from user-visible column names to DB attribute names
         main_field_map = {
             "ISBN": "isbn",
             "LCCN": "lccn",
@@ -121,22 +157,26 @@ class ExportManager:
 
         with self.db.connect() as conn:
             if source == "main":
-                # For Main, respect selected_columns
-                # If no columns selected, default to all available in map
+                # Apply the caller's column selection; fall back to all columns if none given
+                # or if all supplied names are invalid (not in the field map).
                 if not selected_columns:
                     headers = list(main_field_map.keys())
                 else:
                     headers = [col for col in selected_columns if col in main_field_map]
-                
-                # If somehow headers is still empty (e.g. invalid columns passed), fallback to all
+
+                # Guard: if every supplied column was unknown, export all columns
                 if not headers:
                     headers = list(main_field_map.keys())
 
+                # Fetch all successful results and sort alphabetically by ISBN
                 rows = self.db.get_all_results(limit=100000)
                 rows = sorted(rows, key=lambda row: str(row["isbn"]))
                 data = [
                     [
-                        self._format_export_value(main_field_map[h], row[main_field_map[h]] if main_field_map[h] in row.keys() else None)
+                        self._format_export_value(
+                            main_field_map[h],
+                            row[main_field_map[h]] if main_field_map[h] in row.keys() else None
+                        )
                         for h in headers
                     ]
                     for row in rows
@@ -144,12 +184,13 @@ class ExportManager:
                 return data, headers
 
             elif source == "attempted":
-                # For Attempted, use fixed columns as UI doesn't allow selecting them yet
-                # Or we could map 'ISBN' from selected_columns, but other columns don't match.
-                # Let's use all attempted fields.
+                # ``attempted`` always exports all columns; the UI does not yet
+                # expose per-column selection for this table.
                 headers = list(attempted_field_map.keys())
                 fields = [attempted_field_map[h] for h in headers]
-                
+
+                # Build the SELECT dynamically from the whitelisted field map to
+                # avoid SQL injection from user-supplied column names.
                 query = f"SELECT {', '.join(fields)} FROM attempted ORDER BY isbn"
                 cursor = conn.execute(query)
                 rows = cursor.fetchall()
@@ -164,6 +205,7 @@ class ExportManager:
                 raise ValueError(f"Unknown source: {source}")
 
     def _export_tsv(self, data: List[List[Any]], headers: List[str], path: Path, include_header: bool):
+        """Write *data* to *path* as a UTF-8 tab-separated file."""
         with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f, delimiter="\t")
             if include_header:
@@ -171,6 +213,7 @@ class ExportManager:
             writer.writerows(data)
 
     def _export_csv(self, data: List[List[Any]], headers: List[str], path: Path, include_header: bool):
+        """Write *data* to *path* as a UTF-8 comma-separated file."""
         with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if include_header:
@@ -178,6 +221,7 @@ class ExportManager:
             writer.writerows(data)
 
     def _export_json(self, data: List[List[Any]], headers: List[str], path: Path):
+        """Write *data* to *path* as a pretty-printed JSON array of objects."""
         objects: List[Dict[str, Any]] = []
         for row in data:
             obj = {headers[i]: row[i] if i < len(row) else None for i in range(len(headers))}
@@ -188,6 +232,11 @@ class ExportManager:
 
     @staticmethod
     def _format_export_value(field_name: str, value: Any) -> Any:
+        """Coerce *value* to a human-friendly representation for export.
+
+        Date fields stored as ``YYYYMMDD`` integers are converted to
+        ``"YYYY-MM-DD"`` strings; all other values are returned as-is.
+        """
         if field_name in {"date_added", "last_attempted"}:
             return yyyymmdd_to_iso_date(value)
         return value

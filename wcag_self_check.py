@@ -33,10 +33,10 @@ def has_pattern(text: str, pattern: str) -> bool:
 
 
 def run_checks() -> list[CheckResult]:
-    styles = read_text(PROJECT_ROOT / "src/gui/styles_v2.py")
+    styles = read_text(PROJECT_ROOT / "src/gui/styles.py")
     modern = read_text(PROJECT_ROOT / "src/gui/modern_window.py")
-    config = read_text(PROJECT_ROOT / "src/gui/config_tab_v2.py")
-    harvest = read_text(PROJECT_ROOT / "src/gui/harvest_tab_v2.py")
+    config = read_text(PROJECT_ROOT / "src/gui/config_tab.py")
+    harvest = read_text(PROJECT_ROOT / "src/gui/harvest_tab.py")
     shortcuts = read_text(PROJECT_ROOT / "src/gui/shortcuts_dialog.py")
 
     results: list[CheckResult] = []
@@ -94,7 +94,7 @@ def build_report(results: list[CheckResult]) -> str:
         "",
         f"- Run at: {timestamp}",
         f"- Result: {passed}/{total} checks passed",
-        "- Scope: Static code-level accessibility checks for V2 GUI",
+        "- Scope: Static code-level accessibility checks for GUI",
         "",
         "## Checks",
         "",

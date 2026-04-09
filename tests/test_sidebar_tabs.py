@@ -110,15 +110,15 @@ class TestTabSwitching:
             window.close()
 
     def test_switch_to_dashboard(self, main_window):
-        """Test switching to Dashboard tab."""
+        """Test switching to Dashboard tab (index 0)."""
         main_window.btn_dashboard.click()
-        assert main_window.stack.currentIndex() == 2
+        assert main_window.stack.currentIndex() == 0
         assert main_window.page_title.text() == "Dashboard"
 
     def test_switch_to_configure(self, main_window):
-        """Test switching to Configure tab (merged Targets + Settings)."""
+        """Test switching to Configure tab (index 1 — merged Targets + Settings)."""
         main_window.btn_configure.click()
-        assert main_window.stack.currentIndex() == 0
+        assert main_window.stack.currentIndex() == 1
         assert main_window.page_title.text() == "Configure"
 
     def test_configure_inner_tab_switch_to_targets(self, main_window):
@@ -127,13 +127,13 @@ class TestTabSwitching:
         assert main_window.targets_config_tab.targets_tab.isVisible()
 
     def test_switch_to_harvest(self, main_window):
-        """Test switching to Harvest tab."""
+        """Test switching to Harvest tab (index 2)."""
         main_window.btn_harvest.click()
-        assert main_window.stack.currentIndex() == 1
+        assert main_window.stack.currentIndex() == 2
         assert main_window.page_title.text() == "Harvest"
 
     def test_switch_to_help(self, main_window):
-        """Test switching to Help tab."""
+        """Test switching to Help tab (index 3)."""
         main_window.btn_help.click()
         assert main_window.stack.currentIndex() == 3
         assert main_window.page_title.text() == "Help"

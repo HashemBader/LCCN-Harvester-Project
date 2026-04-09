@@ -1,24 +1,59 @@
 """
 harvard_api.py
 
-Harvard LibraryCloud API client (Item API).
+Harvard LibraryCloud Item API client.
 
-This client performs ISBN-based lookups using the LibraryCloud Item API and
-extracts call-number-like values (best-effort) from the response.
+Performs ISBN-based lookups using Harvard's LibraryCloud Item API and
+extracts call-number-like values (best-effort) from the JSON or embedded
+MODS XML response.
 
-Primary query style (per Harvard docs):
-- https://api.lib.harvard.edu/v2/items?identifier=<ISBN>
-JSON example endpoints are also documented (e.g., /v2/items.json).  See Harvard docs.
+API endpoints used
+------------------
+Primary (identifier search):
+    https://api.lib.harvard.edu/v2/items.json?identifier=<ISBN>&limit=1
+
+Fallback (keyword search):
+    https://api.lib.harvard.edu/v2/items.json?q=<ISBN>&limit=1
+
+The ``identifier`` parameter searches the item's identifier fields (ISBN,
+LCCN, etc.) directly.  If that returns no records, a keyword (``q``) search
+is tried as a best-effort fallback.
+
+Response shapes
+---------------
+The LibraryCloud JSON wraps MODS records.  The common shape is::
+
+    {
+        "pagination": {"numFound": 1, ...},
+        "items": {
+            "mods": [
+                {
+                    "classification": [{"@authority": "lcc", "#text": "QA76.73"}],
+                    "location": [{"shelfLocator": "..."}],
+                    ...
+                }
+            ]
+        }
+    }
+
+Extraction strategy (applied in order):
+1. MODS-like JSON fields (``classification``, ``location.shelfLocator``,
+   ``identifier`` with non-lccn type).
+2. Generic JSON keys whose names suggest shelf/call data
+   (``shelfLocator``, ``callNumber``, ``classification``).
+3. Embedded MODS XML blob, if any field contains an XML string.
 
 Notes
 -----
-- Response schemas can vary; extraction is best-effort.
-- This module does NOT validate ISBN checksums (that is handled elsewhere).
+- Response schemas can vary across record types; extraction is best-effort.
+- This module does NOT validate ISBN checksums (handled by isbn_validator).
+- Call number validation is performed by call_number_validators.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as et
@@ -47,6 +82,30 @@ class HarvardApiClient(BaseApiClient):
         return self.source_name
 
     def fetch(self, isbn: str) -> Any:
+        """
+        Fetch LibraryCloud item data for an ISBN, with a keyword-search fallback.
+
+        Attempts the ``identifier=`` query first (most precise).  If that
+        returns no records (or raises a network exception), falls back to a
+        full-text ``q=`` keyword search.  The payload that contains records
+        is returned preferentially; otherwise the fallback payload is returned
+        so downstream code can at least see the raw response for debugging.
+
+        Parameters
+        ----------
+        isbn : str
+            Normalized ISBN string (no hyphens).
+
+        Returns
+        -------
+        dict | None
+            Parsed JSON payload from LibraryCloud, or ``None`` on total failure.
+
+        Raises
+        ------
+        Exception
+            Re-raises exceptions from the fallback request if both queries fail.
+        """
         primary = None
         try:
             primary = self._request_json(self.build_url(isbn))
@@ -90,6 +149,24 @@ class HarvardApiClient(BaseApiClient):
         return f"{self.base_url}?{urllib.parse.urlencode(params)}"
 
     def _request_json(self, url: str) -> Any:
+        """
+        Perform a GET request and return the parsed JSON body.
+
+        Parameters
+        ----------
+        url : str
+            Fully-formed request URL (built by build_url or build_fallback_url).
+
+        Returns
+        -------
+        Any
+            Python object parsed from the JSON response body.
+
+        Raises
+        ------
+        Exception
+            On non-200 HTTP status or JSON decode failure.
+        """
         req = urllib.request.Request(url)
         req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")
         req.add_header("Accept", "application/json,text/plain,*/*")
@@ -466,7 +543,30 @@ class HarvardApiClient(BaseApiClient):
         force: Optional[str] = None,
     ) -> None:
         """
-        Put a candidate value into lc/nlm/other buckets.
+        Assign a call-number candidate to the LC, NLM, or "other" bucket.
+
+        When ``force`` is provided (set by callers that know the authority from
+        metadata), the candidate is placed directly without heuristics.
+
+        When ``force`` is None, a regex heuristic is applied:
+        - Strings that start with 1–3 uppercase letters immediately followed by
+          a digit look like a real classification (LC or NLM).
+        - Strings whose letter prefix begins with a ``W``-class prefix (the NLM
+          schedule) are routed to the NLM bucket.
+        - Everything else goes to ``other`` for later inspection.
+
+        Parameters
+        ----------
+        value : str
+            Raw candidate string to classify.
+        lc : list[str]
+            Accumulator for LC Classification candidates.
+        nlm : list[str]
+            Accumulator for NLM Classification candidates.
+        other : list[str]
+            Accumulator for unclassified candidates.
+        force : str | None
+            If ``"lc"`` or ``"nlm"``, skip heuristics and route directly.
         """
         candidate = value.strip()
         if not candidate:
@@ -482,17 +582,17 @@ class HarvardApiClient(BaseApiClient):
         # Heuristic: NLM call numbers often start with 1-2 letters then digits (e.g., "WG 120")
         # LC call numbers often start with 1-3 letters then digits (e.g., "QA 76.73")
         # Without full parsing rules, keep it conservative.
-        # If it contains a space after 1-3 letters, treat as likely classification.
-        import re
-
+        # Pattern: 1–3 uppercase letters optionally followed by whitespace, then a digit.
         m = re.match(r"^[A-Z]{1,3}\s*\d", candidate)
         if m:
-            # If it starts with W* it's often NLM, but not guaranteed. Keep W* bias to NLM.
+            # NLM schedule occupies all W* two-letter classes plus single "W".
+            # Route any candidate whose prefix matches a known W-class to the NLM bucket.
             if candidate.startswith(("W", "WA", "WB", "WC", "WD", "WE", "WF", "WG", "WH", "WI", "WJ", "WK", "WL", "WM", "WN", "WO", "WP", "WQ", "WR", "WS", "WT", "WU", "WV", "WW", "WX", "WY", "WZ")):
                 nlm.append(candidate)
             else:
                 lc.append(candidate)
         else:
+            # Does not look like a structured classification string.
             other.append(candidate)
 
     def _dedupe_keep_order(self, values: List[str]) -> List[str]:

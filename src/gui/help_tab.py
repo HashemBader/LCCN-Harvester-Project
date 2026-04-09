@@ -1,6 +1,17 @@
-"""
-Module: help_tab.py
-Redesigned Help page — fills the tab, no scroll, modern KBD key badges.
+"""Help page — keyboard shortcuts reference and accessibility information.
+
+``HelpTab`` renders a full-screen (no scroll) help page with:
+- A keyboard shortcuts quick-reference section using styled ``<kbd>``-style badge
+  labels.
+- An accessibility section with a link to the full accessibility statement dialog.
+
+The page is theme-aware: on a theme toggle, ``ModernMainWindow`` calls
+``refresh_theme(colors)`` to update the inline styles of every badge, divider,
+and panel without rebuilding the widget tree.
+
+Widget registries (``_kbd_labels``, ``_dividers``, etc.) are populated during
+``_setup_ui`` so ``refresh_theme`` can iterate them in O(n) without querying the
+widget tree.
 """
 import sys
 
@@ -11,12 +22,18 @@ from PyQt6.QtWidgets import (
 )
 
 from .icons import get_pixmap, SVG_RESULTS, SVG_SETTINGS, SVG_CHECK_CIRCLE, SVG_ACTIVITY
-from .styles_v2 import CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+from .styles import CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .theme_manager import ThemeManager
 
 
 class HelpTab(QWidget):
-    """Redesigned Help tab — fills space, no scroll, modern KBD key styling."""
+    """Redesigned Help tab — fills available space, no scroll, modern KBD key styling.
+
+    Signals:
+        open_accessibility_requested(): Emitted when the user clicks the
+            "Open Accessibility Statement" button so ``ModernMainWindow`` can
+            open the dialog without the help tab holding a reference to it.
+    """
 
     open_accessibility_requested = pyqtSignal()
 
@@ -32,14 +49,15 @@ class HelpTab(QWidget):
         except Exception:
             self._colors = CATPPUCCIN_DARK
 
-        # Track theme-sensitive widgets for live refresh
-        self._kbd_labels: list[QLabel] = []
-        self._dividers: list[QFrame] = []
-        self._panel_frames: list[QFrame] = []   # main panels — no hover border
-        self._desc_labels: list[QLabel] = []              # shortcut descriptions + accessibility items
-        self._plus_labels: list[QLabel] = []              # "+" separators between key badges
-        self._section_labels: list[QLabel] = []           # section headers inside help panels
-        self._text_labels: list[tuple[QLabel, str]] = []  # heading/value labels — (label, fmt with {color})
+        # Widget registries — populated during _setup_ui so refresh_theme can
+        # iterate them in O(n) without walking the full widget tree.
+        self._kbd_labels: list[QLabel] = []                        # <kbd>-style key badge labels
+        self._dividers: list[QFrame] = []                          # horizontal rule QFrames
+        self._panel_frames: list[QFrame] = []                      # main panels (no hover border)
+        self._desc_labels: list[QLabel] = []                       # shortcut descriptions + accessibility items
+        self._plus_labels: list[QLabel] = []                       # "+" separators between key badges
+        self._section_labels: list[QLabel] = []                    # category headers inside shortcut panel
+        self._text_labels: list[tuple[QLabel, str]] = []           # (label, format-string containing {color})
 
         self._setup_ui()
 
@@ -47,6 +65,17 @@ class HelpTab(QWidget):
     # Public API – called by ModernMainWindow on theme toggle
     # ──────────────────────────────────────────────────────────────────
     def refresh_theme(self, colors: dict) -> None:
+        """Apply new theme colours to every inline-styled widget in this tab.
+
+        Called by ``ModernMainWindow._apply_theme`` after the application
+        stylesheet is replaced, so that inline styles not covered by QSS are
+        also updated without rebuilding the layout.
+
+        Args:
+            colors: A theme palette dict (e.g. ``CATPPUCCIN_DARK`` or
+                    ``CATPPUCCIN_LIGHT``) containing at least the keys used by
+                    the ``_*_style`` helpers below.
+        """
         self._colors = colors
         kbd_style = self._kbd_style()
         for lbl in self._kbd_labels:
@@ -71,9 +100,10 @@ class HelpTab(QWidget):
             lbl.setStyleSheet(fmt.format(color=text_color))
 
     # ──────────────────────────────────────────────────────────────────
-    # Style helpers
+    # Style helpers — each returns a self-contained inline stylesheet string
     # ──────────────────────────────────────────────────────────────────
     def _kbd_style(self) -> str:
+        """Return inline CSS for keyboard key badge labels (the <kbd>-style boxes)."""
         c = self._colors
         return (
             f"background-color: {c.get('surface2', '#374151')};"
@@ -112,6 +142,7 @@ class HelpTab(QWidget):
         )
 
     def _divider_style(self) -> str:
+        """Return inline CSS for a thin horizontal rule QFrame divider."""
         return f"border: none; border-top: 1px solid {self._colors.get('border', '#374151')};"
 
     def _desc_style(self) -> str:
@@ -136,6 +167,12 @@ class HelpTab(QWidget):
         self._text_labels.append((lbl, fmt))
 
     def _section_title_style(self) -> str:
+        """Bold uppercase section header style.
+
+        Uses white text on dark backgrounds and black on light backgrounds so
+        the category label stands out clearly against both themes.
+        """
+        # Compare against the dark palette's bg value to infer the current theme.
         section_color = "#ffffff" if self._colors.get("bg", "").lower() == CATPPUCCIN_DARK.get("bg", "").lower() else "#000000"
         return (
             "font-size: 12px; font-weight: 800; letter-spacing: 1.3px;"
@@ -146,6 +183,18 @@ class HelpTab(QWidget):
     # Root layout
     # ──────────────────────────────────────────────────────────────────
     def _setup_ui(self) -> None:
+        """Construct the full page layout: scroll area wrapping header + two-column body.
+
+        Layout hierarchy:
+            QVBoxLayout (_outer)
+            └── QScrollArea (_scroll)
+                └── QWidget (_scr_content)
+                    └── QVBoxLayout (root)
+                        ├── _build_header()
+                        └── QHBoxLayout (body)
+                            ├── _build_shortcuts_panel() [stretch=3]
+                            └── _build_right_panel()    [stretch=2]
+        """
         _outer = QVBoxLayout(self)
         _outer.setContentsMargins(0, 0, 0, 0)
         _outer.setSpacing(0)
@@ -176,6 +225,12 @@ class HelpTab(QWidget):
     # Header
     # ──────────────────────────────────────────────────────────────────
     def _build_header(self) -> QFrame:
+        """Build the slim header bar with the app title and a document icon.
+
+        Returns:
+            A ``QFrame`` styled with the ``Card`` class so the global QSS
+            gives it a surface background and border.
+        """
         frame = QFrame()
         frame.setProperty("class", "Card")
         lay = QHBoxLayout(frame)
@@ -203,6 +258,18 @@ class HelpTab(QWidget):
     # Left panel – Keyboard shortcuts
     # ──────────────────────────────────────────────────────────────────
     def _build_shortcuts_panel(self) -> QFrame:
+        """Build the left panel containing categorised keyboard shortcut rows.
+
+        Each category from ``_shortcut_sections`` gets a bold section label
+        (registered in ``_section_labels``) followed by a horizontal divider
+        (registered in ``_dividers``) and then one ``_build_shortcut_row`` per
+        shortcut entry.
+
+        Returns:
+            A ``QFrame`` with ``objectName="HelpPanel"`` and an expanding
+            size policy.  It is registered in ``_panel_frames`` so
+            ``refresh_theme`` can update its inline stylesheet.
+        """
         frame = QFrame()
         frame.setObjectName("HelpPanel")
         frame.setStyleSheet(self._panel_style())
@@ -253,19 +320,33 @@ class HelpTab(QWidget):
         return frame
 
     def _build_shortcut_row(self, keys: str, description: str) -> QWidget:
+        """Build a single shortcut row widget containing KBD badges and a description.
+
+        Each key component of *keys* (split on ``+``) becomes an independent
+        badge label with ``_kbd_style``.  A ``+`` separator label is inserted
+        between components and registered in ``_plus_labels`` for theme refresh.
+
+        Args:
+            keys: Key-sequence string (e.g. ``"Ctrl+H"`` or ``"Esc"``).
+            description: Human-readable description of the shortcut's action.
+
+        Returns:
+            A transparent ``QWidget`` containing the badge row (fixed 165 px
+            wide) on the left and the description label on the right.
+        """
         widget = QWidget()
         widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         row = QHBoxLayout(widget)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(14)
 
-        # KBD badges — stretch at start right-aligns all badges so single keys
-        # like "Esc" land at the same horizontal position as the second key in
-        # two-part shortcuts (Control+B → [Control][+][B], Esc → ________[Esc]).
+        # KBD badge row.  An initial stretch pushes all badges toward the right
+        # edge of their fixed-width container so single-key shortcuts like "Esc"
+        # align with the last key of two-part shortcuts like "Ctrl+B".
         badge_box = QHBoxLayout()
         badge_box.setSpacing(6)
         badge_box.setContentsMargins(0, 0, 0, 0)
-        badge_box.addStretch(1)  # ← pushes badges to the right edge of wrapper
+        badge_box.addStretch(1)  # right-aligns the badge(s) within badge_wrapper
 
         parts = [p.strip() for p in keys.split("+")]
         for i, part in enumerate(parts):
@@ -285,6 +366,8 @@ class HelpTab(QWidget):
         badge_wrapper = QWidget()
         badge_wrapper.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         badge_wrapper.setLayout(badge_box)
+        # Fixed width ensures the description column starts at a consistent
+        # horizontal position regardless of how many keys are in the shortcut.
         badge_wrapper.setFixedWidth(165)
         row.addWidget(badge_wrapper, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -299,6 +382,18 @@ class HelpTab(QWidget):
     # Right panel – Accessibility + About
     # ──────────────────────────────────────────────────────────────────
     def _build_right_panel(self) -> QFrame:
+        """Build the right panel containing the accessibility feature list and About info.
+
+        The panel has two sections separated by a divider:
+        - Accessibility — a bulleted feature list and a button that emits
+          ``open_accessibility_requested`` so ``ModernMainWindow`` can open
+          the full statement dialog.
+        - About — version, organisation, and platform metadata rows.
+
+        Returns:
+            A ``QFrame`` with ``objectName="HelpPanel"`` registered in
+            ``_panel_frames``.
+        """
         frame = QFrame()
         frame.setObjectName("HelpPanel")
         frame.setStyleSheet(self._panel_style())
@@ -409,6 +504,15 @@ class HelpTab(QWidget):
     # Data
     # ──────────────────────────────────────────────────────────────────
     def _shortcut_sections(self):
+        """Return the structured shortcut data used to populate the shortcuts panel.
+
+        Uses the full "Control" modifier label on macOS (matching system
+        convention) and the abbreviated "Ctrl" on Windows/Linux.
+
+        Returns:
+            A list of ``(category_name, [(keys_str, description), ...])`` tuples.
+        """
+        # macOS displays the full word "Control" in menu bar shortcuts.
         mod = "Control" if self.platform == "mac" else "Ctrl"
         return [
             ("General", [

@@ -13,7 +13,7 @@ import config.app_paths as config_app_paths
 from src.config.profile_manager import ProfileManager
 from src.database import DatabaseManager
 from src.harvester.marc_import import MarcImportService
-from src.gui.harvest_tab_v2 import _prepare_marc_import_records
+from src.gui.harvest_tab import _prepare_marc_import_records
 
 
 def test_marc_import_persists_main_attempted_and_active_profile_source(tmp_path, monkeypatch):

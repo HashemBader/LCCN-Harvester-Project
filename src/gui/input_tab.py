@@ -1,6 +1,22 @@
-"""
-Module: input_tab.py
-Input file selection tab for ISBN list.
+"""Input file selection tab for the ISBN input list.
+
+``InputTab`` provides a drag-and-drop zone, a file-browser button, a text
+preview of the first ``PREVIEW_MAX_LINES`` lines of the selected file, and a
+summary panel that reports file size, total rows, valid ISBN count, duplicate
+count, and invalid count.
+
+This tab is kept deliberately lightweight; ISBN validation is delegated to
+``src.utils.isbn_validator.normalize_isbn``.
+
+Module-level constants:
+    PREVIEW_MAX_LINES (int): Maximum lines shown in the text preview (20).
+    LARGE_FILE_THRESHOLD_BYTES (int): Files above this size (20 MB) are sampled
+        rather than fully scanned to keep the UI responsive.
+    INFO_SAMPLE_MAX_LINES (int): Number of lines examined for the stats summary
+        when a file exceeds ``LARGE_FILE_THRESHOLD_BYTES`` (200 000).
+
+Note: ``ClickableDropZone`` is also imported directly by ``harvest_tab.py`` as
+a drop target for the run-setup card.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -11,7 +27,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
 from pathlib import Path
 from itertools import islice
-from utils.isbn_validator import normalize_isbn
+from src.utils.isbn_validator import normalize_isbn
 
 PREVIEW_MAX_LINES = 20
 LARGE_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -19,26 +35,46 @@ INFO_SAMPLE_MAX_LINES = 200_000
 
 
 class ClickableDropZone(QFrame):
-    """A clickable and droppable frame widget."""
+    """A ``QFrame`` that acts as both a click target and a drag-and-drop landing zone.
+
+    Clicking anywhere inside the frame emits ``clicked`` (typically wired to a
+    file-browser dialog).  Dropping a local file onto the frame emits
+    ``fileDropped`` with the first valid file path.
+
+    The ``state`` dynamic property (``"ready"``, ``"active"``, ``"success"``)
+    drives QSS visual feedback during drag-over and after a successful drop.
+
+    Signals:
+        clicked(): Emitted on a left mouse-button press.
+        fileDropped(str): Emitted with the absolute path of the dropped file.
+    """
+
+    # Emitted on left mouse-button press anywhere inside the frame.
     clicked = pyqtSignal()
-    fileDropped = pyqtSignal(str)  # Emits file path when dropped
+    # Emitted with the absolute path of the first valid file when a drop lands.
+    fileDropped = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # "DragZone" QSS class provides the dashed border / background styling.
         self.setProperty("class", "DragZone")
+        # Initial state drives the QSS DragZone[state="ready"] selector.
         self.setProperty("state", "ready")
 
     def mousePressEvent(self, event: QMouseEvent):
-        """Handle mouse press to trigger click signal."""
+        """Emit ``clicked`` on left mouse-button press so the zone acts as a button."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        """Handle drag enter event."""
+        """Accept the drag and switch to the ``"active"`` (hover) QSS state.
+
+        Only accepts drags that contain at least one local file URL.
+        """
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
@@ -49,10 +85,14 @@ class ClickableDropZone(QFrame):
         event.ignore()
 
     def dragLeaveEvent(self, event):
+        """Restore the ready appearance when the drag cursor leaves this widget."""
         self._update_state("ready")
 
     def dropEvent(self, event: QDropEvent):
-        """Handle drop event."""
+        """Accept the dropped file and emit ``fileDropped`` with the path.
+
+        Shows a brief "success" state flash (500 ms) then resets to "ready".
+        """
         files = [url.toLocalFile() for url in event.mimeData().urls()]
         valid_files = [f for f in files if f]
 
@@ -60,10 +100,10 @@ class ClickableDropZone(QFrame):
             file_path = valid_files[0]
             self.fileDropped.emit(file_path)
 
-            # Animate success
+            # Flash "success" state for a brief visual confirmation of the drop.
             self._update_state("success")
 
-            # Reset after delay
+            # Reset to "ready" after 500 ms so the zone is reusable immediately.
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(500, lambda: self._update_state("ready"))
 
@@ -79,13 +119,40 @@ class ClickableDropZone(QFrame):
             self._update_state("ready")
             
     def _update_state(self, state: str):
+        """Update the QSS ``state`` dynamic property and force a re-polish.
+
+        Args:
+            state: One of ``"ready"``, ``"active"`` (drag hover), or ``"success"``
+                   (brief flash after a successful drop).
+        """
         self.setProperty("state", state)
+        # unpolish/polish forces Qt to re-evaluate DragZone[state="..."] rules.
         self.style().unpolish(self)
         self.style().polish(self)
 
 
 class InputTab(QWidget):
-    file_selected = pyqtSignal(str)  # Emits file path when selected
+    """Standalone input file selection tab (used when the tab is shown on its own page).
+
+    Provides a ``ClickableDropZone`` (drag-and-drop + click-to-browse), a read-only
+    path display, a plain-text file preview (first ``PREVIEW_MAX_LINES`` lines),
+    and a "File Information" summary panel with valid/invalid/duplicate counts.
+
+    The tab scrolls vertically inside a ``QScrollArea`` so it fits small windows.
+
+    Key instance variables:
+        input_file (Path | None): ``Path`` object for the currently loaded file,
+            or ``None`` when no file is selected.
+        advanced_mode (bool): Placeholder for future advanced-mode UI extensions;
+            has no effect in the current implementation.
+
+    Signals:
+        file_selected(str): Emitted with the absolute file path whenever a file
+            is loaded (via browse or drop).
+    """
+
+    # Emitted with the absolute path whenever a file is successfully loaded.
+    file_selected = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -203,13 +270,18 @@ class InputTab(QWidget):
         self.advanced_mode = False
 
     def set_advanced_mode(self, enabled):
-        """Enable/disable advanced mode features."""
+        """Enable or disable advanced-mode features (no-op for now).
+
+        Kept for API consistency with other tabs so ``ModernMainWindow`` can
+        iterate over all tabs and call this method uniformly.
+
+        Args:
+            enabled: ``True`` if advanced mode is active.
+        """
         self.advanced_mode = enabled
-        # Input tab doesn't have many advanced features yet
-        # but we keep the method for consistency
 
     def _browse_file(self):
-        """Open file browser dialog."""
+        """Open the system file picker and load the selected file."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select ISBN Input File",
@@ -221,11 +293,19 @@ class InputTab(QWidget):
             self._load_file(file_path)
 
     def _handle_file_drop(self, file_path):
-        """Handle file dropped onto drop zone."""
+        """Slot for ``ClickableDropZone.fileDropped`` — delegates to ``_load_file``.
+
+        Args:
+            file_path: Absolute path string emitted by the drop zone.
+        """
         self._load_file(file_path)
 
     def _load_file(self, file_path):
-        """Load a file (from browse or drop)."""
+        """Store the selected file path, update the UI controls, and emit ``file_selected``.
+
+        Args:
+            file_path: Absolute path string from a file-dialog or drop event.
+        """
         self.input_file = Path(file_path)
         self.file_path_edit.setText(str(self.input_file))
         self._load_file_preview()
@@ -233,6 +313,7 @@ class InputTab(QWidget):
         self.file_selected.emit(str(self.input_file))
 
     def _load_file_preview(self):
+        """Read up to ``PREVIEW_MAX_LINES`` lines and populate the preview text widget."""
         if not self.input_file or not self.input_file.exists():
             return
 
@@ -247,6 +328,13 @@ class InputTab(QWidget):
             self.preview_text.setPlainText(f"Error reading file: {str(e)}")
 
     def _update_file_info(self):
+        """Scan the input file and populate the File Information summary panel.
+
+        For very large files (> ``LARGE_FILE_THRESHOLD_BYTES``) only the first
+        ``INFO_SAMPLE_MAX_LINES`` lines are sampled and a note is appended.
+        Skips blank lines, comment lines starting with ``#``, and the first
+        header row if it matches a known ISBN column-header token.
+        """
         if not self.input_file or not self.input_file.exists():
             return
 
@@ -258,6 +346,7 @@ class InputTab(QWidget):
             seen: set[str] = set()
             unique_valid = 0
             file_size = self.input_file.stat().st_size
+            # Sample large files to avoid blocking the UI for many seconds.
             sampled = file_size > LARGE_FILE_THRESHOLD_BYTES
 
             with open(self.input_file, 'r', encoding='utf-8-sig') as f:
@@ -268,15 +357,16 @@ class InputTab(QWidget):
                         continue
                     total_nonempty += 1
 
+                    # First column only; tabs separate additional columns.
                     raw_isbn = raw_line.split("\t")[0].strip()
                     if not raw_isbn:
                         continue
 
-                    # Ignore comments
+                    # Lines starting with "#" are treated as comments.
                     if raw_isbn.startswith("#"):
                         continue
 
-                    # Ignore common header tokens on first meaningful row
+                    # Skip a recognised header token on the very first data row.
                     if not first_data_row_seen and raw_isbn.lower() in {"isbn", "isbns", "isbn13", "isbn10"}:
                         first_data_row_seen = True
                         continue
@@ -290,6 +380,7 @@ class InputTab(QWidget):
                         continue
 
                     valid_rows += 1
+                    # Track seen ISBNs to compute the unique count.
                     if normalized not in seen:
                         seen.add(normalized)
                         unique_valid += 1
@@ -319,5 +410,5 @@ class InputTab(QWidget):
             self.info_label.setText(f"Error reading file: {str(e)}")
 
     def get_input_file(self):
-        """Return the selected input file path."""
+        """Return the absolute path of the selected input file as a string, or ``None``."""
         return str(self.input_file) if self.input_file else None

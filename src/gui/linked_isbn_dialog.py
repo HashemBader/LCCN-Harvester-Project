@@ -1,6 +1,19 @@
-"""
-Module: linked_isbn_dialog.py
-Dialog for querying, linking, and rewriting linked ISBNs in the database.
+"""Dialog for inspecting and managing the ``linked_isbns`` database table.
+
+``LinkedIsbnDialog`` exposes three operations through a single scrollable form:
+
+1. **Query** — look up the canonical (lowest) ISBN for any ISBN and list all
+   ISBNs linked under it.
+2. **Link** — store a mapping that marks one ISBN as a variant of another
+   without moving any existing ``main`` or ``attempted`` rows.
+3. **Rewrite & Merge** — migrate all ``main`` and ``attempted`` rows from an
+   "other" ISBN onto the canonical "lowest" ISBN, merging call numbers and
+   fail counts, then record the link.  This is a destructive operation and
+   cannot be undone.
+
+The content is placed inside a ``QScrollArea`` so the form remains usable on
+small screens.  The Close button lives outside the scroll area so it is always
+visible.
 """
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -12,20 +25,51 @@ from database import DatabaseManager
 
 
 class LinkedIsbnDialog(QDialog):
-    """Interactive dialog to insert, query, and update linked ISBN rows."""
+    """Modal dialog for querying, linking, and merging linked ISBN records.
+
+    All three operations delegate to ``DatabaseManager`` methods so no raw SQL
+    is issued from this class.  Feedback (success or error) is displayed in the
+    ``status_label`` at the bottom of the form.
+    """
 
     def __init__(self, parent=None, db: DatabaseManager | None = None):
+        """Initialise the dialog and ensure the database schema exists.
+
+        Args:
+            parent: Optional parent widget for modal positioning.
+            db: An initialised ``DatabaseManager`` instance; a new one is
+                created if not supplied.
+        """
         super().__init__(parent)
         self.setWindowTitle("Linked ISBNs")
         self.setMinimumWidth(520)
         self.db = db or DatabaseManager()
-        self.db.init_db()
+        self.db.init_db()   # ensure the linked_isbns table exists before any query
         self._setup_ui()
 
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
     def _setup_ui(self):
+        """Build the dialog layout with three sections inside a QScrollArea.
+
+        Layout hierarchy:
+            QVBoxLayout (outer)
+            ├── QScrollArea (scroll)  — contains the three form sections
+            │   └── QWidget (content)
+            │       └── QVBoxLayout (root)
+            │           ├── Section header: QUERY
+            │           ├── Query input row + result text area
+            │           ├── Section header: LINK TWO ISBNs
+            │           ├── Link form (QFormLayout) + Save Link button
+            │           ├── Section header: REWRITE TO LOWEST ISBN
+            │           ├── Rewrite form (QFormLayout) + Rewrite & Merge button
+            │           └── status_label
+            └── Close button (outside scroll, always visible)
+
+        The Close button is placed outside the scroll area so it remains
+        accessible even when the content is taller than the dialog window.
+        """
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -182,16 +226,29 @@ class LinkedIsbnDialog(QDialog):
     # Helpers
     # ------------------------------------------------------------------
     def _section_header(self, title: str) -> QWidget:
-        """A bold section label above a horizontal rule — two separate widgets."""
+        """Build a bold section label above a horizontal rule.
+
+        Returns a container widget that combines a ``QLabel`` (styled with the
+        ``CardTitle`` class) and a ``QFrame`` horizontal rule, so each section
+        within the form has a visually distinct heading.
+
+        Args:
+            title: Uppercase section name (e.g. ``"QUERY"``).
+
+        Returns:
+            A ``QWidget`` containing the label and the divider line.
+        """
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 6, 0, 0)
         layout.setSpacing(4)
 
         lbl = QLabel(title)
+        # "CardTitle" applies bold/muted styling from the application stylesheet.
         lbl.setProperty("class", "CardTitle")
         layout.addWidget(lbl)
 
+        # Thin horizontal rule separates the heading from the form fields below.
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Plain)
@@ -200,6 +257,13 @@ class LinkedIsbnDialog(QDialog):
         return container
 
     def _set_status(self, msg: str, error: bool = False):
+        """Update the status label text and colour.
+
+        Args:
+            msg: Message to display.
+            error: If ``True``, the label is coloured red; otherwise green.
+        """
+        # Red (#ef4444) for errors, green (#22c55e) for success messages.
         color = "#ef4444" if error else "#22c55e"
         self.status_label.setText(msg)
         self.status_label.setStyleSheet(f"color: {color};")
@@ -208,6 +272,12 @@ class LinkedIsbnDialog(QDialog):
     # Actions
     # ------------------------------------------------------------------
     def _run_query(self):
+        """Look up the canonical ISBN and all linked variants for the entered ISBN.
+
+        Calls ``db.get_lowest_isbn`` to find the canonical form and
+        ``db.get_linked_isbns`` to list all variants.  Results are displayed
+        in the read-only ``query_result`` text area.
+        """
         isbn = self.query_input.text().strip()
         if not isbn:
             self._set_status("Please enter an ISBN to look up.", error=True)
@@ -236,6 +306,12 @@ class LinkedIsbnDialog(QDialog):
             self._set_status(str(exc), error=True)
 
     def _run_link(self):
+        """Store a mapping that marks *other* as a variant of *lowest*.
+
+        Calls ``db.upsert_linked_isbn`` which inserts or replaces the row in
+        the ``linked_isbns`` table.  No existing ``main`` or ``attempted`` rows
+        are touched — only the mapping is recorded.
+        """
         lowest = self.link_lowest.text().strip()
         other = self.link_other.text().strip()
         if not lowest or not other:
@@ -253,6 +329,13 @@ class LinkedIsbnDialog(QDialog):
             self._set_status(str(exc), error=True)
 
     def _run_rewrite(self):
+        """Merge all database rows from *other* ISBN into *lowest* ISBN.
+
+        Calls ``db.rewrite_to_lowest_isbn`` which migrates ``main`` and
+        ``attempted`` rows (merging call numbers and fail counts) then stores
+        the link.  This operation modifies existing data and cannot be undone
+        from the UI.
+        """
         lowest = self.rw_lowest.text().strip()
         other = self.rw_other.text().strip()
         if not lowest or not other:

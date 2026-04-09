@@ -1,85 +1,171 @@
-"""
-styles_v2.py
-Professional V2 Theme (Catppuccin).
-Dynamically generated light and dark modes.
+"""Shared Qt stylesheet generation for the LCCN Harvester application.
+
+Defines two complete Catppuccin-inspired color palettes and a single
+``generate_stylesheet`` function that produces the full application QSS string
+for any palette.
+
+Color palettes:
+    ``CATPPUCCIN_DARK`` — High-contrast dark theme based on Tailwind Gray scale.
+    ``CATPPUCCIN_LIGHT`` — High-contrast light theme based on Tailwind Slate scale.
+
+Usage::
+
+    from .styles import generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+    app.setStyleSheet(generate_stylesheet(CATPPUCCIN_LIGHT))
+
+The ``DEFAULT_STYLESHEET`` constant holds a pre-generated fallback stylesheet
+(using the dark palette) used when ``generate_stylesheet`` raises an exception.
+
+Design notes:
+- QSS property selectors (``QLabel[class="Card"]``) require ``unpolish`` /
+  ``polish`` calls after a dynamic property changes.  See ``_set_sidebar_status``
+  in ``modern_window.py`` for the pattern.
+- SVG-based combo-box arrows are written to a temp file by ``get_svg_file`` so
+  QSS ``url(...)`` references resolve correctly on all platforms.
 """
 
 CATPPUCCIN_DARK = {
-    # Base Abstractions (High Contrast Dark)
-    "bg": "#111827",               # Tailwind Gray-900 (Deep background)
-    "surface": "#1f2937",          # Tailwind Gray-800 (Cards and panels)
-    "surface2": "#374151",         # Tailwind Gray-700 (Raised panels / headers)
-    "border": "#4b5563",           # Tailwind Gray-600 (Clear structural lines)
-    "border_strong": "#6b7280",    # Tailwind Gray-500 (Strong dividers/focus)
-    
-    # Text
-    "text": "#f9fafb",             # Tailwind Gray-50 (Crisp white)
-    "text_muted": "#f9fafb",       # Match visible white-on-dark requirement
-    
-    # Semantic States
-    "primary": "#3b82f6",          # Blue
-    "success": "#22c55e",          # Green
-    "warning": "#f59e0b",          # Amber
-    "danger": "#ef4444",           # Red
-    
-    # Interactive States
-    "hover": "#374151",            # Gray-700 (Hover bg)
-    "focus": "#60a5fa",            # Blue-400
-    "shadow": "#030712",           # Deep dark for bottom-borders
+    # ── Surface hierarchy ──────────────────────────────────────────────
+    # Each level is one step lighter than the one below it so depth reads
+    # naturally even without shadows:  bg < surface < surface2.
+    "bg": "#111827",               # Tailwind Gray-900 — deepest application background
+    "surface": "#1f2937",          # Tailwind Gray-800 — cards and panels
+    "surface2": "#374151",         # Tailwind Gray-700 — raised panel headers / inputs
+
+    # ── Border tokens ─────────────────────────────────────────────────
+    "border": "#4b5563",           # Tailwind Gray-600 — standard structural lines
+    "border_strong": "#6b7280",    # Tailwind Gray-500 — strong dividers and focus rings
+
+    # ── Text tokens ───────────────────────────────────────────────────
+    # Both text levels are identical here so all text stays maximally legible
+    # on the dark backgrounds; muted text is differentiated via font-weight
+    # or font-size instead of color.
+    "text": "#f9fafb",             # Tailwind Gray-50 — crisp primary text
+    "text_muted": "#f9fafb",       # Same as text — white-on-dark contrast requirement
+
+    # ── Semantic state colours ────────────────────────────────────────
+    "primary": "#3b82f6",          # Blue — interactive / accent
+    "success": "#22c55e",          # Green — success / online
+    "warning": "#f59e0b",          # Amber — warning / paused
+    "danger": "#ef4444",           # Red — error / offline / destructive action
+
+    # ── Interactive state colours ─────────────────────────────────────
+    "hover": "#374151",            # Gray-700 — hover background overlay
+    "focus": "#60a5fa",            # Blue-400 — focus ring / active tint
+    "shadow": "#030712",           # Near-black — simulates a CSS box-shadow drop border
 }
 
 CATPPUCCIN_LIGHT = {
-    # Base Abstractions (High Contrast Light)
-    "bg": "#f3f4f6",               # Tailwind Gray-100 (Subtle application background)
-    "surface": "#ffffff",          # Pure white cards
-    "surface2": "#f8fafc",         # Slate-50 for headers
-    "border": "#cbd5e1",           # Slate-300 (Very sharp visible borders)
-    "border_strong": "#94a3b8",    # Slate-400 (Strong dividers)
-    
-    # Text
-    "text": "#0f172a",             # Slate-900 (Near black)
-    "text_muted": "#0f172a",       # Match visible black-on-light requirement
-    
-    # Semantic States
-    "primary": "#2563eb",          # Blue
-    "success": "#16a34a",          # Green
-    "warning": "#d97706",          # Amber
-    "danger": "#dc2626",           # Red
-    
-    # Interactive States
-    "hover": "#f1f5f9",            # Slate-100
-    "focus": "#3b82f6",            # Blue-500
-    "shadow": "#e2e8f0",           # Slate-200 (Drop shadow simulation)
+    # ── Surface hierarchy ──────────────────────────────────────────────
+    "bg": "#f3f4f6",               # Tailwind Gray-100 — subtle application background
+    "surface": "#ffffff",          # Pure white — cards and panels
+    "surface2": "#f8fafc",         # Slate-50 — raised panel headers / inputs
+
+    # ── Border tokens ─────────────────────────────────────────────────
+    "border": "#cbd5e1",           # Slate-300 — sharp visible structural lines
+    "border_strong": "#94a3b8",    # Slate-400 — strong dividers and focus rings
+
+    # ── Text tokens ───────────────────────────────────────────────────
+    # Same rationale as the dark palette: both levels use maximum-contrast text.
+    "text": "#0f172a",             # Slate-900 — near-black primary text
+    "text_muted": "#0f172a",       # Same as text — black-on-light contrast requirement
+
+    # ── Semantic state colours ────────────────────────────────────────
+    # Slightly darker shades compared to the dark palette for light-bg legibility.
+    "primary": "#2563eb",          # Blue — interactive / accent
+    "success": "#16a34a",          # Green — success / online
+    "warning": "#d97706",          # Amber — warning / paused
+    "danger": "#dc2626",           # Red — error / offline / destructive action
+
+    # ── Interactive state colours ─────────────────────────────────────
+    "hover": "#f1f5f9",            # Slate-100 — hover background overlay
+    "focus": "#3b82f6",            # Blue-500 — focus ring / active tint
+    "shadow": "#e2e8f0",           # Slate-200 — simulates a CSS box-shadow drop border
 }
 
-CATPPUCCIN_THEME = CATPPUCCIN_DARK
+DEFAULT_THEME = CATPPUCCIN_DARK
+# CATPPUCCIN_THEME is kept as a legacy alias so older call-sites do not break
+# after the rename; new code should reference CATPPUCCIN_DARK / CATPPUCCIN_LIGHT.
+CATPPUCCIN_THEME = DEFAULT_THEME
 
 def generate_stylesheet(theme: dict) -> str:
-    """Returns fully dynamic stylesheet string."""
+    """Build the complete application QSS stylesheet for the given theme palette.
+
+    The returned string contains rules for every custom widget class used in the
+    application (nav buttons, cards, status pills, form inputs, progress bars,
+    dialogs, etc.) and is applied to the ``QApplication`` instance.
+
+    Args:
+        theme: A palette dict such as ``CATPPUCCIN_DARK`` or ``CATPPUCCIN_LIGHT``
+               containing the semantic color keys (``bg``, ``surface``,
+               ``primary``, etc.).
+
+    Returns:
+        A multi-line QSS stylesheet string ready for ``app.setStyleSheet()``.
+    """
+    # Short alias — all QSS f-string substitutions use `t['key']` notation.
     t = theme
 
-    def hex_to_rgba(hex_str, alpha):
-        """Safely convert #RRGGBB to rgba(r,g,b,a) for PyQt styling."""
-        hex_str = hex_str.lstrip('#')
-        # Handle 6-digit hexes safely
-        if len(hex_str) == 6:
-            r = int(hex_str[0:2], 16)
-            g = int(hex_str[2:4], 16)
-            b = int(hex_str[4:6], 16)
-    import tempfile
-    import os
+    def hex_to_rgba(hex_str: str, alpha: float) -> str:
+        """Convert a ``#RRGGBB`` color to a CSS ``rgba(...)`` string.
+
+        Args:
+            hex_str: A six-digit hex color string (with or without the ``#`` prefix).
+            alpha: Opacity value between 0.0 and 1.0.
+
+        Returns:
+            An ``rgba(r, g, b, alpha)`` CSS string.
+        """
+        hex_str = hex_str.lstrip("#")
+        if len(hex_str) != 6:
+            raise ValueError(f"Expected a 6-digit hex color, got {hex_str!r}")
+        r = int(hex_str[0:2], 16)
+        g = int(hex_str[2:4], 16)
+        b = int(hex_str[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+
     def get_svg_file(svg_string, color_hex, name):
+        """Write a tinted SVG to a temp file and return its POSIX path.
+
+        QSS ``url()`` references must point to real files on disk; this helper
+        replaces the ``CURRENT_COLOR`` placeholder in the SVG with the
+        requested hex color, caches the result in the system temp directory,
+        and returns the path.  Backslashes are normalised to forward slashes
+        so the path is valid in QSS on all platforms.
+
+        Args:
+            svg_string: Raw SVG text with ``CURRENT_COLOR`` as the stroke.
+            color_hex: Target hex color string (e.g. ``"#6b7280"``).
+            name: Short identifier used to build a unique temp file name
+                  (e.g. ``"chevron_down"``).
+
+        Returns:
+            Absolute POSIX-style path to the written SVG file.
+        """
+        import os
+        import tempfile
+
+        # Substitute the placeholder with the desired tint color.
         colored = svg_string.replace('CURRENT_COLOR', color_hex)
         temp_dir = tempfile.gettempdir()
+        # Include color in filename so different tints get separate cached files.
         filename = f"{name}_{color_hex.replace('#', '')}.svg"
+        # Normalise path separators: QSS url() requires forward slashes.
         path = os.path.join(temp_dir, filename).replace('\\', '/')
         with open(path, 'w', encoding='utf-8') as f:
             f.write(colored)
         return path
-        
+
+    # Minimal inline SVGs used only inside QSS url() calls for combo/spin arrows.
+    # ``CURRENT_COLOR`` is a deliberate placeholder — it is not the SVG standard
+    # "currentColor"; get_svg_file replaces this token with the real hex tint
+    # before writing the SVG to disk, so QSS can reference a real file path.
     chevron_down = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='CURRENT_COLOR' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>"
     chevron_up = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='CURRENT_COLOR' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='18 15 12 9 6 15'></polyline></svg>"
 
+    # Note: all curly braces in this f-string must be doubled ({{ }}) to
+    # produce literal braces in the output QSS; single braces are Python
+    # f-string substitution markers.
     return f"""/* --- Global Base --- */
 QWidget {{
     background-color: {t['bg']}; /* App Background */
@@ -94,7 +180,9 @@ QLabel {{
     color: {t['text']};
 }}
 
-/* --- Sidebar: Gradient Depth --- */
+/* --- Sidebar: Gradient Depth ---
+   The sidebar uses border-right rather than a full border so only the
+   edge that abuts the content area is visually separated.              */
 QFrame#Sidebar {{
     background-color: {t['bg']};
     border-right: 1px solid {t['border']};
@@ -109,7 +197,10 @@ QLabel#SidebarTitle {{
     qproperty-alignment: AlignCenter;
 }}
 
-/* Sidebar Navigation Buttons */
+/* Sidebar Navigation Buttons
+   Three selector forms are provided (class attribute, CSS class, objectName)
+   to ensure the rule fires regardless of how the property was assigned in
+   Python (setProperty("class",...) vs setObjectName(...)).               */
 QPushButton[class="NavButton"], QPushButton.NavButton, QPushButton#NavButton {{
     background-color: transparent;
     color: {t['text_muted']};
@@ -169,7 +260,9 @@ QLabel#PageTitle {{
     letter-spacing: 0.2px;
 }}
 
-/* --- Cards / Panels: The Space Context --- */
+/* --- Cards / Panels: The Space Context ---
+   border-bottom is intentionally 2px (vs 1px sides) to simulate a CSS
+   box-shadow drop by making the bottom edge slightly heavier.           */
 QFrame[class="Card"], QFrame.Card {{
     background-color: {t['surface']}; 
     border: 1px solid {t['border']}; 
@@ -253,7 +346,10 @@ QLabel[class="HelperText"], QLabel.HelperText {{
     border: none;
 }}
 
-/* --- Status Pills --- */
+/* --- Status Pills ---
+   Pills are display-only badges rendered via QLabel rather than QPushButton.
+   The base rule is intentionally colourless (text_muted); the [state="..."]
+   sub-rules below override the colour for each known harvest state.     */
 QLabel[class="StatusPill"], QLabel.StatusPill {{
     background-color: transparent;
     color: {t['text_muted']};
@@ -308,12 +404,15 @@ QLineEdit:read-only {{
     border: 1px solid {t['border']};
 }}
 
-/* Stronger Affordance for Dropdowns */
+/* Stronger Affordance for Dropdowns
+   combobox-popup: 0 disables the OS-native popup so our custom QListView
+   (installed by ConsistentComboBox.setView) is styled by the QSS rules
+   below rather than by the OS theme.                                    */
 QComboBox {{
-    background-color: {t['bg']}; 
-    border: 1px solid {t['border_strong']}; 
+    background-color: {t['bg']};
+    border: 1px solid {t['border_strong']};
     border-radius: 8px;
-    combobox-popup: 0;
+    combobox-popup: 0; /* Disable the native OS popup so custom QListView styles apply */
     padding: 12px;
     color: {t['text']};
     font-size: 14px;
@@ -328,7 +427,9 @@ QComboBox:focus {{
     background-color: {t['surface']};
 }}
 
-/* Ensure dropdown menus don't inherit OS native green selections */
+/* Ensure dropdown menus don't inherit OS native green selections.
+   This fallback rule fires when the popup view is NOT a QListView with a
+   specific objectName (i.e. for combo boxes not using ConsistentComboBox). */
 QComboBox QAbstractItemView {{
     background-color: {t['bg']};
     border: 1px solid {t['border']};
@@ -416,16 +517,20 @@ QComboBox::drop-down {{
     border-bottom-right-radius: 8px;
     background: transparent;
 }}
+/* get_svg_file writes a tinted SVG to a temp file and returns its path;
+   the path is then embedded directly into the QSS url() call. */
 QComboBox::down-arrow {{
     image: url("{get_svg_file(chevron_down, t['text_muted'], 'chevron_down')}");
     width: 16px;
     height: 16px;
 }}
 QComboBox::down-arrow:on, QComboBox::down-arrow:hover, QComboBox::down-arrow:focus {{
+    /* Use the focus (blue) tint when the combo is active or hovered. */
     image: url("{get_svg_file(chevron_down, t['focus'], 'chevron_down')}");
 }}
 
-/* Rank column combo — tighter vertical padding so the number isn't clipped */
+/* Rank column combo — tighter padding than the global QComboBox rule so the
+   numeric rank fits inside the narrow cell width in the targets table.   */
 QComboBox#RankCombo {{
     padding: 4px 24px 4px 8px;
     min-width: 52px;
@@ -450,7 +555,10 @@ QListView#RankComboPopup::item:selected {{
     color: {t['text']};
 }}
 
-/* Clean up QSpinBox arrows to avoid dark system patches */
+/* Clean up QSpinBox arrows to avoid dark system patches.
+   The default Windows/macOS button backgrounds are opaque rectangles that
+   clash with themed inputs; setting them transparent removes the patches
+   while the SVG arrow images (below) provide the affordance.            */
 QSpinBox::up-button, QSpinBox::down-button {{
     background: transparent;
     border: none;
@@ -507,7 +615,10 @@ QFrame[class="DragZone"][state="success"] {{
     background-color: {t['surface2']};
 }}
 
-/* Tables */
+/* Tables
+   selection-background-color: transparent keeps the row highlight invisible
+   because the targets table uses custom cell widgets (buttons, combos) that
+   would look odd with a coloured highlight row behind them.              */
 QTableWidget {{
     background-color: {t['surface']}; 
     alternate-background-color: {t['bg']};
@@ -575,7 +686,13 @@ QScrollBar::handle:horizontal:hover {{
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 
-/* --- BUTTON SYSTEM (VIBRANT) --- */
+/* --- BUTTON SYSTEM (VIBRANT) ---
+   Three named variants sit above the base QPushButton rule:
+     PrimaryButton — solid accent blue fill; used for the main call-to-action.
+     SecondaryButton — neutral surface fill; used for supporting actions.
+     DangerButton — red fill; used for destructive or irreversible actions.
+   All three use three selector forms (attribute / class / objectName) for
+   the same compatibility reason as NavButton above.                     */
 
 QPushButton {{
     background-color: {t['surface2']};
@@ -781,7 +898,11 @@ QFrame[class="Divider"], QFrame.Divider {{
     max-height: 1px;
 }}
 
-/* --- Progress Bars --- */
+/* --- Progress Bars ---
+   TerminalProgressBar is the thin 8px progress strip shown in the harvest
+   tab.  The [state="..."] sub-rules below change the chunk colour to match
+   the current harvest state (running=blue, success=green, error/cancelled=red,
+   paused=amber) so the bar itself communicates the outcome at a glance.  */
 QProgressBar[class="TerminalProgressBar"], QProgressBar.TerminalProgressBar {{
     background-color: {t['surface']}; 
     height: 8px; 
@@ -802,7 +923,9 @@ QProgressBar[class="TerminalProgressBar"][state="paused"]::chunk, QProgressBar.T
     background-color: {t['warning']}; 
 }}
 
-/* --- Targets Tab Classes --- */
+/* --- Targets Tab Classes ---
+   The Banner label is the informational strip at the top of the targets
+   table with a left accent border (primary colour) that draws the eye. */
 QLabel[class="Banner"], QLabel.Banner {{
     color: {t['text_muted']};
     background-color: {t['surface']};
@@ -1017,7 +1140,10 @@ QLabel#CategoryHeader {{
     margin-top: 10px;
 }}
 
-/* --- Harvest Tab: Stat Tiles (File Statistics + MARC) --- */
+/* --- Harvest Tab: Stat Tiles (File Statistics + MARC) ---
+   StatTile widgets are fixed-height summary boxes (e.g. "Total ISBNs",
+   "Records Found").  StatTileValue / StatTileValueSmall differ only in
+   font-size so smaller numbers don't need a separate widget class.      */
 QWidget[class="StatTile"] {{
     background-color: {t['surface2']};
     border-radius: 8px;
@@ -1068,4 +1194,8 @@ QFrame[class="MarcDropZone"] {{
 }}
 """
 
-V2_STYLESHEET = generate_stylesheet(CATPPUCCIN_DARK)
+# Pre-generated dark fallback stylesheet evaluated at module import time.
+# Importing this constant does not trigger a redundant generation at runtime
+# because Python caches the module; callers that always want the current
+# theme should call generate_stylesheet(palette) directly.
+DEFAULT_STYLESHEET = generate_stylesheet(CATPPUCCIN_DARK)

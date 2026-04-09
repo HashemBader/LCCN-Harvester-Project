@@ -1,14 +1,56 @@
+"""
+Harvest orchestration: cache checking, multi-target lookup, retry suppression,
+and batched DB writes.
+
+This is the core runtime engine of the LCCN Harvester.  The
+``HarvestOrchestrator`` class drives a complete harvest run from start to
+finish without any knowledge of the UI or specific data sources.
+
+Key concepts
+------------
+Call-number mode (``call_number_mode``)
+    ``"lccn"``  -- only Library of Congress call numbers are sought.
+    ``"nlmcn"`` -- only NLM call numbers are sought.
+    ``"both"``  -- both types are sought (default).
+
+Stop rule (``stop_rule``)
+    Controls when the orchestrator is satisfied and stops querying further
+    targets for a given ISBN.  Possible values:
+      ``"stop_either"``   -- stop as soon as ANY call number is found.
+      ``"stop_lccn"``     -- stop when an LCCN is found (continues for NLMCN).
+      ``"stop_nlmcn"``    -- stop when an NLMCN is found.
+      ``"continue_both"`` -- continue until BOTH types are found.
+
+Progress events (``progress_cb``)
+    The optional callback receives ``(event_name: str, payload: dict)`` for
+    every significant step.  Common event names:
+      ``isbn_start``, ``cached``, ``linked_cached``, ``target_start``,
+      ``success``, ``linked_success``, ``failed``, ``skip_retry``,
+      ``attempt_failed``, ``not_in_local_catalog``, ``stats``, ``db_flush``.
+
+Batched writes
+    Results are staged in in-memory lists (``pending_main``,
+    ``pending_attempted``, ``pending_linked``) and flushed to SQLite in a
+    single transaction every ``dynamic_batch_size`` ISBNs to reduce I/O
+    overhead.
+
+Linked ISBNs
+    Different ISBNs for the same edition (e.g. 10-digit vs 13-digit) can be
+    grouped before the run via the ``linked`` argument to ``run()``.  The
+    orchestrator also *detects* implicit groups at flush time when distinct
+    ISBNs share the same call number (``_detect_implicit_linked_isbns``).
+"""
+
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
+
 from src.database import DatabaseManager, MainRecord, now_datetime_str
 from src.utils.isbn_validator import pick_lowest_isbn
-from concurrent.futures import ThreadPoolExecutor
 
-
-
-# Progress callback signature (Sprint 4 GUI signals can wrap this easily)
+# Callback types used for real-time harvest progress reporting.
 # event examples: "isbn_start", "cached", "skip_retry", "target_start", "success", "failed"
 ProgressCallback = Callable[[str, dict], None]
 CancelCheck = Callable[[], bool]
@@ -26,6 +68,16 @@ class HarvestTarget(Protocol):
 
 @dataclass(frozen=True)
 class TargetResult:
+    """Result returned by a single ``HarvestTarget.lookup()`` call.
+
+    Attributes:
+        success: ``True`` when at least one call number was found.
+        lccn:    Library of Congress call number, or ``None``.
+        nlmcn:   NLM call number, or ``None``.
+        source:  Name of the target that produced this result.
+        isbns:   Additional ISBNs encountered in the record (e.g. linked editions).
+        error:   Human-readable failure reason when ``success=False``.
+    """
     success: bool
     lccn: Optional[str] = None
     nlmcn: Optional[str] = None
@@ -36,8 +88,8 @@ class TargetResult:
 
 class PlaceholderTarget:
     """
-    Sprint 3 starter target.
-    Always fails with a clear message until real targets are wired.
+    Fallback target used when no real targets have been configured.
+    Always returns a failure so the orchestrator can still complete gracefully.
     """
 
     name = "(placeholder)"
@@ -46,12 +98,25 @@ class PlaceholderTarget:
         return TargetResult(
             success=False,
             source=self.name,
-            error="Harvest target not implemented yet (placeholder)",
+            error="No harvest targets configured.",
         )
 
 
 @dataclass(frozen=True)
 class HarvestSummary:
+    """Aggregate statistics returned by ``HarvestOrchestrator.run()``.
+
+    Attributes:
+        total_isbns:          Total number of ISBNs submitted to this run.
+        cached_hits:          ISBNs satisfied from the local DB without any API call.
+        skipped_recent_fail:  ISBNs skipped because they failed recently (within
+                              ``retry_days``) and the retry window has not expired.
+        attempted:            ISBNs that triggered at least one external lookup.
+        successes:            ISBNs for which a call number was found.
+        failures:             ISBNs that were attempted but no call number found.
+        dry_run:              ``True`` if no DB writes were made.
+        not_in_local_catalog: ISBNs skipped in ``db_only`` mode (not in local DB).
+    """
     total_isbns: int
     cached_hits: int
     skipped_recent_fail: int
@@ -64,6 +129,14 @@ class HarvestSummary:
 
 @dataclass(frozen=True)
 class ProcessOutcome:
+    """Internal result of ``_process_isbn_internal`` for a single ISBN.
+
+    Attributes:
+        status:        One of ``"success"``, ``"failed"``, ``"cached"``,
+                       ``"skip_retry"``, or ``"not_in_local_catalog"``.
+        record:        The resulting ``MainRecord`` (or ``None`` on failure).
+        attempted_rows: Rows to write into the ``attempted`` table; empty on cache hits.
+    """
     status: str
     record: Optional[MainRecord]
     attempted_rows: tuple[tuple[str, Optional[str], str, Optional[str], Optional[str]], ...]
@@ -74,14 +147,36 @@ class HarvestCancelled(Exception):
 
 
 class HarvestOrchestrator:
-    """
-    Full orchestrator for Sprint 3:
-    - Target order
-    - Cache lookup
-    - Retry logic
-    - Stop-on-first-result
-    - DB writes (main/attempted)
-    - Optional progress callback hook
+    """Core runtime engine that drives a full harvest batch.
+
+    Responsibilities:
+      - Walks configured ``HarvestTarget`` instances in order for each ISBN.
+      - Checks the local DB cache before making any external network call.
+      - Enforces retry suppression: skips ISBNs that failed recently (within
+        ``retry_days``) unless the ISBN is in ``bypass_retry_isbns``.
+      - Applies the configured ``call_number_mode`` and ``stop_rule`` to decide
+        when to stop querying further targets for a given ISBN.
+      - Stages results in memory (``pending_main``, ``pending_attempted``,
+        ``pending_linked``) and flushes them to SQLite in batched transactions.
+      - Fires optional ``progress_cb`` events for every meaningful step so the
+        GUI can update its progress display without coupling to DB internals.
+      - Detects implicit linked-ISBN groups when distinct ISBNs share a
+        harvested call number.
+
+    Attributes:
+        db:                  The ``DatabaseManager`` used for all DB I/O.
+        targets:             Ordered list of ``HarvestTarget`` data sources.
+        retry_days:          Days to suppress retrying a previously failed ISBN.
+        bypass_retry_isbns:  ISBNs forced to skip the retry suppression window.
+        bypass_cache_isbns:  ISBNs forced to skip the DB cache check.
+        progress_cb:         Optional ``(event_name, payload_dict)`` callback.
+        cancel_check:        Optional callable that returns ``True`` to abort.
+        call_number_mode:    One of ``"lccn"``, ``"nlmcn"``, or ``"both"``.
+        stop_rule:           One of ``"stop_either"``, ``"stop_lccn"``,
+                             ``"stop_nlmcn"``, or ``"continue_both"``.
+        max_workers:         Parallel worker threads (1 = sequential).
+        db_only:             When ``True``, no external API calls are made.
+        selected_sources:    Source names whose cached results are trusted.
     """
 
     DEFAULT_FLUSH_BATCH_SIZE = 1
@@ -103,6 +198,24 @@ class HarvestOrchestrator:
         both_stop_policy: str | None = None,
         selected_sources: Optional[set[str]] = None,
     ):
+        """Configure a harvest run.
+
+        Args:
+            db:                   The database manager used for cache reads and result writes.
+            targets:              Ordered list of data sources to query.  Defaults to a
+                                  ``PlaceholderTarget`` when ``None`` or empty.
+            retry_days:           Number of days to suppress re-trying a previously failed ISBN.
+            max_workers:          Number of parallel threads for lookup (1 = sequential).
+            call_number_mode:     ``"lccn"``, ``"nlmcn"``, or ``"both"`` (default).
+            bypass_retry_isbns:   ISBNs that should be re-tried even within the retry window.
+            bypass_cache_isbns:   ISBNs that should skip the cache check and always hit targets.
+            progress_cb:          Optional ``(event, payload)`` callback for progress events.
+            cancel_check:         Optional callable returning ``True`` when the run should stop.
+            stop_rule:            When to stop querying further targets after a hit (see module docs).
+            db_only:              When ``True``, only the local DB is consulted; no API calls are made.
+            both_stop_policy:     Deprecated; use ``stop_rule`` instead.
+            selected_sources:     Restrict cache reads to rows from these source names only.
+        """
         self.db = db
         self.retry_days = retry_days
         self.bypass_retry_isbns = set(bypass_retry_isbns or [])
@@ -112,7 +225,6 @@ class HarvestOrchestrator:
         self.call_number_mode = self._normalize_call_number_mode(call_number_mode)
         self.stop_rule = self._normalize_stop_rule(stop_rule)
         self.max_workers = max(1, int(max_workers))
-        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
         # In db_only mode API targets are never consulted; bypass_cache_isbns is ignored.
         self.db_only = db_only
         self.selected_sources = {
@@ -131,18 +243,36 @@ class HarvestOrchestrator:
             }
 
     def _allowed_cached_sources(self) -> Optional[set[str]]:
+        """Return the source whitelist used when reading from the DB cache.
+
+        Returns ``None`` (no filter) when ``selected_sources`` is empty,
+        meaning any cached row is acceptable regardless of which target produced
+        it.  When sources are configured, only cached rows from those sources
+        count as a hit so the orchestrator will still query the missing sources.
+        """
         return self.selected_sources or None
 
     def _emit(self, event: str, payload: dict) -> None:
+        """Fire a named progress event to the registered callback, if any.
+
+        Args:
+            event:   Short string identifier (e.g. ``"isbn_start"``, ``"cached"``).
+            payload: Arbitrary dict with event-specific data for the UI.
+        """
         if self.progress_cb:
             self.progress_cb(event, payload)
 
     def _check_cancelled(self) -> None:
+        """Raise ``HarvestCancelled`` if the caller has signalled a stop."""
         if self.cancel_check and self.cancel_check():
             raise HarvestCancelled("Harvest cancelled by user")
 
     @staticmethod
     def _normalize_call_number_mode(mode: str) -> str:
+        """Validate and normalise *mode* to a known ``call_number_mode`` value.
+
+        Falls back to ``"both"`` for any unrecognised input.
+        """
         mode_normalized = (mode or "").strip().lower()
         if mode_normalized in {"lccn", "nlmcn", "both"}:
             return mode_normalized
@@ -150,12 +280,23 @@ class HarvestOrchestrator:
 
     @staticmethod
     def _normalize_stop_rule(rule: str) -> str:
+        """Validate and normalise *rule* to a known ``stop_rule`` value.
+
+        Falls back to ``"stop_either"`` for any unrecognised input.
+        """
         normalized = (rule or "").strip().lower()
         if normalized in {"stop_either", "stop_lccn", "stop_nlmcn", "continue_both"}:
             return normalized
         return "stop_either"
 
     def _filter_result_by_mode(self, result: TargetResult) -> TargetResult:
+        """Strip call-number fields from *result* that are outside the configured mode.
+
+        When ``call_number_mode`` is ``"lccn"`` and the result only contains an
+        NLMCN, the result is converted to a failure so the orchestrator knows
+        to keep looking.  The reverse applies for ``"nlmcn"`` mode.  In
+        ``"both"`` mode the result is returned unchanged.
+        """
         if not result.success or self.call_number_mode == "both":
             return result
 
@@ -185,6 +326,7 @@ class HarvestOrchestrator:
 
     @staticmethod
     def _classify_other_error_target(error_text: str) -> str:
+        """Bucket an error string into ``"z3950_unsupported"``, ``"offline"``, or ``"other"``."""
         e = (error_text or "").strip().lower()
         if "z39.50 support not available" in e:
             return "z3950_unsupported"
@@ -208,6 +350,12 @@ class HarvestOrchestrator:
         not_found_targets: list[str],
         other_errors: list[tuple[str, str]],
     ) -> dict:
+        """Build the ``"failed"`` event payload dict for the progress callback.
+
+        Classifies errors from each target into three categories so the UI can
+        display them with appropriate context (e.g. show a Z39.50 warning once
+        instead of per-target).
+        """
         z3950_unsupported_targets: list[str] = []
         offline_targets: list[str] = []
         other_error_items: list[str] = []
@@ -233,6 +381,16 @@ class HarvestOrchestrator:
         }
 
     def _should_stop_with_found(self, has_lccn: bool, has_nlmcn: bool) -> bool:
+        """Return ``True`` when the accumulated results satisfy the configured stop rule.
+
+        Used both to short-circuit the target loop and to decide whether a
+        partial result (e.g. LCCN found but no NLMCN in ``continue_both`` mode)
+        should be treated as a success or a failure.
+
+        Args:
+            has_lccn:  Whether an LC call number has been found so far.
+            has_nlmcn: Whether an NLM call number has been found so far.
+        """
         if self.call_number_mode == "lccn":
             return has_lccn
         if self.call_number_mode == "nlmcn":
@@ -246,6 +404,19 @@ class HarvestOrchestrator:
         return has_lccn and has_nlmcn  # continue_both
 
     def _required_types(self, has_lccn: bool, has_nlmcn: bool) -> list[str]:
+        """Return the call-number types still needed to satisfy the stop rule.
+
+        When the returned list is empty the orchestrator should break out of
+        the target loop (the stop condition is already met).
+
+        Args:
+            has_lccn:  Whether an LC call number has been found.
+            has_nlmcn: Whether an NLM call number has been found.
+
+        Returns:
+            A list containing ``"lccn"`` and/or ``"nlmcn"`` that are still
+            missing, or an empty list if the stop rule is already satisfied.
+        """
         if self.call_number_mode == "lccn":
             return [] if has_lccn else ["lccn"]
         if self.call_number_mode == "nlmcn":
@@ -265,6 +436,7 @@ class HarvestOrchestrator:
 
     @staticmethod
     def _type_label(call_number_type: str) -> str:
+        """Return the human-readable label for a call_number_type key (``"lccn"`` → ``"LCCN"``)."""
         return "LCCN" if call_number_type == "lccn" else "NLMCN"
 
     def _emit_attempt_failure(
@@ -296,6 +468,11 @@ class HarvestOrchestrator:
         nlmcn: Optional[str],
         nlmcn_source: Optional[str],
     ) -> MainRecord:
+        """Construct a ``MainRecord`` from harvested call-number data.
+
+        The combined ``source`` field is assembled from ``lccn_source`` and
+        ``nlmcn_source`` (deduplicated, joined with ``" + "``).
+        """
         combined_sources: list[str] = []
         for value in (lccn_source, nlmcn_source):
             text = str(value or "").strip()
@@ -311,6 +488,7 @@ class HarvestOrchestrator:
         )
 
     def _emit_result(self, event_name: str, *, isbn: str, target: str, record: MainRecord) -> None:
+        """Emit a success/cached event with a standardised payload dict."""
         self._emit(
             event_name,
             {
@@ -332,6 +510,32 @@ class HarvestOrchestrator:
         pending_main: list[MainRecord],
         pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
     ) -> ProcessOutcome:
+        """Core single-ISBN processing logic shared by sequential and parallel paths.
+
+        Execution order:
+          1. Emit ``isbn_start``.
+          2. Resolve canonical (lowest) ISBN via ``linked_isbns``.
+          3. Check the DB cache (skipped if ISBN is in ``bypass_cache_isbns``).
+          4. If cache satisfies the stop rule, emit ``cached`` / ``linked_cached``
+             and return immediately without touching any target.
+          5. In ``db_only`` mode, emit ``not_in_local_catalog`` and return.
+          6. Walk ``self.targets`` in order; for each:
+             - Skip if the ISBN is within the retry suppression window for all
+               required call-number types (unless in ``bypass_retry_isbns``).
+             - Call ``target.lookup(isbn)`` and apply ``_filter_result_by_mode``.
+             - Accumulate the best LCCN / NLMCN seen across all targets.
+             - Break as soon as the stop rule is satisfied.
+          7. Evaluate the accumulated state and return the appropriate outcome.
+
+        Args:
+            isbn:             ISBN to process (may be non-canonical; resolved internally).
+            dry_run:          When ``True``, results are computed but not written.
+            pending_main:     Mutable list; successful ``MainRecord``s are appended here.
+            pending_attempted: Mutable list; failed-attempt tuples are appended here.
+
+        Returns:
+            A ``ProcessOutcome`` with status, optional record, and attempt rows.
+        """
         self._check_cancelled()
         self._emit("isbn_start", {"isbn": isbn})
 
@@ -372,6 +576,8 @@ class HarvestOrchestrator:
             self._emit("not_in_local_catalog", {"isbn": isbn})
             return ProcessOutcome("not_in_local_catalog", None, tuple())
 
+        # No cache hit: walk the selected targets and remember the best data we
+        # see so stop rules can decide whether to continue or exit early.
         last_error: Optional[str] = None
         last_target: Optional[str] = None
         not_found_targets: list[str] = []
@@ -570,6 +776,23 @@ class HarvestOrchestrator:
         pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
         pending_linked: Optional[list[tuple[str, str]]] = None,
     ) -> str:
+        """Process a single ISBN and stage the result into the provided batch buffers.
+
+        This is the public single-ISBN entry point.  It delegates to
+        ``_process_isbn_internal`` and then queues any linked-ISBN pair so the
+        batch flush can rewrite rows stored under non-canonical ISBNs.
+
+        Args:
+            isbn:             The ISBN to harvest.
+            dry_run:          When ``True``, no records are added to the buffers.
+            pending_main:     Buffer for successful ``MainRecord`` objects.
+            pending_attempted: Buffer for failed-lookup tuples.
+            pending_linked:   Optional buffer for (lowest, other) ISBN pairs.
+
+        Returns:
+            The outcome status string (``"success"``, ``"failed"``, ``"cached"``,
+            ``"skip_retry"``, or ``"not_in_local_catalog"``).
+        """
         outcome = self._process_isbn_internal(
             isbn,
             dry_run=dry_run,
@@ -672,20 +895,31 @@ class HarvestOrchestrator:
 
         return "success"
 
-    def _build_linked_crossref_record(self, record: MainRecord, canonical_isbn: str) -> MainRecord:
-        return self._build_record(
-            isbn=record.isbn,
-            lccn=record.lccn,
-            lccn_source=(f"Linked from {canonical_isbn}" if record.lccn else None),
-            nlmcn=record.nlmcn,
-            nlmcn_source=(f"Linked from {canonical_isbn}" if record.nlmcn else None),
-        )
-
     def _detect_implicit_linked_isbns(
         self,
         pending_main: list[MainRecord],
         pending_linked: list[tuple[str, str]],
     ) -> None:
+        """Infer implicit linked-ISBN groups from shared call numbers in the current batch.
+
+        When two or more ISBNs in ``pending_main`` (or already in the DB)
+        resolve to the same LCCN or NLMCN they are almost certainly different
+        editions of the same work.  This method clusters such ISBNs, picks the
+        numerically lowest one as the canonical key, rewrites ``pending_main``
+        in-place so all records use the canonical ISBN, and appends
+        ``(canonical, other)`` pairs to ``pending_linked`` for the DB flush.
+
+        Uses a union-find algorithm to cluster ISBNs that share the same LC or
+        NLM call number (either within the current batch or already present in
+        the DB).  The lowest ISBN in each cluster becomes the canonical key and
+        all others are added to ``pending_linked`` as ``(canonical, other)``
+        pairs.  The ``pending_main`` list is rewritten in-place so every
+        record is stored under its canonical ISBN.
+
+        Args:
+            pending_main:   In-flight main records (mutated in place).
+            pending_linked: In-flight linked-ISBN pairs (extended in place).
+        """
         if not pending_main:
             return
 
@@ -709,17 +943,21 @@ class HarvestOrchestrator:
                     if existing is not None:
                         existing_records[isbn] = existing
 
-        # Union-find helper for building connected ISBN groups.
+        # Union-find (disjoint-set) data structure for grouping ISBNs that
+        # share a call number.  Path compression is applied in find() so
+        # repeated queries stay O(α(n)) amortised.
         parent: dict[str, str] = {}
 
         def find(isbn: str) -> str:
+            """Return the root representative of *isbn*'s connected component."""
             parent.setdefault(isbn, isbn)
             while parent[isbn] != isbn:
-                parent[isbn] = parent[parent[isbn]]
+                parent[isbn] = parent[parent[isbn]]  # path compression (halving)
                 isbn = parent[isbn]
             return isbn
 
         def union(a: str, b: str) -> None:
+            """Merge the components containing *a* and *b*."""
             root_a = find(a)
             root_b = find(b)
             if root_a != root_b:
@@ -749,6 +987,7 @@ class HarvestOrchestrator:
         if not isbn_to_canonical:
             return
 
+        # Deduplicate pairs while preserving insertion order (Python 3.7+ dict guarantee)
         pending_linked[:] = list(dict.fromkeys(pending_linked))
 
         def _merge_records(primary: MainRecord, secondary: MainRecord) -> MainRecord:
@@ -808,6 +1047,26 @@ class HarvestOrchestrator:
 
     def run(self, isbns: list[str], *, dry_run: bool,
             linked: Optional[dict[str, list[str]]] = None) -> HarvestSummary:
+        """Run a harvest batch over *isbns* and return aggregate statistics.
+
+        Processes each ISBN (or ISBN group if ``linked`` is provided), staging
+        results in memory and flushing to SQLite in transaction chunks sized
+        proportionally to the batch.  A final flush is always performed after
+        the last ISBN.
+
+        Args:
+            isbns:   Ordered list of ISBNs to harvest.
+            dry_run: When ``True``, targets are queried but no DB writes occur.
+            linked:  Optional mapping of primary ISBN → list of variant ISBNs.
+                     When present, each group is tried together via
+                     ``process_isbn_group``.
+
+        Returns:
+            A ``HarvestSummary`` with counts for all outcome categories.
+
+        Raises:
+            HarvestCancelled: If ``cancel_check`` returns ``True`` mid-run.
+        """
 
         cached_hits = 0
         skipped_recent_fail = 0
@@ -816,17 +1075,28 @@ class HarvestOrchestrator:
         failures = 0
         not_in_local_catalog = 0
 
-        # --- Sprint 5: batching buffers ---
+        # Batching buffers — accumulated writes are flushed together for performance.
         pending_main: list[MainRecord] = []
         pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
         pending_linked: list[tuple[str, str]] = []
 
+        # Scale flush frequency with batch size: flush every ~1% of input ISBNs
+        # but clamp between DEFAULT_FLUSH_BATCH_SIZE and 1000 rows.
         dynamic_batch_size = max(self.DEFAULT_FLUSH_BATCH_SIZE, min(1000, len(isbns) // 100))
 
         def flush() -> None:
-            """Flush buffered DB writes in a single transaction."""
+            """Flush buffered DB writes in a single atomic transaction.
+
+            Filters ``pending_attempted`` to remove entries whose ISBN (or
+            isbn+type pair in ``continue_both`` mode) already has a success
+            record in ``pending_main`` so a successful result from this batch
+            doesn't leave a stale failure row behind.  Then writes linked-ISBN
+            rewrites, main records, filtered attempted rows, and linked-ISBN
+            pairs inside a single ``transaction()`` call.
+            """
             wrote_main = len(pending_main)
             if dry_run:
+                # In dry-run mode results are computed but never persisted
                 pending_main.clear()
                 pending_attempted.clear()
                 pending_linked.clear()
@@ -836,11 +1106,14 @@ class HarvestOrchestrator:
                 return
 
             if self.call_number_mode == "both" and self.stop_rule != "continue_both":
+                # In this mode a success for any type clears all attempted rows for the ISBN
                 successful_isbns = {record.isbn for record in pending_main}
                 filtered_attempted = [
                     row for row in pending_attempted if row[0] not in successful_isbns
                 ]
             else:
+                # In single-type or continue_both mode, clear only attempted rows
+                # whose exact (isbn, call_number_type) pair succeeded this batch
                 successful_pairs = {
                     (record.isbn, call_type)
                     for record in pending_main
@@ -867,7 +1140,6 @@ class HarvestOrchestrator:
             pending_attempted.clear()
             pending_linked.clear()
             self._emit("db_flush", {"main": wrote_main, "attempted": wrote_attempted})
-        # --- end Sprint 5 batching ---
 
         _linked = linked or {}
 
@@ -1148,9 +1420,14 @@ class HarvestOrchestrator:
                 return ("failed", [], attempted_rows, [])
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+                # ex.map preserves input order, so each result corresponds to
+                # the ISBN at the same position in `isbns`.  Each worker returns
+                # (status, recs, att, linked_rows) where the last three lists
+                # are thread-local and safe to extend onto the shared buffers
+                # here in the main thread.
                 for status, recs, att, linked_rows in ex.map(worker, isbns):
                     self._check_cancelled()
-                    # main-thread batching writes
+                    # Accumulate thread-local results into the main-thread batch buffers
                     if recs:
                         pending_main.extend(recs)
                     if att:

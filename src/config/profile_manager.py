@@ -1,6 +1,38 @@
 """
-Module: profile_manager.py
-Manages configuration profiles for the LCCN Harvester.
+Configuration profile manager for the LCCN Harvester.
+
+A "profile" is a named collection of harvest settings (targets, retry
+options, timeouts, etc.) stored as a JSON file under
+``config/profiles/<slug>/<slug>.json``.  Every installation always has a
+built-in "Default Settings" profile stored at ``config/default_profile.json``.
+
+File-system layout
+------------------
+  config/
+    active_profile.txt          -- plain-text file storing the active profile name
+    default_profile.json        -- the built-in "Default Settings" profile
+    profiles/
+      <slug>/
+        <slug>.json             -- profile settings
+        <slug>_targets.tsv      -- per-profile override of harvest targets
+  data/
+    lccn_harvester.sqlite3      -- single shared database (all profiles share it)
+    <slug>/                     -- per-profile output/exports folder
+
+Migration notes
+---------------
+Older versions stored each profile's results in a separate SQLite database
+(``data/<slug>/lccn_harvester.sqlite3``).  ``_merge_legacy_profile_db_into_shared``
+performs a one-time best-effort migration the first time such a profile is
+accessed, then writes a marker file so the merge is never repeated.
+
+Profile JSON keys
+-----------------
+  profile_name   (str)  -- display name
+  description    (str)  -- optional freeform description
+  created_at     (str)  -- ISO-8601 creation timestamp
+  last_modified  (str)  -- ISO-8601 last-save timestamp (optional)
+  settings       (dict) -- arbitrary settings dict consumed by the UI/harvester
 """
 import shutil
 import sqlite3
@@ -11,7 +43,16 @@ from datetime import datetime
 
 
 class ProfileManager:
-    """Manage configuration profiles."""
+    """Read/write access to named configuration profiles.
+
+    Responsibilities:
+      - Enumerate, load, save, rename, and delete profiles.
+      - Resolve the correct file-system paths (DB, targets TSV, exports dir)
+        for any given profile name.
+      - Perform one-time migration of legacy per-profile databases into the
+        shared database on first access.
+      - Track which profile is currently active via ``active_profile.txt``.
+    """
 
     def __init__(self):
         from config.app_paths import get_app_root
@@ -85,17 +126,35 @@ class ProfileManager:
         return self.get_profile_data_dir(name) / ".shared_db_merged"
 
     def _merge_legacy_profile_db_into_shared(self, name: str) -> None:
-        """Best-effort one-time merge of an old profile-specific DB into the shared DB."""
+        """Perform a one-time best-effort migration of a per-profile DB into the shared DB.
+
+        Older versions of the app stored each profile's results in its own
+        SQLite database at ``data/<slug>/lccn_harvester.sqlite3``.  This method
+        reads that file, merges its ``main``, ``attempted``, and
+        ``linked_isbns`` tables into the current shared DB, then writes a
+        marker file so the merge is never repeated.
+
+        The migration uses ``ON CONFLICT DO UPDATE`` semantics that prefer the
+        more recently modified row so data from both databases is preserved
+        without duplicates.  Any error during the migration is silently ignored
+        (best-effort) so a corrupt legacy DB does not block the user.
+
+        Args:
+            name: Profile display name.  ``"Default Settings"`` is skipped
+                  because it never had a separate per-profile database.
+        """
         if name == "Default Settings":
             return
 
         source_db = self._legacy_profile_db_path(name)
         marker_path = self._legacy_db_merge_marker(name)
 
+        # Skip if the legacy DB never existed or has already been merged
         if not source_db.exists() or marker_path.exists():
             return
 
         shared_db = self.shared_db_path
+        # Guard: if both paths resolve to the same file there is nothing to merge
         if source_db.resolve() == shared_db.resolve():
             return
 
@@ -116,6 +175,7 @@ class ProfileManager:
 
         with sqlite3.connect(shared_db) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
+            # ATTACH lets us reference both databases in the same SQL statement
             conn.execute("ATTACH DATABASE ? AS legacy", (str(source_db),))
             try:
                 if _legacy_has_table(conn, "main"):
@@ -198,6 +258,7 @@ class ProfileManager:
                 conn.commit()
 
         marker_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write an ISO timestamp into the marker file so it's clear when the merge happened
         marker_path.write_text(datetime.now().isoformat(), encoding="utf-8")
 
     def get_db_path(self, name: str) -> Path:
@@ -227,15 +288,30 @@ class ProfileManager:
         return new_path
 
     def _normalize_profile_name(self, name: str) -> str:
-        """Normalize names for case-insensitive duplicate checks."""
+        """Collapse whitespace and casefold *name* for case-insensitive comparisons.
+
+        Uses ``str.split()`` (which splits on any whitespace) followed by
+        ``" ".join(...)`` to normalise irregular spacing, then ``casefold()``
+        for locale-aware case folding.
+        """
         return " ".join((name or "").split()).strip().casefold()
 
     def list_profiles(self) -> List[str]:
-        """Return list of available profile names."""
+        """Return all available profile names, with ``"Default Settings"`` always first.
+
+        The list is deduplicated case-insensitively to prevent the same profile
+        appearing twice when a new-style subdir JSON and a legacy flat JSON
+        coexist for the same profile.
+
+        Returns:
+            An ordered list of profile display names.  ``"Default Settings"``
+            is always the first element.
+        """
         profiles = ["Default Settings"]  # Built-in always first
         seen = {self._normalize_profile_name("Default Settings")}
 
-        # Collect all candidate JSON files: new-style (subdir) first, then legacy flat
+        # Glob new-style subdirectory JSONs first (higher priority), then legacy flat JSONs.
+        # Sorting ensures a deterministic order within each tier.
         candidate_files = sorted(self.profiles_dir.glob("*/*.json")) + sorted(self.profiles_dir.glob("*.json"))
 
         for file in candidate_files:
@@ -255,7 +331,11 @@ class ProfileManager:
         return profiles
 
     def load_profile(self, name: str) -> Optional[Dict]:
-        """Load a profile by name."""
+        """Load and return the full profile dict for *name*, or ``None`` if not found.
+
+        Search order: new-style subdir JSON → legacy flat JSON in profiles dir.
+        The match is case-insensitive via ``_normalize_profile_name``.
+        """
         if name == "Default Settings":
             return self._load_json(self.default_profile_path)
 
@@ -298,7 +378,21 @@ class ProfileManager:
         return False
 
     def save_profile(self, name: str, settings: Dict, description: str = ""):
-        """Save settings as a named profile."""
+        """Persist *settings* as a named profile and seed companion files.
+
+        If the profile JSON already exists it is updated in-place (preserving
+        ``created_at``).  On first creation, the profile's targets TSV is
+        seeded from the default targets file and the data/exports directory is
+        created.
+
+        Args:
+            name:        Display name for the profile.
+            settings:    Arbitrary settings dict to store.
+            description: Optional freeform description.
+
+        Returns:
+            ``True`` on success.
+        """
         slug = self._profile_slug(name)
 
         # Ensure the profile's own config subdirectory exists
@@ -335,7 +429,18 @@ class ProfileManager:
         return True
 
     def update_profile_settings(self, name: str, updates: Dict) -> bool:
-        """Merge setting updates into an existing profile, creating it if needed."""
+        """Merge *updates* into the ``settings`` dict of *name*, creating the profile if needed.
+
+        Args:
+            name:    Profile to update (including "Default Settings").
+            updates: Key/value pairs to merge into the existing settings dict.
+
+        Returns:
+            ``True`` on success.
+
+        Raises:
+            TypeError: If *updates* is not a dict.
+        """
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dictionary")
 
@@ -394,7 +499,18 @@ class ProfileManager:
         }
 
     def delete_profile(self, name: str) -> bool:
-        """Delete a profile."""
+        """Delete *name* from disk, including legacy flat files.
+
+        The profile's data/exports directory is intentionally preserved so
+        previously exported files are not lost.
+
+        Args:
+            name: Profile to delete.  ``"Default Settings"`` cannot be deleted.
+
+        Returns:
+            ``True`` if anything was deleted, ``False`` if the profile was not
+            found or is the built-in default.
+        """
         if name == "Default Settings":
             return False  # Cannot delete default
 
@@ -429,7 +545,23 @@ class ProfileManager:
         return deleted
 
     def rename_profile(self, old_name: str, new_name: str) -> bool:
-        """Rename a profile."""
+        """Rename *old_name* to *new_name*, updating all companion files on disk.
+
+        Operations performed:
+          1. Rename (or copy-merge) the config subdirectory.
+          2. Rename the JSON file inside to match the new slug.
+          3. Remove any legacy flat JSON file for the old name.
+          4. Rename the data/exports directory if it exists.
+          5. Write the updated profile JSON with the new display name.
+
+        Args:
+            old_name: Current profile display name.
+            new_name: Desired new display name.
+
+        Returns:
+            ``True`` on success, ``False`` if the profile was not found or is
+            the built-in default.
+        """
         if old_name == "Default Settings":
             return False  # Cannot rename default
 
@@ -497,7 +629,7 @@ class ProfileManager:
         return True
 
     def get_active_profile(self) -> str:
-        """Get the currently active profile name."""
+        """Return the currently active profile name, defaulting to ``"Default Settings"``."""
         if self.active_profile_path.exists():
             try:
                 return self.active_profile_path.read_text().strip()
@@ -506,17 +638,21 @@ class ProfileManager:
         return "Default Settings"
 
     def set_active_profile(self, name: str):
-        """Set the active profile."""
+        """Persist *name* as the currently active profile (written to ``active_profile.txt``)."""
         with open(self.active_profile_path, 'w') as f:
             f.write(name)
 
     def _load_json(self, file_path: Path) -> Dict:
-        """Load and parse JSON file."""
+        """Read and JSON-decode *file_path*, returning a dict."""
         with open(file_path) as f:
             return json.load(f)
 
     def get_profile_info(self, name: str) -> Optional[Dict]:
-        """Get metadata about a profile."""
+        """Return a lightweight metadata summary for *name*, or ``None`` if not found.
+
+        Returns a dict with keys: ``name``, ``description``, ``created_at``,
+        ``last_modified``, ``num_targets``.
+        """
         profile = self.load_profile(name)
         if not profile:
             return None

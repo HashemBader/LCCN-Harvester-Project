@@ -1,6 +1,25 @@
-"""
-Module: harvest_tab_v2.py
-V2 Harvest Tab: Functional Core with Professional UI.
+"""Harvest execution page — input selection, run controls, and live progress display.
+
+``HarvestTab`` is the main UI for starting and monitoring harvest runs.  It owns
+the run-setup card (input file, run mode, stop rule), the MARC Import card, the
+File Statistics card, the File Preview table, and the action bar (Start/Pause/
+Cancel buttons with a thin progress bar).
+
+The actual harvesting work is done by ``HarvestWorker`` (defined in
+``harvest_support.py``) which runs in a ``QThread``.  ``HarvestTab`` wires the
+worker's signals to its own slot methods and propagates higher-level events to
+``ModernMainWindow`` via the signals declared on this class.
+
+Key design decisions:
+- UI state is managed through ``_transition_state(UIState)`` rather than ad hoc
+  ``setEnabled``/``setVisible`` calls.  Every meaningful transition goes through
+  this single method.
+- Data sources (config, targets, profile, DB path) are injected lazily via
+  ``set_data_sources`` so the tab is constructable without knowing the profile
+  manager or config tab at import time.
+- Live output files are opened once at harvest start and kept open for
+  incremental writes; they are closed and converted to CSV in the worker's
+  ``finally`` block.
 """
 
 from PyQt6.QtWidgets import (
@@ -29,947 +48,128 @@ from PyQt6.QtWidgets import (
     QDialog,
     QCheckBox,
 )
-from datetime import datetime, timedelta, timezone
-from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QThread
-from PyQt6.QtGui import QShortcut, QKeySequence, QDragEnterEvent, QDropEvent, QColor, QBrush
+from datetime import datetime, timezone
+from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize
+from PyQt6.QtGui import QShortcut, QKeySequence, QColor, QBrush
 from pathlib import Path
 from enum import Enum, auto
 from itertools import islice
-import csv
 import sys
 import json
-import threading
-import re
-
-# Add src to path for utils import
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.isbn_validator import normalize_isbn
 
 from .combo_boxes import ConsistentComboBox
 from .icons import SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
 from .input_tab import ClickableDropZone
+from .harvest_support import (
+    DroppableGroupBox,
+    HarvestWorker,
+    _extract_lc_classification,
+    _looks_like_header_cell,
+    _prepare_marc_import_records,
+    _safe_filename,
+    _write_csv_rows,
+)
 
-# Add imports for Worker
-from src.harvester.run_harvest import run_harvest, parse_isbn_file, RunStats
-from src.harvester.marc_import import MarcImportService, ParsedMarcImportRecord
-from src.harvester.targets import create_target_from_config
-from src.harvester.orchestrator import HarvestCancelled
-from src.database import DatabaseManager, now_datetime_str
-from src.database.db_manager import yyyymmdd_to_iso_date
+from src.harvester.marc_import import MarcImportService
+from src.database import now_datetime_str
 from src.config.profile_manager import ProfileManager
-from src.utils import messages
+from src.utils.isbn_validator import normalize_isbn
 from .theme_manager import ThemeManager
 
-
-def _write_csv_rows(rows_with_header: list, path: str) -> None:
-    """Write rows to a UTF-8 CSV file for Excel and Google Sheets."""
-    with open(path, "w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.writer(handle)
-        writer.writerows(rows_with_header)
-
-
-def _extract_lc_classification(lccn: str) -> str:
-    """Derive the LC class prefix (letters only) from an LCCN / call-number string."""
-    if not lccn:
-        return ""
-    m = re.match(r"^([A-Za-z]+)", lccn.strip())
-    return m.group(1).upper() if m else ""
-
-
-def _safe_filename(s: str) -> str:
-    """Strip characters that are invalid in file names."""
-    return re.sub(r'[\\/:*?"<>|\s]+', "_", s).strip("_") or "default"
-
-
-def _display_date(value) -> str:
-    """Format storage dates for TSV/live display."""
-    return yyyymmdd_to_iso_date(value) or ""
-
-
-def _looks_like_header_cell(value: str) -> bool:
-    text = str(value or "").strip().lower()
-    return text in {"isbn", "isbn-10", "isbn-13", "isbn10", "isbn13", "world isbn", "book isbn"}
-
-
-def _dedupe_source_text(value: str) -> str:
-    parts: list[str] = []
-    for piece in re.split(r"[+,;|]", str(value or "")):
-        cleaned = piece.strip()
-        if cleaned.upper() == "UCB":
-            cleaned = "UBC"
-        elif cleaned.upper() == "UBC":
-            cleaned = "UBC"
-        if cleaned and cleaned not in parts:
-            parts.append(cleaned)
-    return " + ".join(parts)
-
-
-def _select_marc_values_for_mode(lccn: str | None, nlmcn: str | None, mode: str) -> tuple[str | None, str | None]:
-    """Return only the call-number fields relevant to the chosen import mode."""
-    normalized_mode = (mode or "lccn").strip().lower()
-    if normalized_mode == "nlmcn":
-        return None, nlmcn or None
-    if normalized_mode == "both":
-        return lccn or None, nlmcn or None
-    return lccn or None, None
-
-
-def _prepare_marc_import_records(
-    records: list[tuple[str | None, str | None, str | None]],
-    *,
-    mode: str,
-    source_name: str,
-) -> tuple[list[tuple[str, str | None, str | None]], list[ParsedMarcImportRecord], int, int, int]:
-    """Prepare MARC rows for both export files and database persistence."""
-    selected_rows: list[tuple[str, str | None, str | None]] = []
-    parsed_records: list[ParsedMarcImportRecord] = []
-    written = 0
-    skipped = 0
-    no_isbn = 0
-    normalized_mode = (mode or "lccn").strip().lower()
-
-    for isbn, lccn, nlmcn in records:
-        selected_lccn, selected_nlmcn = _select_marc_values_for_mode(lccn, nlmcn, normalized_mode)
-
-        if normalized_mode == "nlmcn":
-            keep = bool(selected_nlmcn)
-        elif normalized_mode == "both":
-            keep = bool(selected_lccn or selected_nlmcn)
-        else:
-            keep = bool(selected_lccn)
-
-        if not keep:
-            skipped += 1
-            continue
-
-        normalized_isbn = str(isbn or "").replace("-", "").strip()
-        if not normalized_isbn:
-            no_isbn += 1
-
-        selected_rows.append((normalized_isbn, selected_lccn, selected_nlmcn))
-        parsed_records.append(
-            ParsedMarcImportRecord(
-                isbns=(normalized_isbn,) if normalized_isbn else tuple(),
-                lccn=selected_lccn,
-                nlmcn=selected_nlmcn,
-                source=source_name,
-            )
-        )
-        written += 1
-
-    return selected_rows, parsed_records, written, skipped, no_isbn
-
-
-class HarvestWorkerV2(QThread):
-    """Background worker thread for harvest operations (V2)."""
-
-    progress_update = pyqtSignal(str, str, str, str)  # isbn, status, source, message
-    harvest_complete = pyqtSignal(
-        bool, dict
-    )  # success, statistics (can include 'cancelled': True)
-    status_message = pyqtSignal(str)
-    started = pyqtSignal()
-    stats_update = pyqtSignal(object)  # real-time statistics update (RunStats)
-    live_result = pyqtSignal(dict)   # real-time single row result
-
-    def __init__(
-        self,
-        input_file,
-        config,
-        targets,
-        advanced_settings=None,
-        bypass_retry_isbns=None,
-        live_paths=None,
-        db_path="data/lccn_harvester.sqlite3",
-    ):
-        super().__init__()
-        self.input_file = input_file
-        self.config = config
-        self.db_path = db_path
-        self.targets = targets
-        self.advanced_settings = advanced_settings or {}
-        self.bypass_retry_isbns = set(bypass_retry_isbns or [])
-        self._stop_requested = False
-        self._pause_requested = False
-        self._live_results_lock = threading.Lock()
-        self._live_result_handles = {}
-        self._live_problem_rows_written = set()
-        # Paths for the live output files (computed before thread starts)
-        self.live_paths = live_paths or {}
-        # Session-only result accumulators (never read from DB)
-        self._session_success = (
-            []
-        )  # per-run success TSV rows
-        self._session_failed = (
-            []
-        )  # [call_number_type, isbn, target, reason]
-        self._session_invalid = []  # [isbn]
-
-    def run(self):
-        """Run the harvest operation in background thread."""
-        try:
-            self.started.emit()
-            self.status_message.emit(messages.HarvestMessages.starting)
-
-            # Read and validate ISBNs
-            parsed = self._read_and_validate_isbns()
-            if not parsed:
-                return
-            isbns = parsed.unique_valid
-            invalid_list = parsed.invalid_isbns
-            total = len(isbns)
-            invalid_count = len(invalid_list)
-
-            # Reset session accumulators for this run
-            self._session_success = []
-            self._session_failed = []
-            self._session_invalid = list(invalid_list)
-
-            # Overwrite live result files at the start of each run
-            self._prepare_live_result_files()
-            self._write_invalid_live_rows(invalid_list)
-
-            # Record invalid stats
-            if invalid_count > 0:
-                self._record_invalid_isbns(invalid_list)
-
-            # Track stats for GUI updates using centralized RunStats
-            self.run_stats = RunStats(
-                total_rows=parsed.total_nonempty,
-                valid_rows=parsed.valid_count,
-                duplicates=parsed.duplicate_count,
-                invalid=invalid_count,
-                processed_unique=0,
-                found=0,
-                failed=0,
-                skipped=0
-            )
-
-            if total == 0:
-                self.status_message.emit(messages.HarvestMessages.no_valid_isbns)
-                self.harvest_complete.emit(
-                    False, {"total": 0, "found": 0, "failed": 0, "invalid": invalid_count}
-                )
-                return
-
-            self.processed_count = 0
-
-            # Create progress callback
-            def progress_callback(event: str, payload: dict):
-                if self._stop_requested:
-                    raise HarvestCancelled("Harvest cancelled by user")
-
-                isbn = payload.get("isbn", "")
-
-                if event == "isbn_start":
-                    # self.progress_update.emit(
-                    #    isbn, "processing", "", messages.HarvestMessages.processing_isbn
-                    # )
-                    pass
-
-                elif event in ("cached", "linked_cached"):
-                    # self.progress_update.emit(
-                    #    isbn, "cached", "Cache", messages.HarvestMessages.found_in_cache
-                    # )
-                    _lccn = payload.get("lccn") or ""
-                    _lccn_source = payload.get("lccn_source") or payload.get("source") or "Cache"
-                    _nlmcn = payload.get("nlmcn") or ""
-                    _nlmcn_source = payload.get("nlmcn_source") or payload.get("source") or "Cache"
-                    _src = _dedupe_source_text(payload.get("source") or "Cache")
-                    self._session_success.append(self._build_success_row(
-                        isbn,
-                        lccn=_lccn,
-                        lccn_source=_lccn_source,
-                        nlmcn=_nlmcn,
-                        nlmcn_source=_nlmcn_source,
-                    ))
-                    self._append_live_success(
-                        isbn,
-                        "Found in cache",
-                        lccn=_lccn,
-                        lccn_source=_lccn_source,
-                        nlmcn=_nlmcn,
-                        nlmcn_source=_nlmcn_source,
-                    )
-                    self.live_result.emit({
-                        "isbn": isbn,
-                        "status": "Linked ISBN" if event == "linked_cached" else "Found",
-                        "detail": _src
-                    })
-                    self._update_processed()
-
-                elif event == "attempt_failed":
-                    self._append_failed_attempt_row(
-                        isbn,
-                        payload.get("attempt_type"),
-                        payload.get("target"),
-                        payload.get("reason"),
-                        payload.get("attempted_date"),
-                    )
-                    if payload.get("target") and payload.get("target") != "RetryRule":
-                        normalized_problem = self._normalize_target_problem(payload.get("reason"))
-                        if normalized_problem:
-                            self._append_live_problem(payload.get("target"), normalized_problem)
-
-                elif event == "skip_retry":
-                    # self.progress_update.emit(
-                    #     isbn,
-                    #     "skipped",
-                    #     "",
-                    #     messages.HarvestMessages.skipped_recent_failure,
-                    # )
-                    retry_days = payload.get(
-                        "retry_days", self.config.get("retry_days", 7)
-                    )
-                    _err = f"Skipped due to retry window ({retry_days} days)"
-                    self._append_retry_skip_rows(
-                        isbn,
-                        payload.get("targets"),
-                        payload.get("attempt_type"),
-                        _err,
-                    )
-                    self.live_result.emit({
-                        "isbn": isbn,
-                        "status": "Failed",
-                        "detail": _err
-                    })
-                    self._update_processed()
-
-                elif event in ("success", "linked_success"):
-                    source = payload.get("target", "")
-                    # self.progress_update.emit(isbn, "found", source, "Found")
-                    _lccn = payload.get("lccn") or ""
-                    _lccn_source = payload.get("lccn_source") or payload.get("source") or source or "Target"
-                    _nlmcn = payload.get("nlmcn") or ""
-                    _nlmcn_source = payload.get("nlmcn_source") or payload.get("source") or source or "Target"
-                    _src = _dedupe_source_text(payload.get("source") or source or "Target")
-                    self._session_success.append(self._build_success_row(
-                        isbn,
-                        lccn=_lccn,
-                        lccn_source=_lccn_source,
-                        nlmcn=_nlmcn,
-                        nlmcn_source=_nlmcn_source,
-                    ))
-                    self._append_live_success(
-                        isbn,
-                        "Found",
-                        lccn=_lccn,
-                        lccn_source=_lccn_source,
-                        nlmcn=_nlmcn,
-                        nlmcn_source=_nlmcn_source,
-                    )
-                    self.live_result.emit({
-                        "isbn": isbn,
-                        "status": "Linked ISBN" if event == "linked_success" else "Found",
-                        "detail": _src
-                    })
-                    self._update_processed()
-
-                elif event == "not_in_local_catalog":
-                    self._append_failed_attempt_row(
-                        isbn,
-                        self.config.get("call_number_mode", "lccn"),
-                        "Local Catalog",
-                        "Not found in local catalog",
-                    )
-                    self.live_result.emit({
-                        "isbn": isbn,
-                        "status": "Failed",
-                        "detail": "Not found in local catalog"
-                    })
-                    self._update_processed()
-
-                elif event == "failed":
-                    error = payload.get("last_error") or payload.get(
-                        "error", "No results"
-                    )
-                    source = payload.get("last_target") or "All"
-                    # self.progress_update.emit(isbn, "failed", source, error)
-                    self.live_result.emit({
-                        "isbn": isbn,
-                        "status": "Failed",
-                        "detail": error
-                    })
-                    self._update_processed()
-
-                elif event == "stats":
-                    self.run_stats.found = payload.get("successes", 0) + payload.get("cached", 0)
-                    self.run_stats.failed = payload.get("failures", 0) + payload.get("not_in_local_catalog", 0)
-                    self.run_stats.skipped = payload.get("skipped", 0)
-                    # Force stats update to UI
-                    self.stats_update.emit(self.run_stats)
-
-            # Build targets list from config
-            targets = self._build_targets()
-
-            # Print target info
-            if targets:
-                pass
-
-            # Run the harvest pipeline
-            retry_days = self.config.get("retry_days", 7)
-            call_number_mode = self.config.get("call_number_mode", "lccn")
-            try:
-                max_workers = max(
-                    1, int(self.advanced_settings.get("parallel_workers", 1))
-                )
-            except Exception:
-                max_workers = 10
-
-            summary = run_harvest(
-                input_path=Path(self.input_file),
-                dry_run=False,
-                db_path=self.db_path,
-                retry_days=retry_days,
-                targets=targets,
-                bypass_retry_isbns=self.bypass_retry_isbns,
-                progress_cb=progress_callback,
-                cancel_check=lambda: self._check_cancel_and_pause(),
-                max_workers=max_workers,
-                call_number_mode=call_number_mode,
-                stop_rule=self.config.get("stop_rule", "stop_either"),
-                both_stop_policy=self.config.get("both_stop_policy", "both"),
-                db_only=self.config.get("db_only", False),
-            )
-
-            # Final stats
-            final_stats = {
-                "total": summary.total_isbns,
-                "found": summary.successes,
-                "failed": summary.failures,
-                "cached": summary.cached_hits,
-                "skipped": summary.skipped_recent_fail,
-                "invalid": invalid_count,
-                "run_stats": self.run_stats,
-            }
-
-            self.status_message.emit(
-                messages.HarvestMessages.harvest_completed.format(
-                    successes=summary.successes, failures=summary.failures
-                )
-            )
-            self.harvest_complete.emit(True, final_stats)
-
-        except HarvestCancelled:
-            self.status_message.emit("Harvest cancelled by user.")
-            stats = {
-                "total": self.run_stats.total_rows if hasattr(self, "run_stats") else 0,
-                "found": self.run_stats.found if hasattr(self, "run_stats") else 0,
-                "failed": self.run_stats.failed if hasattr(self, "run_stats") else 0,
-                "invalid": len(getattr(self, "_session_invalid", []) or []),
-                "run_stats": self.run_stats if hasattr(self, "run_stats") else None,
-                "cancelled": True
-            }
-            self.harvest_complete.emit(False, stats)
-        except Exception as e:
-            import traceback
-
-            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
-            self.status_message.emit(error_msg)
-            self.harvest_complete.emit(
-                False, {"total": 0, "found": 0, "failed": 0, "invalid": 0, "error": str(e)}
-            )
-        finally:
-            self._close_live_result_files()
-
-    def _update_processed(self):
-        """Update processed count and emit stats/milestones."""
-        self.processed_count += 1
-        self.run_stats.processed_unique = self.processed_count
-        self._refresh_live_linked_isbns_file()
-
-        # Emit stats update for UI
-        if self.processed_count % 5 == 0 or self.processed_count == getattr(self.run_stats, 'valid_rows', 0):
-            self.stats_update.emit(self.run_stats)
-
-    def _prepare_live_result_files(self):
-        """Create per-run TSV output files using the pre-computed named paths."""
-        headers = {
-            "successful": self._successful_headers(),
-            "invalid": ["ISBN"],
-            "failed": ["Call Number Type", "ISBN", "Target", "Date Attempted", "Reason"],
-            "problems": ["Target", "Problem"],
-        }
-        self._close_live_result_files()
-        self._live_problem_rows_written = set()
-        for key, header in headers.items():
-            path = Path(self.live_paths.get(key, f"data/{key}.tsv"))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fh = open(path, "w", encoding="utf-8-sig", newline="")
-            writer = csv.writer(fh, delimiter="\t")
-            writer.writerow(header)
-            fh.flush()
-            self._live_result_handles[key] = fh
-        self._refresh_live_linked_isbns_file()
-
-    def _close_live_result_files(self):
-        saved_paths = []
-        for key, fh in self._live_result_handles.items():
-            try:
-                fh.flush()
-                saved_paths.append(fh.name)
-                fh.close()
-            except Exception:
-                pass
-        self._live_result_handles = {}
-        self._generate_csv_copies(saved_paths)
-
-    def _generate_csv_copies(self, tsv_paths):
-        """Post-flight conversion of TSV to CSV for spreadsheet-friendly output."""
-        import csv as _csv
-        if not tsv_paths:
-            return
-        for path_str in tsv_paths:
-            tsv_path = Path(path_str)
-            if tsv_path.exists() and tsv_path.stat().st_size > 0:
-                try:
-                    with open(str(tsv_path), newline="", encoding="utf-8") as f:
-                        rows = list(_csv.reader(f, delimiter="\t"))
-                    csv_path = tsv_path.with_suffix(".csv")
-                    _write_csv_rows(rows, str(csv_path))
-                except Exception as e:
-                    print(f"Failed to convert {tsv_path.name} to CSV: {e}")
-
-    def _append_live_row(self, bucket, row):
-        fh = self._live_result_handles.get(bucket)
-        if fh is None:
-            return
-        with self._live_results_lock:
-            writer = csv.writer(fh, delimiter="\t")
-            writer.writerow(row)
-            fh.flush()  # Flush immediately so file is readable live during harvest
-
-    def _write_invalid_live_rows(self, invalid_list):
-        for raw_isbn in invalid_list or []:
-            self._append_live_row("invalid", [raw_isbn])
-
-    def _refresh_live_linked_isbns_file(self):
-        linked_path_raw = self.live_paths.get("linked")
-        if not linked_path_raw:
-            return
-        linked_path = Path(linked_path_raw)
-        linked_path.parent.mkdir(parents=True, exist_ok=True)
-        rows = []
-        try:
-            db = DatabaseManager(self.db_path)
-            with db.connect() as conn:
-                rows = conn.execute(
-                    "SELECT other_isbn AS isbn, lowest_isbn AS canonical_isbn "
-                    "FROM linked_isbns ORDER BY lowest_isbn, other_isbn"
-                ).fetchall()
-        except Exception:
-            rows = []
-
-        try:
-            with open(linked_path, "w", newline="", encoding="utf-8-sig") as fh:
-                writer = csv.writer(fh, delimiter="\t")
-                writer.writerow(["ISBN", "Canonical ISBN"])
-                writer.writerows(rows)
-            _write_csv_rows([["ISBN", "Canonical ISBN"], *rows], str(linked_path.with_suffix(".csv")))
-        except Exception:
-            pass
-
-    def _successful_headers(self):
-        mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
-        if mode == "nlmcn":
-            return ["ISBN", "NLM", "NLM Source", "Date"]
-        if mode == "both":
-            return ["ISBN", "LCCN", "LCCN Source", "Classification", "NLM", "NLM Source", "Date"]
-        return ["ISBN", "LCCN", "LCCN Source", "Classification", "Date"]
-
-    def _build_success_row(
-        self,
-        isbn,
-        *,
-        lccn=None,
-        lccn_source=None,
-        nlmcn=None,
-        nlmcn_source=None,
-    ):
-        classification = _extract_lc_classification(lccn or "")
-        date_added = _display_date(now_datetime_str())
-        normalized_isbn = str(isbn or "").replace("-", "").strip()
-        mode = (self.config.get("call_number_mode", "lccn") or "lccn").strip().lower()
-        if mode == "nlmcn":
-            return [normalized_isbn, nlmcn or "", nlmcn_source or "-", date_added]
-        if mode == "both":
-            return [
-                normalized_isbn,
-                lccn or "",
-                lccn_source or "-",
-                classification,
-                nlmcn or "",
-                nlmcn_source or "-",
-                date_added,
-            ]
-        return [normalized_isbn, lccn or "", lccn_source or "-", classification, date_added]
-
-    def _append_live_success(
-        self,
-        isbn,
-        message,
-        *,
-        lccn=None,
-        lccn_source=None,
-        nlmcn=None,
-        nlmcn_source=None,
-    ):
-        self._append_live_row(
-            "successful",
-            self._build_success_row(
-                isbn,
-                lccn=lccn,
-                lccn_source=lccn_source,
-                nlmcn=nlmcn,
-                nlmcn_source=nlmcn_source,
-            ),
-        )
-
-    def _compute_next_try_value(self, isbn, retry_days):
-        try:
-            retry_days = int(retry_days or 0)
-        except Exception:
-            retry_days = 0
-        if retry_days <= 0:
-            return ""
-        try:
-            # Compute "next try" from *now* – no DB query needed during a live run.
-            # The attempted record may not be committed yet at the moment this is called.
-            next_dt = datetime.now() + timedelta(days=retry_days)
-            return next_dt.strftime("%Y/%m/%d")
-        except Exception:
-            return ""
-
-    def _append_live_failed(
-        self,
-        isbn,
-        reason,
-        source,
-        *,
-        retry_days=None,
-        not_found_targets=None,
-        z3950_unsupported_targets=None,
-        offline_targets=None,
-        other_errors=None,
-    ):
-        retry_days = (
-            self.config.get("retry_days", 7) if retry_days is None else retry_days
-        )
-        self._append_live_row(
-            "failed",
-            [
-                isbn,
-                self._compute_next_try_value(isbn, retry_days),
-            ],
-        )
-        self._append_live_problem_rows(
-            source,
-            reason,
-            not_found_targets=not_found_targets,
-            z3950_unsupported_targets=z3950_unsupported_targets,
-            offline_targets=offline_targets,
-            other_errors=other_errors,
-        )
-
-    def _failed_type_labels(self, attempt_type):
-        normalized = str(attempt_type or self.config.get("call_number_mode", "lccn")).strip().lower()
-        if normalized == "both":
-            return ["LCCN", "NLM"]
-        if normalized == "nlmcn":
-            return ["NLM"]
-        return ["LCCN"]
-
-    def _append_failed_attempt_row(self, isbn, attempt_type, target, reason, attempted_date=None):
-        normalized_isbn = str(isbn or "").replace("-", "").strip()
-        attempt_value = _display_date(attempted_date or now_datetime_str())
-        for label in self._failed_type_labels(attempt_type):
-            row = [label, normalized_isbn, target or "-", attempt_value, reason or "Unknown error"]
-            self._session_failed.append(row)
-            self._append_live_row("failed", row)
-
-    def _append_retry_skip_rows(self, isbn, targets, attempt_type, reason):
-        normalized_isbn = str(isbn or "").replace("-", "").strip()
-        attempt_value = _display_date(now_datetime_str())
-        for target_name in targets or ["RetryRule"]:
-            for label in self._failed_type_labels(attempt_type):
-                row = [label, normalized_isbn, target_name or "RetryRule", attempt_value, reason]
-                self._session_failed.append(row)
-                self._append_live_row("failed", row)
-
-    def _normalize_target_problem(self, reason):
-        text = str(reason or "").strip()
-        lowered = text.lower()
-        if not text:
-            return None
-        if "no records found in" in lowered or "not found" in lowered:
-            return None
-        if "pyz3950 import failed" in lowered or "pyz3950 import error" in lowered:
-            return f"Could not connect to Z39.50 server: {text}"
-        if "z39.50 support not available" in lowered:
-            return f"Could not connect to Z39.50 server: {text}"
-        if (
-            "remote end closed connection without response" in lowered
-            or "timed out" in lowered
-            or "connection refused" in lowered
-            or "connection reset" in lowered
-            or "temporary failure in name resolution" in lowered
-            or "name or service not known" in lowered
-            or "offline" in lowered
-            or "unreachable" in lowered
-        ):
-            return "Offline"
-        return text
-
-    def _append_live_problem_rows(
-        self,
-        source,
-        reason,
-        *,
-        not_found_targets=None,
-        z3950_unsupported_targets=None,
-        offline_targets=None,
-        other_errors=None,
-    ):
-        if source == "RetryRule":
-            return
-
-        for target_name in z3950_unsupported_targets or []:
-            normalized_problem = self._normalize_target_problem("Z39.50 support not available")
-            if normalized_problem:
-                self._append_live_problem(target_name, normalized_problem)
-
-        for target_name in offline_targets or []:
-            normalized_problem = self._normalize_target_problem("Target offline or unreachable")
-            if normalized_problem:
-                self._append_live_problem(target_name, normalized_problem)
-
-        for item in other_errors or []:
-            target_name, problem = self._split_problem_item(item)
-            normalized_problem = self._normalize_target_problem(problem)
-            if normalized_problem:
-                self._append_live_problem(target_name, normalized_problem)
-
-        if (
-            not not_found_targets
-            and not (z3950_unsupported_targets or [])
-            and not (offline_targets or [])
-            and not (other_errors or [])
-            and source
-            and reason
-        ):
-            normalized_problem = self._normalize_target_problem(reason)
-            if normalized_problem:
-                self._append_live_problem(source, normalized_problem)
-
-    def _split_problem_item(self, item):
-        text = str(item or "").strip()
-        if ": " in text:
-            return text.split(": ", 1)
-        return ("Unknown", text or "Unknown error")
-
-    def _append_live_problem(self, target, problem):
-        if target and str(target).strip().lower() == "retryrule":
-            return
-        row = (target or "Unknown", problem or "Unknown error")
-        if row in self._live_problem_rows_written:
-            return
-        self._live_problem_rows_written.add(row)
-        self._append_live_row("problems", list(row))
-
-    def _read_and_validate_isbns(self):
-        """Read and validate ISBNs using the centralized parser."""
-        try:
-            parsed = parse_isbn_file(Path(self.input_file))
-            if parsed.invalid_isbns:
-                self.status_message.emit(
-                    messages.HarvestMessages.invalid_isbns_count.format(
-                        count=len(parsed.invalid_isbns)
-                    )
-                )
-            return parsed
-        except Exception as e:
-            self.status_message.emit(
-                messages.HarvestMessages.error_reading_file.format(error=str(e))
-            )
-            return None
-
-    def _record_invalid_isbns(self, invalid_list):
-        """Record invalid ISBNs in DB so they appear in stats."""
-        if not invalid_list:
-            return
-
-        try:
-            db = DatabaseManager(self.db_path)
-            with db.transaction() as conn:
-                for raw_isbn in invalid_list:
-                    # Upsert into attempted with 'Invalid' error
-                    # We use a placeholder target 'Validation'
-                    conn.execute(
-                        "INSERT OR ABORT INTO attempted (isbn, last_target, attempt_type, last_attempted, fail_count, last_error) "
-                        "VALUES (?, ?, ?, ?, 1, 'Invalid ISBN') "
-                        "ON CONFLICT(isbn, last_target, attempt_type) DO UPDATE SET "
-                        "last_attempted=excluded.last_attempted, fail_count=fail_count+1, last_error='Invalid ISBN'",
-                        (raw_isbn[:20], "Validation", "validation", now_datetime_str()),
-                    )
-        except Exception:
-            pass
-
-    def _build_targets(self):
-        """Build list of harvest targets from targets configuration."""
-        if not self.targets:
-            return []
-
-        try:
-            selected_targets = [t for t in self.targets if t.get("selected", True)]
-            if not selected_targets:
-                return []
-            sorted_targets = sorted(selected_targets, key=lambda x: x.get("rank", 999))
-            try:
-                global_timeout = int(
-                    self.advanced_settings.get("connection_timeout", 0)
-                )
-            except Exception:
-                global_timeout = 0
-            try:
-                global_retries = int(self.advanced_settings.get("max_retries", 0))
-            except Exception:
-                global_retries = 0
-
-            target_instances = []
-            for target_config in sorted_targets:
-                try:
-                    cfg = dict(target_config)
-                    if global_timeout > 0:
-                        cfg["timeout"] = global_timeout
-                    if global_retries >= 0:
-                        cfg["max_retries"] = global_retries
-                    target = create_target_from_config(cfg)
-                    target_instances.append(target)
-                except Exception as e:
-                    self.status_message.emit(
-                        messages.HarvestMessages.failed_create_target.format(
-                            name=target_config.get("name"), error=str(e)
-                        )
-                    )
-
-            return target_instances if target_instances else None
-
-        except Exception as e:
-            self.status_message.emit(
-                messages.HarvestMessages.error_building_targets.format(error=str(e))
-            )
-            return None
-
-    def stop(self):
-        """Request worker to stop."""
-        self._stop_requested = True
-
-    def toggle_pause(self):
-        """Toggle pause state."""
-        self._pause_requested = not self._pause_requested
-
-    def _check_cancel_and_pause(self):
-        import time
-
-        while self._pause_requested and not self._stop_requested:
-            time.sleep(0.1)
-        return self._stop_requested
-
-
-class DroppableGroupBox(QGroupBox):
-    """A group box that accepts drag and drop (for the compact upload card)."""
-
-    file_dropped = pyqtSignal(str)
-
-    def __init__(self, title, parent=None):
-        super().__init__(title, parent)
-        self.setAcceptDrops(True)
-        self.setObjectName("DroppableArea")
-        self.setProperty("dropState", "normal")
-
-    def _update_state(self, state: str):
-        self.setProperty("dropState", state)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                file_path = url.toLocalFile()
-                if True:  # Accept all types or handled elsewhere
-                    event.acceptProposedAction()
-                    self._update_state("hover")
-                    return
-        event.ignore()
-
-    def dragLeaveEvent(self, event):
-        self._update_state("normal")
-
-    def dropEvent(self, event: QDropEvent):
-        files = [url.toLocalFile() for url in event.mimeData().urls()]
-        valid_files = [f for f in files if f.endswith((".tsv", ".txt", ".csv", ".xlsx", ".xls"))]
-
-        if valid_files:
-            file_path = valid_files[0]
-            self.file_dropped.emit(file_path)
-            self._update_state("dropped")
-            
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(500, lambda: self._update_state("normal"))
-            event.acceptProposedAction()
-        else:
-            from PyQt6.QtWidgets import QMessageBox
-
-            QMessageBox.warning(
-                self, "Invalid File", "Please drop a valid TSV, TXT, CSV, or Excel file."
-            )
-            event.ignore()
-            self._update_state("normal")
-
-
 class UIState(Enum):
-    IDLE = auto()
-    READY = auto()
-    RUNNING = auto()
-    PAUSED = auto()
-    COMPLETED = auto()
-    ERROR = auto()
-    CANCELLED = auto()
+    """All possible states for the Harvest tab UI state machine.
+
+    Transitions are managed exclusively by ``HarvestTab._transition_state``, which
+    adjusts button visibility, banner colours, and ``is_running`` in one place.
+    """
+
+    IDLE = auto()       # No file loaded; Start button present but disabled.
+    READY = auto()      # File loaded and targets available; Start button enabled.
+    RUNNING = auto()    # Worker is actively processing ISBNs.
+    PAUSED = auto()     # Worker is paused; Resume/Cancel available.
+    COMPLETED = auto()  # Run finished successfully.
+    ERROR = auto()      # Run ended with an unhandled exception.
+    CANCELLED = auto()  # User cancelled the run mid-flight.
 
 
-class HarvestTabV2(QWidget):
+class HarvestTab(QWidget):
+    """Harvest execution page widget.
+
+    Signals:
+        harvest_started(): Emitted when the worker thread begins processing.
+        harvest_finished(bool, dict): Emitted when the run ends.  First argument
+            indicates overall success; second is a stats dict (may include
+            ``"cancelled": True`` or ``"error": str`` keys).
+        harvest_reset(): Emitted when the user starts a new harvest session
+            (pressing "New Harvest"), used to reset the sidebar pill to Idle.
+        harvest_paused(bool): ``True`` = just paused, ``False`` = just resumed.
+        progress_updated(isbn, status, source, message): Fired per ISBN for live
+            dashboard activity feed updates.
+        result_files_ready(dict): Emitted with the output file path dict so the
+            dashboard can enable its "Open results" buttons as soon as files exist.
+        live_result_ready(dict): Per-ISBN dict with ``isbn``, ``status``,
+            ``detail`` for the dashboard recent-results table.
+        live_stats_ready(RunStats): Batch stats dataclass emitted every 5 ISBNs
+            for live KPI card updates without a DB round-trip.
+        request_start_harvest(): Reserved for future delegation of the start
+            action to the main window.
+    """
+
     harvest_started = pyqtSignal()
+    # (success: bool, stats: dict) — emitted after the worker thread ends, whether by completion,
+    # cancellation, or error.  ``stats`` always contains "total", "found", "failed", "invalid".
     harvest_finished = pyqtSignal(bool, dict)
+    # Emitted by _clear_input so the main window can reset the sidebar harvest-status pill to Idle.
     harvest_reset = pyqtSignal()
-    harvest_paused = pyqtSignal(bool)  # True = paused, False = resumed
-    progress_updated = pyqtSignal(str, str, str, str)  # isbn, status, source, message
-    result_files_ready = pyqtSignal(dict)  # emitted when live output paths are known
-    live_result_ready = pyqtSignal(dict)   # emitted per ISBN harvested
-    live_stats_ready = pyqtSignal(object)    # emitted for batch counts (RunStats)
+    # True = just paused, False = just resumed.
+    harvest_paused = pyqtSignal(bool)
+    # (isbn, status, source, message) — per-ISBN live feed for the dashboard activity label.
+    progress_updated = pyqtSignal(str, str, str, str)
+    # Emitted once at harvest start with the dict of per-bucket output file path strings.
+    result_files_ready = pyqtSignal(dict)
+    # Per-ISBN result dict {isbn, status, detail} for the dashboard recent-results panel.
+    live_result_ready = pyqtSignal(dict)
+    # Emitted every 5 ISBNs with a RunStats dataclass for live KPI card updates.
+    live_stats_ready = pyqtSignal(object)
 
-    # Signals to request data from main window
+    # Reserved for future delegation of the start action to the main window.
     request_start_harvest = pyqtSignal()
 
     def __init__(self):
+        """Initialise instance variables and build the UI.
+
+        Key instance variables set here:
+            worker (HarvestWorker | None): Active worker thread; ``None`` between runs.
+            is_running (bool): Convenience flag; ``True`` when state is RUNNING or PAUSED.
+            current_state (UIState): Current state-machine state.
+            input_file (str | None): Absolute path of the currently loaded ISBN file.
+            _last_session_* (list): Snapshots of worker result lists copied at run end.
+            _run_live_paths (dict): Per-run output file path strings; populated in
+                ``_start_worker`` and emitted via ``result_files_ready``.
+            _config_getter / _targets_getter / _profile_getter / _db_path_getter:
+                Callables injected by ``ModernMainWindow`` via ``set_data_sources``.
+            _shortcut_modifier (str): ``"Meta"`` on macOS, ``"Ctrl"`` elsewhere.
+        """
         super().__init__()
-        self.worker = None
-        self.is_running = False
+        self.worker = None      # Active HarvestWorker thread (None between runs).
+        self.is_running = False # Convenience flag mirrors current_state in {RUNNING, PAUSED}.
         self.current_state = UIState.IDLE
-        self.input_file = None
-        # Session-only result snapshots populated after each harvest completes
+        self.input_file = None  # Absolute path string of the currently loaded ISBN file.
+        # Session snapshots copied from the worker at harvest completion for later inspection.
         self._last_session_success = []
         self._last_session_failed = []
         self._last_session_invalid = []
-        # Current-run output file paths (set in _start_worker)
-        self._run_live_paths = {}  # paths for dashboard live files
-        # External data sources (set by Main Window)
-        self._config_getter = None
-        self._targets_getter = None
-        self._profile_getter = None
-        self._db_path_getter = None
+        # Per-run output file paths dict; populated in _start_worker, emitted via result_files_ready.
+        self._run_live_paths = {}
+        # Callable dependencies injected by ModernMainWindow via set_data_sources().
+        self._config_getter = None   # () -> dict
+        self._targets_getter = None  # () -> list[dict]
+        self._profile_getter = None  # () -> str
+        self._db_path_getter = None  # () -> str | Path
 
-        self.processed_count = 0
-        self.total_count = 0
+        self.processed_count = 0  # ISBNs processed so far in the current run.
+        self.total_count = 0       # Total unique valid ISBNs in the loaded file.
+        # Platform-specific modifier key for keyboard shortcuts (Cmd on macOS, Ctrl elsewhere).
         self._shortcut_modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
 
         self._setup_ui()
@@ -977,14 +177,32 @@ class HarvestTabV2(QWidget):
         self._update_scrollbar_policy()
 
     def set_data_sources(self, config_getter, targets_getter, profile_getter=None, db_path_getter=None):
-        """Set callbacks to retrieve config, targets, active profile name, and db path."""
+        """Inject lazy data-source callbacks so the tab can be constructed before the app is fully initialised.
+
+        Called by ``ModernMainWindow.__init__`` after all tabs are created.
+
+        Args:
+            config_getter: Callable ``() -> dict`` returning the active profile's settings.
+            targets_getter: Callable ``() -> list[dict]`` returning the current target list.
+            profile_getter: Optional callable ``() -> str`` returning the active profile name.
+            db_path_getter: Optional callable ``() -> str | Path`` returning the DB path.
+        """
         self._config_getter = config_getter
         self._targets_getter = targets_getter
         self._profile_getter = profile_getter
         self._db_path_getter = db_path_getter
 
     def on_targets_changed(self, targets):
-        """Handle target selection changes from TargetsTab."""
+        """Re-evaluate the Start button state when the user changes target selections.
+
+        Connected to ``TargetsTab`` via ``ModernMainWindow``.  Ignored while a harvest
+        is running, paused, or showing a terminal result so mid-run target changes
+        cannot corrupt the active worker's target list.
+
+        Args:
+            targets: Updated list of target config dicts (currently unused; presence
+                     check is done in ``_check_start_conditions``).
+        """
         # Don't reset UI state while a harvest is in progress or showing results
         if self.current_state in (
             UIState.RUNNING,
@@ -996,7 +214,18 @@ class HarvestTabV2(QWidget):
         self._check_start_conditions()
 
     def _setup_ui(self):
-        # Direct layout — no scroll area; everything must fit in one screen
+        """Build the full harvest-tab UI.
+
+        Layout (top to bottom):
+        1. Header bar — section title and subtitle.
+        2. Status banner — live state text (READY / RUNNING / etc.) and summary stats.
+        3. 2×2 grid — Run Setup (top-left), File Statistics (top-right),
+           MARC Import (bottom-left), File Preview (bottom-right).
+        4. Action bar — status pill, elapsed timer, progress counter, log label,
+           and action buttons (Start / Pause / Cancel / New Harvest) over a thin
+           progress bar.
+        """
+        # Direct layout — no scroll area; everything must fit in one screen.
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
         layout.setContentsMargins(20, 12, 20, 12)
@@ -1126,6 +355,9 @@ class HarvestTabV2(QWidget):
         setup_grid.addWidget(self.chk_db_only, 3, 1)
         self._apply_db_only_checkbox_style()
 
+        # Slot wiring: re-evaluate stop-rule visibility whenever the run mode or
+        # db-only flag changes.  The initial call ensures the correct muted/active
+        # style is applied before the first user interaction.
         self.combo_run_mode.currentTextChanged.connect(self._toggle_stop_rule_visibility)
         self.chk_db_only.toggled.connect(self._toggle_stop_rule_visibility)
         self._toggle_stop_rule_visibility(self.combo_run_mode.currentText())
@@ -1281,7 +513,7 @@ class HarvestTabV2(QWidget):
             "QTableWidget::item { padding: 2px 8px; }"
             "QHeaderView::section { font-size: 11px; font-weight: 600; padding: 4px 8px; }"
         )
-        # Show placeholder headers before any file is loaded
+        # Placeholder column headers shown before any file is loaded.
         self.preview_table.setColumnCount(2)
         self.preview_table.setHorizontalHeaderLabels(["ISBN", "Status"])
         self.preview_table.setRowCount(0)
@@ -1306,6 +538,8 @@ class HarvestTabV2(QWidget):
         self.lbl_run_elapsed = QLabel("00:00:00")
         self.lbl_run_elapsed.setProperty("class", "ActivityValue")
 
+        # Elapsed-time timer: fires every 1 000 ms to increment lbl_run_elapsed.
+        # timer_is_paused stops the count while the harvest is paused.
         self.run_timer = QTimer(self)
         self.run_timer.timeout.connect(self._update_timer)
         self.run_time = QTime(0, 0, 0)
@@ -1343,7 +577,7 @@ class HarvestTabV2(QWidget):
         self.log_output.setStyleSheet("font-size: 11px; font-style: italic; min-width: 250px;")
         top_row.addWidget(self.log_output)
 
-        BTN_H = 36
+        BTN_H = 36  # Uniform height for all action-bar buttons, in pixels.
 
         self.btn_stop = QPushButton("✕  Cancel")
         self.btn_stop.setProperty("class", "DangerButton")
@@ -1383,10 +617,12 @@ class HarvestTabV2(QWidget):
         
         action_layout.addLayout(top_row)
 
+        # Thin 6 px progress bar at the bottom of the action card.
+        # The "state" dynamic property ("running", "success", "idle") drives QSS colour.
         self.progress_bar = QProgressBar()
         self.progress_bar.setProperty("class", "TerminalProgressBar")
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.setFixedHeight(6)  # intentionally slim — purely decorative/informational
         self.progress_bar.setStyleSheet(
             "QProgressBar { border-radius: 3px; } QProgressBar::chunk { border-radius: 3px; }"
         )
@@ -1396,6 +632,12 @@ class HarvestTabV2(QWidget):
         self._transition_state(UIState.IDLE)
 
     def _toggle_stop_rule_visibility(self, mode_text=None):
+        """Show or hide (visually mute) the Stop Rule combo based on the current run mode.
+
+        The stop rule is only meaningful when mode is "Both (LCCN & NLM)" and the
+        DB-only checkbox is not checked.  In all other cases the combo is visually
+        muted (greyed out with a forbidden cursor) but still present in the layout.
+        """
         if not mode_text:
             mode_text = self.combo_run_mode.currentText()
 
@@ -1427,6 +669,14 @@ class HarvestTabV2(QWidget):
             self.combo_stop_rule.setCursor(Qt.CursorShape.ForbiddenCursor)
 
     def _confirm_db_only_without_targets(self) -> bool:
+        """Ask the user to confirm running with no targets (database-only mode).
+
+        Shown when the user clicks Start with zero selected targets.  An informational
+        message explains that the run will search only the existing SQLite database.
+
+        Returns:
+            ``True`` if the user accepted (will run DB-only), ``False`` if cancelled.
+        """
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle("No Targets Selected")
@@ -1442,7 +692,17 @@ class HarvestTabV2(QWidget):
 
 
     def _transition_state(self, state: UIState, **kwargs):
-        """Unified UI state machine handling buttons, banners, and status."""
+        """Central state machine: update every piece of UI that depends on the run state.
+
+        All button visibility, banner colour, status label text, and ``is_running``
+        flag changes go through here.  Calling code should never set these properties
+        directly; always call this method instead.
+
+        Args:
+            state: The new ``UIState`` to transition to.
+            **kwargs: Optional per-state data (e.g. ``count=<int>`` for READY to
+                      display the ISBN count on the Start button).
+        """
         self.current_state = state
 
         # Default all action buttons to hidden/disabled
@@ -1493,7 +753,7 @@ class HarvestTabV2(QWidget):
 
             self.lbl_run_status.setText("Running")
 
-            # Reset progress bar style class (if customized in CSS)
+                # Revert any terminal-state colour (green/red) back to the default "running" style.
             self.progress_bar.setProperty("state", "running")
             self.progress_bar.style().unpolish(self.progress_bar)
             self.progress_bar.style().polish(self.progress_bar)
@@ -1549,13 +809,15 @@ class HarvestTabV2(QWidget):
 
             self.btn_new_run.setVisible(True)
 
-        # Apply changes to banner
+        # Force QSS to re-evaluate the "state" property on the banner and pill labels.
+        # unpolish + polish is the canonical way to refresh dynamic-property-driven QSS rules.
         self.banner_frame.style().unpolish(self.banner_frame)
         self.banner_frame.style().polish(self.banner_frame)
         self.lbl_run_status.style().unpolish(self.lbl_run_status)
         self.lbl_run_status.style().polish(self.lbl_run_status)
         self.lbl_banner_title.style().unpolish(self.lbl_banner_title)
         self.lbl_banner_title.style().polish(self.lbl_banner_title)
+        # Clear the inline orange style on the Pause button when we leave the active states.
         if state not in (UIState.RUNNING, UIState.PAUSED):
             self.btn_pause.setStyleSheet("")
 
@@ -1563,14 +825,20 @@ class HarvestTabV2(QWidget):
         self.lbl_banner_stats.setVisible(show_stats)
 
     def _setup_shortcuts(self):
+        """Register keyboard shortcuts for common harvest actions.
+
+        Uses the platform-appropriate modifier (Cmd on macOS, Ctrl elsewhere):
+        - Mod+O: Browse for input file.
+        - Mod+Enter: Start harvest.
+        - Mod+.: Cancel harvest.
+        """
         mod = self._shortcut_modifier
         QShortcut(QKeySequence(f"{mod}+O"), self, activated=self._browse_file)
         QShortcut(QKeySequence(f"{mod}+Return"), self, activated=self._on_start_clicked)
         QShortcut(QKeySequence(f"{mod}+."), self, activated=self._stop_harvest)
 
     def _update_scrollbar_policy(self):
-        """Hide vertical scrollbar when the window is maximized/fullscreen."""
-        pass
+        """Reserved hook called on every resize event. Currently no scroll-policy adjustment is needed."""
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1582,6 +850,18 @@ class HarvestTabV2(QWidget):
             self._update_scrollbar_policy()
 
     def set_input_file(self, path):
+        """Load an ISBN input file, validate it, and update all related UI controls.
+
+        Parses the file with ``parse_isbn_file`` (sampling the first 200 k lines for
+        files > 20 MB), populates the File Statistics tiles, runs the preview table,
+        and calls ``_check_start_conditions`` to decide whether to enable Start.
+
+        If the file contains no valid ISBNs, the UI transitions to the ERROR state
+        and the input is not stored.
+
+        Args:
+            path: Absolute path string, or empty/``None`` to clear the current file.
+        """
         if not path:
             self._clear_input()
             return
@@ -1595,13 +875,14 @@ class HarvestTabV2(QWidget):
 
         path_obj = Path(path)
 
-        # Extension Check removed to allow all file types
-        # parse_isbn_file will handle non-text files correctly by returning 0 valid rows
+        # Extension filtering is not enforced here; parse_isbn_file returns 0 valid rows
+        # for binary/non-text files, which triggers the "no valid ISBNs" error path below.
 
         # Content Check (Real Validation)
         try:
             size_kb = path_obj.stat().st_size / 1024
-            sampled = path_obj.stat().st_size > 20 * 1024 * 1024  # 20 MB
+            # For files larger than 20 MB, parse only the first 200 k lines to keep the UI responsive.
+            sampled = path_obj.stat().st_size > 20 * 1024 * 1024  # 20 MB threshold
             INFO_SAMPLE_MAX_LINES = 200_000
 
             parsed = parse_isbn_file(
@@ -1616,10 +897,6 @@ class HarvestTabV2(QWidget):
             sample_note = ""
             if sampled:
                 sample_note = f"\nNote: Large file detected. Stats based on first {INFO_SAMPLE_MAX_LINES:,} lines."
-
-            print(
-                f"DEBUG: Validation Results - Unique Valid: {unique_valid}, Invalid: {invalid_rows}"
-            )
 
             if valid_rows == 0:
                 msg = "File contains no valid ISBNs"
@@ -1652,7 +929,7 @@ class HarvestTabV2(QWidget):
             self.lbl_val_rows.setText(str(valid_rows + invalid_rows))
             self.lbl_val_loaded.setText(str(unique_valid))
 
-            # Red highlight if invalid > 0
+            # Show the invalid count in red when non-zero; unpolish/polish forces the QSS re-evaluation.
             self.lbl_val_invalid.setText(str(invalid_rows))
             if invalid_rows > 0:
                 self.lbl_val_invalid.setProperty("state", "error")
@@ -1665,7 +942,7 @@ class HarvestTabV2(QWidget):
 
             self.file_path_edit.setText(path_obj.name)
             self.btn_clear_file.setVisible(True)
-            self._load_file_preview_v2()
+            self._load_file_preview()
 
             self._check_start_conditions(unique_valid)
 
@@ -1673,8 +950,16 @@ class HarvestTabV2(QWidget):
             self._set_invalid_state(path_obj.name, f"Error reading file: {e}")
 
     def _check_start_conditions(self, isbn_count=None):
-        """Enable start button when a valid file is loaded.
-        Target validation happens only at harvest time in _on_start_clicked.
+        """Evaluate whether the Start button should be enabled.
+
+        The only pre-flight requirement checked here is that a valid input file is
+        loaded.  Target availability is validated at harvest time in
+        ``_on_start_clicked`` so the user is not blocked from loading a file before
+        configuring targets.
+
+        Args:
+            isbn_count: Optional override for the displayed ISBN count (used after a
+                fresh file load to avoid re-parsing just to get the count).
         """
         # Never override the UI while a harvest is running, paused, or showing completion
         if self.current_state in (
@@ -1764,14 +1049,27 @@ class HarvestTabV2(QWidget):
         self.preview_table.setItem(0, 0, QTableWidgetItem(msg))
 
     def _apply_db_only_checkbox_style(self):
+        """Apply a theme-aware text colour to the DB-only checkbox label.
+
+        ``QCheckBox`` text colour can be overridden by global QSS rules that make it
+        invisible on certain themes; this method ensures the label is always readable
+        by reading the active theme from ``ThemeManager`` and applying an explicit
+        inline style.
+        """
         is_dark = ThemeManager().get_theme() == "dark"
         text_color = "#f9fafb" if is_dark else "#000000"
         self.chk_db_only.setStyleSheet(
             "QCheckBox { color: " + text_color + "; font-weight: 600; spacing: 8px; }"
         )
 
-    def _load_file_preview_v2(self):
-        """Load a preview using ISBN-aware row numbering and optional header skipping."""
+    def _load_file_preview(self):
+        """Populate the preview table with the first 20 valid ISBN rows from the input file.
+
+        Reads lines one at a time, normalises the first column as an ISBN, skips a
+        recognised header row (via ``_looks_like_header_cell``), and stops once 20
+        rows have been collected.  Each row shows the raw cell text and a colour-coded
+        "Valid"/"Invalid" status in the second column.
+        """
         self.preview_table.clearContents()
         self.preview_table.setRowCount(0)
         if not self.input_file:
@@ -1830,7 +1128,7 @@ class HarvestTabV2(QWidget):
             self._show_preview_message(f"Error reading preview: {e}")
 
     def _copy_preview_content(self):
-        """Copy preview table content as tab-separated text."""
+        """Copy the preview table's data columns (excluding Status) to the clipboard as TSV."""
         lines = []
         for r in range(self.preview_table.rowCount()):
             cells = []
@@ -1850,7 +1148,13 @@ class HarvestTabV2(QWidget):
         self._clear_input()
 
     def _clear_input(self):
-        """Reset input state."""
+        """Reset all input-related UI controls and session state to a clean IDLE baseline.
+
+        Clears the file path, File Statistics tiles, preview table, progress bar,
+        and log label.  Forces QSS re-evaluation on dynamic-property widgets
+        (``log_output``, ``lbl_val_invalid``, ``progress_bar``) via unpolish/polish.
+        Emits ``harvest_reset`` to notify the main window to reset the sidebar pill.
+        """
         self.run_timer.stop()
         self.run_time = QTime(0, 0, 0)
         self.lbl_run_elapsed.setText("00:00:00")
@@ -1894,7 +1198,15 @@ class HarvestTabV2(QWidget):
         self.harvest_reset.emit()
 
     def _set_invalid_state(self, filename, error_msg):
-        """Show error state."""
+        """Display an error state when the loaded file contains no valid ISBNs.
+
+        Clears stats tiles, shows the error message in the log label (red via QSS
+        ``"error"`` state), and transitions to ``UIState.ERROR``.
+
+        Args:
+            filename: Name of the file (for display in the path edit only).
+            error_msg: Human-readable description of the problem.
+        """
         self.input_file = None
         self.file_path_edit.setText(filename)
         self.btn_clear_file.setVisible(True)
@@ -1918,7 +1230,7 @@ class HarvestTabV2(QWidget):
         self._transition_state(UIState.ERROR)
 
     def _browse_file(self):
-        """Open file picker (mimicking InputTab's filtering)."""
+        """Open the system file picker and load the selected ISBN input file."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select ISBN Input File",
@@ -1929,7 +1241,18 @@ class HarvestTabV2(QWidget):
             self.set_input_file(file_path)
 
     def _on_start_clicked(self):
-        """Prepare and start harvest using external config."""
+        """Validate pre-conditions and delegate to ``_start_worker`` to begin a harvest run.
+
+        Steps performed:
+        1. Retrieve the active profile config via ``_config_getter``.
+        2. Query the DB for ISBNs still within the retry window (``_check_recent_not_found_isbns``).
+        3. Override ``config["call_number_mode"]`` from the UI combo so the run always
+           matches what the user sees on screen.
+        4. Map the stop-rule combo to internal ``stop_rule`` / ``both_stop_policy`` values.
+        5. Check selected targets; show a confirmation if none are selected and the user
+           opts to continue (DB-only mode).
+        6. Call ``_start_worker``.
+        """
         if not self.input_file:
             return
 
@@ -2028,6 +1351,18 @@ class HarvestTabV2(QWidget):
         return None
 
     def _start_worker(self, config, targets, bypass_retry_isbns=None):
+        """Instantiate and start the harvest worker thread for a new run.
+
+        Computes unique timestamped output file paths for this run, emits
+        ``result_files_ready`` so the dashboard can enable its file-open buttons,
+        wires all worker signals, and starts the ``QThread``.
+
+        Args:
+            config: Settings dict (retry_days, call_number_mode, etc.).
+            targets: List of target config dicts from TargetsTab.
+            bypass_retry_isbns: Optional set of ISBNs to rerun despite the retry window.
+        """
+        # Guard against double-click launching a second worker on top of a running one.
         if self.worker and self.worker.isRunning():
             return
 
@@ -2036,7 +1371,7 @@ class HarvestTabV2(QWidget):
         self.lbl_run_elapsed.setText("00:00:00")
         self.timer_is_paused = False
 
-        # Compute timestamped output file names for this run
+        # Compute timestamped output file names for this run.
         profile = "default"
         if self._profile_getter:
             try:
@@ -2044,7 +1379,7 @@ class HarvestTabV2(QWidget):
             except Exception:
                 pass
         date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        # Use a per-run timestamp so repeated harvests never overwrite earlier files.
+        # Use a per-run timestamp so repeated harvests never overwrite previous output.
         live_dir = Path("data") / profile
         live_dir.mkdir(parents=True, exist_ok=True)
         suffix = 0
@@ -2076,7 +1411,7 @@ class HarvestTabV2(QWidget):
             except Exception:
                 pass
 
-        self.worker = HarvestWorkerV2(
+        self.worker = HarvestWorker(
             self.input_file,
             config,
             targets,
@@ -2085,11 +1420,17 @@ class HarvestTabV2(QWidget):
             live_paths=self._run_live_paths,
             db_path=db_path,
         )
+        # Signal wiring: all worker → UI connections use queued cross-thread delivery.
+        # stats_update is connected twice:
+        #   1. _on_stats: updates the local progress bar / counter label.
+        #   2. live_stats_ready.emit: re-emits the RunStats dataclass to the dashboard
+        #      KPI cards without an extra DB query.
         self.worker.progress_update.connect(self._on_progress)
         self.worker.harvest_complete.connect(self._on_complete)
         self.worker.stats_update.connect(self._on_stats)
         self.worker.stats_update.connect(self.live_stats_ready.emit)
         self.worker.status_message.connect(self._on_status)
+        # Re-emit per-ISBN live results directly to the dashboard's recent-results panel.
         self.worker.live_result.connect(self.live_result_ready.emit)
 
         self._transition_state(UIState.RUNNING)
@@ -2097,17 +1438,29 @@ class HarvestTabV2(QWidget):
         self.progress_bar.setFormat("0/0 (0%)")
 
         self.worker.start()
+        # Elapsed timer fires every 1 000 ms to update lbl_run_elapsed.
         self.run_timer.start(1000)
 
         self.harvest_started.emit()
 
     def _update_timer(self):
-        """Update the elapsed time display."""
+        """Increment ``run_time`` by one second and refresh the elapsed label.
+
+        No-op when the harvest is paused (``timer_is_paused`` is ``True``) so the
+        displayed elapsed time freezes during a pause.
+        """
         if not self.timer_is_paused:
             self.run_time = self.run_time.addSecs(1)
             self.lbl_run_elapsed.setText(self.run_time.toString("hh:mm:ss"))
 
     def _stop_harvest(self):
+        """Request a clean cancellation of the running harvest.
+
+        Sets the worker's ``_stop_requested`` flag (which causes ``progress_callback``
+        to raise ``HarvestCancelled`` at the next ISBN boundary), stops the elapsed
+        timer, and updates labels/buttons to show a "CANCELLING…" state while the
+        worker finishes its current ISBN.
+        """
         if self.worker:
             self.worker.stop()
             self.run_timer.stop()
@@ -2123,6 +1476,12 @@ class HarvestTabV2(QWidget):
             self.btn_pause.setEnabled(False)
 
     def _toggle_pause(self):
+        """Pause or resume the running harvest worker.
+
+        Reads the worker's new ``_pause_requested`` state immediately after toggling
+        to decide which UIState to transition to.  The elapsed timer is also paused/
+        resumed to keep the reported time accurate.
+        """
         if self.worker:
             self.worker.toggle_pause()
             if self.worker._pause_requested:
@@ -2137,7 +1496,15 @@ class HarvestTabV2(QWidget):
                 self.harvest_paused.emit(False)
 
     def _iter_normalized_input_isbns(self):
-        """Yield normalized ISBNs from current input file."""
+        """Yield normalized ISBNs from the currently loaded input file.
+
+        Skips blank rows, rows whose first cell starts with ``#`` (comment), and
+        rows that look like a header (first cell starts with ``isbn``).  Uses a comma
+        delimiter for ``.csv`` files and tab for everything else.
+
+        Yields:
+            Normalised ISBN strings (digits only, no hyphens).
+        """
         if not self.input_file:
             return
         input_path = Path(self.input_file)
@@ -2153,12 +1520,24 @@ class HarvestTabV2(QWidget):
                     yield norm
 
     def _check_recent_not_found_isbns(self, retry_days: int):
-        """
-        Warn user when ISBNs with recent 'not found' failures are still inside retry window.
+        """Warn the user when ISBNs in the input file are still within the retry window.
+
+        Queries the DB for any ISBNs from the input file that have a recent "not found"
+        failure within the configured retry window and shows a dialog offering three choices:
+
+        - **Override and Re-run Now**: returns a set of those ISBNs so the worker bypasses the
+          retry check for them.
+        - **Continue (Keep Retry Rules)**: returns an empty set — those ISBNs will be skipped by
+          the worker as normal.
+        - **Cancel Harvest**: returns ``None`` — the harvest is aborted before starting.
+
+        Args:
+            retry_days: Number of days in the retry window (from the active profile config).
+
         Returns:
-          - set() to keep retry rule
-          - set(isbns) to bypass retry for selected ISBNs
-          - None if user cancels harvest
+            - ``set()`` — proceed with retry rules intact.
+            - ``set(str)`` — proceed but bypass retry for the returned ISBNs.
+            - ``None`` — abort; user cancelled.
         """
         if not self.input_file or retry_days <= 0:
             return set()
@@ -2201,10 +1580,10 @@ class HarvestTabV2(QWidget):
             try:
                 last_val = str(last_attempted) if last_attempted is not None else ""
                 if last_val.isdigit() and len(last_val) == 8:
-                    # yyyymmdd integer format
+                    # Current storage format: yyyymmdd integer stored as text.
                     last_dt = datetime(int(last_val[:4]), int(last_val[4:6]), int(last_val[6:8]), tzinfo=timezone.utc)
                 elif last_val:
-                    # legacy ISO string format
+                    # Legacy storage format: ISO-8601 datetime string.
                     last_dt = datetime.fromisoformat(last_val)
                     if last_dt.tzinfo is None:
                         last_dt = last_dt.replace(tzinfo=timezone.utc)
@@ -2251,6 +1630,17 @@ class HarvestTabV2(QWidget):
         return set()
 
     def _is_retry_popup_candidate(self, error_text: str) -> bool:
+        """Return ``True`` if *error_text* represents a "not found" outcome eligible for retry.
+
+        These are the patterns that should trigger the retry-window warning dialog, as
+        opposed to connectivity or server errors that would be handled separately.
+
+        Args:
+            error_text: Raw error string from a harvest attempt record.
+
+        Returns:
+            ``True`` if the error indicates a negative lookup (no call number found).
+        """
         lowered = str(error_text or "").lower()
         if "not found" in lowered:
             return True
@@ -2265,7 +1655,16 @@ class HarvestTabV2(QWidget):
         return False
 
     def _load_advanced_settings(self):
-        """Load persisted advanced settings if available."""
+        """Load the advanced settings JSON file if it exists.
+
+        The advanced settings file (``data/advanced_settings.json``) stores
+        optional overrides for ``parallel_workers``, ``connection_timeout``, and
+        ``max_retries``.  Returns an empty dict on any error so the worker falls
+        back to its own defaults.
+
+        Returns:
+            Dict of advanced setting overrides, or ``{}`` if the file is absent or invalid.
+        """
         settings_path = Path("data/advanced_settings.json")
         if not settings_path.exists():
             return {}
@@ -2275,12 +1674,31 @@ class HarvestTabV2(QWidget):
             return {}
 
     def _on_progress(self, isbn, status, source, msg):
+        """Update the log label and re-emit the progress signal to the main window.
+
+        Connected to ``HarvestWorker.progress_update``.
+
+        Args:
+            isbn: The ISBN that just produced an event.
+            status: Short status string (e.g. ``"found"``, ``"failed"``).
+            source: Target name that produced the result.
+            msg: Human-readable log line to display.
+        """
         log_msg = msg
         self.log_output.setText(log_msg)
+        # Re-emit so ModernMainWindow can relay the event to the dashboard activity label.
         self.progress_updated.emit(isbn, status, source, msg)
 
     def _on_stats(self, stats):
-        # stats is a RunStats dataclass; use getattr so it also works if a dict is passed
+        """Update the progress counter and bar when a RunStats batch update arrives.
+
+        Connected to both ``HarvestWorker.stats_update`` and indirectly to the dashboard
+        via the ``live_stats_ready`` re-emission in ``_start_worker``.
+
+        Args:
+            stats: A ``RunStats`` dataclass or legacy dict (getattr/get used for compat).
+        """
+        # Use getattr so this slot also handles a legacy dict payload gracefully.
         total = getattr(stats, "valid_rows", 0) or (stats.get("total", 0) if hasattr(stats, "get") else 0)
         processed = getattr(stats, "processed_unique", 0) or (
             stats.get("found", 0) + stats.get("failed", 0) + stats.get("cached", 0) + stats.get("skipped", 0)
@@ -2295,13 +1713,34 @@ class HarvestTabV2(QWidget):
         self.progress_bar.setValue(pct)
 
     def _on_status(self, msg):
+        """Display a status message in the action-bar log label.
+
+        Connected to ``HarvestWorker.status_message``.  Used for high-level
+        lifecycle messages (starting, completed, cancelled) rather than per-ISBN
+        progress events.
+
+        Args:
+            msg: Human-readable status line.
+        """
         self.log_output.setText(msg)
 
     def _on_complete(self, success, stats):
+        """Handle harvest completion, cancellation, or error from the worker thread.
+
+        Connected to ``HarvestWorker.harvest_complete``.  Snapshots the worker's
+        session result lists, transitions the UI state, updates the progress bar,
+        and emits ``harvest_finished`` to the main window.
+
+        Args:
+            success: ``True`` if the run completed without error/cancellation.
+            stats: Summary dict with keys "total", "found", "failed", "invalid",
+                   and optionally "error" (str) or "cancelled" (True).
+        """
         self.is_running = False
         self.run_timer.stop()
 
-        # Snapshot session results from the worker BEFORE any DB query
+        # Snapshot session results from the worker thread BEFORE any subsequent DB query
+        # overwrites them (the worker object persists until the next run).
         if self.worker is not None:
             self._last_session_success = list(self.worker._session_success)
             self._last_session_failed = list(self.worker._session_failed)
@@ -2337,7 +1776,7 @@ class HarvestTabV2(QWidget):
             if total > 0:
                 self.lbl_progress_text.setText(f"{total} / {total}  (100%)")
 
-            # Change progress bar green
+            # Switch the progress bar to the green "success" QSS style.
             self.progress_bar.setProperty("state", "success")
             self.progress_bar.style().unpolish(self.progress_bar)
             self.progress_bar.style().polish(self.progress_bar)
@@ -2345,7 +1784,11 @@ class HarvestTabV2(QWidget):
         self.harvest_finished.emit(success, stats)
 
     def _update_banner_paths(self):
-        """Update banner file button labels and output folder label to match current run."""
+        """Update banner file-button labels and the output folder label for the current run.
+
+        Reads ``_run_live_paths`` (populated in ``_start_worker``) and sets the text
+        on the banner success/failed/invalid buttons to the filename portion of each path.
+        """
         if not self._run_live_paths:
             return
         success_path = Path(self._run_live_paths.get("successful", ""))
@@ -2363,7 +1806,14 @@ class HarvestTabV2(QWidget):
         self.lbl_banner_out.setText(out_label)
 
     def _open_output_folder_path(self, folder: Path):
-        """Open a specific folder in the system file manager."""
+        """Open *folder* in the platform's native file manager.
+
+        Uses ``os.startfile`` on Windows, ``open`` on macOS, and ``xdg-open``
+        on Linux.  Creates the folder first if it does not exist.
+
+        Args:
+            folder: ``Path`` object for the directory to open.
+        """
         import os
         folder = folder.resolve()
         folder.mkdir(parents=True, exist_ok=True)
@@ -2377,7 +1827,7 @@ class HarvestTabV2(QWidget):
             subprocess.Popen(["xdg-open", str(folder)])
 
     def _open_output_folder(self):
-        """Open the data folder in Explorer."""
+        """Open the top-level ``data/`` folder in the platform's native file manager."""
         out_path = Path("data").resolve()
         out_path.mkdir(parents=True, exist_ok=True)
         import os
@@ -2416,15 +1866,20 @@ class HarvestTabV2(QWidget):
             subprocess.Popen(["xdg-open", str(file_path)])
 
     def set_advanced_mode(self, val):
-        pass
+        """Called by the main window when the advanced-mode toggle changes.
+
+        No UI changes are needed for HarvestTab; this method exists so
+        ``ModernMainWindow`` can iterate over all tabs uniformly.
+        """
 
     def stop_harvest(self):
-        """Public method used by window close handlers."""
+        """Public entry point for stopping the harvest, used by window close handlers."""
         self._stop_harvest()
 
     # ── MARC Import ────────────────────────────────────────────────────────────
 
     def _browse_marc_file(self):
+        """Open a file picker for MARC files (.mrc binary or .xml MARCXML)."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select MARC File",
@@ -2438,6 +1893,7 @@ class HarvestTabV2(QWidget):
             self._marc_status_label.setText("Click 'Import Records' to import call numbers into the database and save results.")
 
     def _clear_marc_file(self):
+        """Reset all MARC-import controls to their default (no file selected) state."""
         self._marc_path_edit.clear()
         self._btn_import_marc.setEnabled(False)
         self._btn_clear_marc.setVisible(False)
@@ -2446,11 +1902,23 @@ class HarvestTabV2(QWidget):
             getattr(self, attr).setText("—")
 
     def _import_marc_file(self):
+        """Run the three-step MARC import pipeline for the currently selected file.
+
+        Steps:
+        1. Ask the user for a human-readable source name (via ``QInputDialog``).
+        2. Parse the MARC file with ``_parse_marc_records``; show an error and
+           return early if parsing fails or the file is empty.
+        3. Filter/transform records via ``_prepare_marc_import_records`` using the
+           active call-number mode.
+        4. Persist parsed records to the database via ``MarcImportService``.
+        5. Write a TSV export and a companion CSV to the profile's data directory.
+        6. Update the MARC stat tiles and show a rich-text summary dialog.
+        """
         path = self._marc_path_edit.text().strip()
         if not path:
             return
 
-        # ── Task 2: ask the user for a source name ─────────────────────────────
+        # Ask the user for a source name to store with the imported records.
         default_source = Path(path).stem
         source_name, ok = QInputDialog.getText(
             self,
@@ -2566,7 +2034,8 @@ class HarvestTabV2(QWidget):
                     classification = _extract_lc_classification(lccn)
                     row = [isbn or "", lccn, source_name, classification, date_added]
                 writer.writerow(row)
-                # Update status every 500 records so the UI stays responsive
+                # Yield to the event loop every 500 rows so the UI stays responsive
+                # during large imports (calling processEvents avoids a frozen window).
                 if i % 500 == 0:
                     self._marc_status_label.setText(
                         f"Step 2/3 — Processed {i:,} / {total_records:,}…"
@@ -2620,7 +2089,20 @@ class HarvestTabV2(QWidget):
             self._open_output_folder_path(live_dir)
 
     def _parse_marc_records(self, path: str) -> list:
-        """Parse a binary .mrc or MARCXML file and return (isbn, lccn, nlmcn) tuples."""
+        """Parse a binary MARC21 or MARCXML file and return (isbn, lccn, nlmcn) tuples.
+
+        Fields extracted per record:
+        - **020 $a / $z** — ISBN (preferred subfield $a; falls back to $z).
+        - **050 $a + $b** — LC call number (LCCN).
+        - **060 $a + $b** — NLM call number (NLMCN).
+
+        Args:
+            path: Absolute path to the MARC file.  ``.xml`` extension is treated
+                  as MARCXML; all other extensions are treated as binary MARC21.
+
+        Returns:
+            List of ``(isbn, lccn, nlmcn)`` tuples; any field may be ``None``.
+        """
         import pymarc
         from src.utils.call_number_normalizer import normalize_call_number
 
@@ -2628,7 +2110,7 @@ class HarvestTabV2(QWidget):
         results = []
 
         def _extract(record):
-            # ISBN from 020 $a (prefer) then $z
+            # ISBN: prefer 020 $a (primary ISBN); fall back to 020 $z (cancelled/invalid ISBN).
             isbn = None
             for code in ("a", "z"):
                 for field in record.get_fields("020"):
@@ -2660,10 +2142,12 @@ class HarvestTabV2(QWidget):
             return isbn, lccn, nlmcn
 
         if file_path.suffix.lower() == ".xml":
+            # MARCXML path: pymarc parses the whole file into an array.
             for rec in pymarc.parse_xml_to_array(str(file_path)):
                 if rec is not None:
                     results.append(_extract(rec))
         else:
+            # Binary MARC21 path: streaming reader with UTF-8 forced for modern records.
             with open(file_path, "rb") as fh:
                 reader = pymarc.MARCReader(fh, to_unicode=True, force_utf8=True)
                 for rec in reader:
@@ -2671,3 +2155,5 @@ class HarvestTabV2(QWidget):
                         results.append(_extract(rec))
 
         return results
+
+

@@ -1,6 +1,19 @@
-"""
-Module: shortcuts_dialog.py
-Visual keyboard shortcuts reference dialog.
+"""Searchable keyboard shortcuts reference dialog.
+
+``ShortcutsDialog`` is a modal dialog that presents all application keyboard
+shortcuts grouped by category.  It includes a live-filter search box so the
+user can quickly locate a specific shortcut by key sequence or action name.
+
+Key design points:
+- ``_render_shortcuts`` rebuilds the content area from scratch on each
+  keystroke using ``deleteLater`` on old widgets rather than hiding them, so
+  the layout height recalculates correctly.
+- Shortcuts are defined in ``_get_shortcuts_data`` and automatically
+  translated from ``Ctrl+`` to ``Cmd+`` notation for macOS users via
+  ``_macify``.
+- The dialog self-applies the full application stylesheet (``generate_stylesheet``)
+  augmented with a ``#CategoryHeader`` rule so category headings are visually
+  distinct.
 """
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -9,25 +22,40 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 import sys
 
-from gui.theme_manager import ThemeManager
-from gui.styles_v2 import generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+from .theme_manager import ThemeManager
+from .styles import generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 
 
 class ShortcutItem(QFrame):
-    """A single shortcut display item."""
+    """A single row in the shortcuts list showing a key sequence and its description.
+
+    Uses ``objectName`` values (``"ShortcutKeys"``, ``"ShortcutDesc"``) so the
+    application stylesheet can style the key badge and description label
+    independently.
+    """
 
     def __init__(self, keys, description, parent=None):
+        """Create a shortcut row.
+
+        Args:
+            keys: Key sequence string (e.g. ``"Ctrl+H"`` or ``"Cmd+H"``).
+            description: Human-readable description of what the shortcut does.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        # "ShortcutItem" class triggers a styled-panel rule in the QSS.
         self.setProperty("class", "ShortcutItem")
 
         layout = QHBoxLayout()
 
+        # objectName "ShortcutKeys" lets the stylesheet style the key badge.
         keys_label = QLabel(keys)
         keys_label.setObjectName("ShortcutKeys")
         keys_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(keys_label)
 
+        # objectName "ShortcutDesc" lets the stylesheet style the description.
         desc_label = QLabel(description)
         desc_label.setObjectName("ShortcutDesc")
         layout.addWidget(desc_label, stretch=1)
@@ -36,20 +64,39 @@ class ShortcutItem(QFrame):
 
 
 class ShortcutsDialog(QDialog):
-    """Dialog showing all keyboard shortcuts."""
+    """Searchable modal dialog listing all application keyboard shortcuts.
+
+    The dialog is self-styled: it applies the full application stylesheet from
+    ``generate_stylesheet`` plus an additional ``QLabel#CategoryHeader`` rule
+    for bold section headings.  Platform detection ensures macOS users see
+    ``Cmd+`` notation throughout.
+    """
 
     def __init__(self, parent=None):
+        """Initialise the dialog and apply the current theme.
+
+        Args:
+            parent: Optional parent widget for modal positioning.
+        """
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts Reference")
         self.setMinimumSize(640, 520)
+        # Detect platform once so _get_shortcuts_data and _macify use it consistently.
         self.platform = "mac" if sys.platform == "darwin" else "win_linux"
         self._setup_ui()
         self._apply_theme()
-        
+
     def _apply_theme(self):
+        """Apply the current theme stylesheet including the CategoryHeader override.
+
+        Concatenates the global application stylesheet with a dialog-specific
+        ``QLabel#CategoryHeader`` rule that sets contrasting text colour for
+        category headings (white on dark, black on light).
+        """
         theme_mgr = ThemeManager()
         mode = theme_mgr.get_theme()
         palette = CATPPUCCIN_DARK if mode == "dark" else CATPPUCCIN_LIGHT
+        # Category headers need high-contrast text; white on dark, black on light.
         category_color = "#ffffff" if mode == "dark" else "#000000"
         self.setStyleSheet(
             generate_stylesheet(palette)
@@ -67,6 +114,13 @@ class ShortcutsDialog(QDialog):
         )
 
     def _setup_ui(self):
+        """Build the dialog layout: header, search box, scrollable shortcuts list, close button.
+
+        The scrollable content area uses ``self.content_layout`` (a ``QVBoxLayout``)
+        which is rebuilt from scratch by ``_render_shortcuts`` on each search
+        keystroke.  The search input, header, and close button live outside the
+        scroll area so they remain visible at all times.
+        """
         layout = QVBoxLayout()
 
         header = QLabel("⌨️ Keyboard Shortcuts")
@@ -130,6 +184,15 @@ class ShortcutsDialog(QDialog):
         self._render_shortcuts()
 
     def _render_shortcuts(self):
+        """Rebuild the scrollable content area to reflect the current search query.
+
+        Called on every keystroke in the search box.  All existing widgets are
+        removed and scheduled for deletion via ``deleteLater`` so the layout
+        height recalculates correctly; then matching categories and items are
+        re-added from scratch.
+        """
+        # Remove all existing rows before rebuilding — this keeps the layout
+        # height accurate and avoids stale widgets accumulating behind the scenes.
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             widget = item.widget()
@@ -137,12 +200,16 @@ class ShortcutsDialog(QDialog):
                 widget.deleteLater()
 
         shortcuts_data = self._get_shortcuts_data()
+        # Guard with hasattr because _render_shortcuts is called from _setup_ui
+        # before self.search_input is assigned.
         query = self.search_input.text().strip().lower() if hasattr(self, "search_input") else ""
         shown = 0
 
         for category, shortcuts in shortcuts_data:
             matched = []
             for keys, description in shortcuts:
+                # Build a haystack from keys, description, and category so the
+                # user can search by action name or by category label.
                 hay = f"{keys} {description} {category}".lower()
                 if not query or query in hay:
                     matched.append((keys, description))
@@ -168,6 +235,13 @@ class ShortcutsDialog(QDialog):
         self.content_layout.addStretch()
 
     def _get_shortcuts_data(self):
+        """Return all shortcuts grouped by category, with macOS key notation applied.
+
+        Returns:
+            A list of ``(category_name, [(keys_str, description), ...])`` tuples.
+            On macOS all ``Ctrl+`` prefixes are replaced with ``Cmd+`` via
+            ``_macify``.
+        """
         shortcuts_data = [
             ("General", [
                 ("Ctrl+A", "Select all text in the current input box"),
@@ -208,4 +282,15 @@ class ShortcutsDialog(QDialog):
         return shortcuts_data
 
     def _macify(self, keys):
+        """Replace ``Ctrl`` prefixes with ``Cmd`` for macOS key-sequence display.
+
+        The ``Ctrl+Enter`` case must be handled first to avoid a double-replace
+        when the generic ``Ctrl+`` rule runs.
+
+        Args:
+            keys: Key-sequence string as defined in the shortcuts data table.
+
+        Returns:
+            The same string with ``Ctrl`` replaced by ``Cmd`` throughout.
+        """
         return keys.replace("Ctrl+Enter", "Cmd+Enter").replace("Ctrl+", "Cmd+").replace("Ctrl", "Cmd")

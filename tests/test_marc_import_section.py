@@ -32,9 +32,9 @@ def qapp():
 
 @pytest.fixture
 def harvest_tab(qapp):
-    """Create a HarvestTabV2 instance for testing."""
-    from gui.harvest_tab_v2 import HarvestTabV2
-    tab = HarvestTabV2()
+    """Create a HarvestTab instance for testing."""
+    from src.gui.harvest_tab import HarvestTab
+    tab = HarvestTab()
     tab.show()
     qapp.processEvents()
     yield tab

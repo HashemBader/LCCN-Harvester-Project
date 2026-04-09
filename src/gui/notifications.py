@@ -1,17 +1,41 @@
+"""Desktop notifications and system tray integration for LCCN Harvester.
+
+Provides ``NotificationManager``, which wraps ``QSystemTrayIcon`` and falls back
+to native OS notification mechanisms when the tray is not available:
+
+- macOS: ``osascript`` ``display notification`` command.
+- Windows: ``QSystemTrayIcon.showMessage`` balloon tooltips (no extra library).
+- Linux: ``notify-send`` command.
+
+Error notifications are always shown as modal ``QMessageBox.warning`` dialogs
+for maximum visibility, regardless of tray availability.
+
+``NotificationPreferences`` handles loading/saving per-user preferences from
+``data/notification_prefs.json``.
 """
-Module: notifications.py
-Desktop notifications and system tray integration for LCCN Harvester.
-"""
+import logging
+import platform
+import subprocess
+from pathlib import Path
+
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QMessageBox
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QObject, pyqtSignal
-from pathlib import Path
-import platform
-import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 class NotificationManager(QObject):
-    """Manages desktop notifications and system tray."""
+    """Manages desktop notifications and system tray for the application.
+
+    Owns the ``QSystemTrayIcon`` (if the platform supports it) and exposes
+    convenience methods for each notification event type.  All notification
+    delivery is conditional on ``notifications_enabled``.
+
+    Signals:
+        notification_clicked(): Reserved for future use when the user clicks
+            a tray notification.
+    """
 
     notification_clicked = pyqtSignal()
 
@@ -25,7 +49,7 @@ class NotificationManager(QObject):
     def setup_system_tray(self):
         """Setup system tray icon and menu."""
         if not QSystemTrayIcon.isSystemTrayAvailable():
-            print("System tray not available")
+            logger.info("System tray not available.")
             return
 
         # Create tray icon
@@ -132,8 +156,8 @@ class NotificationManager(QObject):
                 self._show_windows_notification(title, message)
             elif self.system == "Linux":
                 self._show_linux_notification(title, message)
-        except Exception as e:
-            print(f"Failed to show native notification: {e}")
+        except Exception:
+            logger.exception("Failed to show native notification.")
 
     def _show_macos_notification(self, title, message):
         """Show macOS notification using osascript."""
@@ -141,10 +165,9 @@ class NotificationManager(QObject):
         subprocess.run(["osascript", "-e", script], check=False)
 
     def _show_windows_notification(self, title, message):
-        """Show Windows notification."""
-        # Windows notifications through system tray should work
-        # This is a fallback that could use win10toast if installed
-        pass
+        """Show Windows notification via system tray (no additional library required on Windows)."""
+        # Windows system-tray balloon tooltips are handled by QSystemTrayIcon.showMessage(),
+        # which is called in show_notification(). No extra work needed on this platform.
 
     def _show_linux_notification(self, title, message):
         """Show Linux notification using notify-send."""
@@ -185,25 +208,7 @@ class NotificationManager(QObject):
         )
 
     def notify_milestone(self, milestone_type, value):
-        """Notify when a milestone is reached. (Currently disabled by request)"""
-        pass
-        # messages = {
-        #     "100_processed": f"🎯 Milestone: {value} ISBNs processed!",
-        #     "500_processed": f"🚀 Milestone: {value} ISBNs processed!",
-        #     "1000_processed": f"⭐ Milestone: {value} ISBNs processed!",
-        #     "50_percent": f"📊 Progress: 50% complete ({value} ISBNs)",
-        #     "75_percent": f"📊 Progress: 75% complete ({value} ISBNs)",
-        #     "90_percent": f"📊 Progress: 90% complete - Almost done!",
-        # }
-
-        # message = messages.get(milestone_type, f"Milestone: {value}")
-
-        # self.show_notification(
-        #     "Progress Update",
-        #     message,
-        #     "info",
-        #     duration=3000
-        # )
+        """Milestone notifications are intentionally suppressed (disabled by client request)."""
 
     def notify_isbn_found(self, isbn, lccn):
         """Notify when an LCCN is found (optional, can be disabled for bulk)."""
@@ -243,7 +248,11 @@ class NotificationManager(QObject):
 
 
 class NotificationPreferences:
-    """Manage notification preferences."""
+    """Persist and retrieve per-user notification preferences.
+
+    Preferences are stored as JSON in ``data/notification_prefs.json``.  If the
+    file is absent or unreadable the hard-coded defaults are used instead.
+    """
 
     def __init__(self):
         self.preferences_file = Path("data/notification_prefs.json")
@@ -282,8 +291,8 @@ class NotificationPreferences:
             self.preferences_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.preferences_file, 'w') as f:
                 json.dump(self.prefs, f, indent=2)
-        except Exception as e:
-            print(f"Failed to save notification preferences: {e}")
+        except Exception:
+            logger.exception("Failed to save notification preferences.")
 
     def set_preference(self, key, value):
         """Set a preference value."""

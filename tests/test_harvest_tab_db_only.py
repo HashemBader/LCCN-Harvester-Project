@@ -23,9 +23,9 @@ def qapp():
 
 @pytest.fixture
 def harvest_tab(qapp):
-    from gui.harvest_tab_v2 import HarvestTabV2
+    from src.gui.harvest_tab import HarvestTab
 
-    tab = HarvestTabV2()
+    tab = HarvestTab()
     tab.show()
     qapp.processEvents()
     tab.input_file = "dummy.txt"

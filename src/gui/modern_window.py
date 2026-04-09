@@ -1,35 +1,67 @@
+"""Main application window for the LCCN Harvester desktop application.
+
+This module defines ``ModernMainWindow``, the top-level ``QMainWindow`` that
+assembles the sidebar navigation, stacked page area, and all cross-tab signal
+wiring.  It is the single entry point through which every major feature tab
+(Dashboard, Configure, Harvest, Help) is created, laid out, and kept in sync.
+
+Key responsibilities:
+- Build and manage the collapsible left sidebar with nav buttons and status pill.
+- Host a ``QStackedWidget`` that switches between the four application pages.
+- Wire cross-tab signals so that config/target changes propagate to the harvest
+  worker and the dashboard stats view.
+- Apply and persist the active color theme (light/dark) via ``ThemeManager``.
+- Register all global keyboard shortcuts.
+- Handle the window resize event that auto-collapses/expands the sidebar.
 """
-Module: modern_window.py
-V2 Professional Window: Custom Collapsible Sidebar + Stacked Layout.
-"""
+import logging
+import sys
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QFrame, QStatusBar, QMessageBox, QButtonGroup, QScrollArea
 )
 from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
-import sys
 
 # Import Tabs
 from .targets_config_tab import TargetsConfigTab
-from .harvest_tab_v2 import HarvestTabV2
-from .dashboard_v2 import DashboardTabV2
+from .harvest_tab import HarvestTab
+from .dashboard import DashboardTab
 from .help_tab import HelpTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
 from .accessibility_statement_dialog import AccessibilityStatementDialog
-from .styles_v2 import V2_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+from .styles import DEFAULT_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .icons import (
     get_icon, get_pixmap, 
     SVG_DASHBOARD, SVG_TARGETS, SVG_SETTINGS, SVG_RESULTS,
     SVG_HARVEST, SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT,
     SVG_TOGGLE_ON, SVG_TOGGLE_OFF
 )
-from config.profile_manager import ProfileManager
+from src.config.profile_manager import ProfileManager
 from .theme_manager import ThemeManager
 
+logger = logging.getLogger(__name__)
+
+
 class ModernMainWindow(QMainWindow):
+    """Top-level application window.
+
+    Combines a collapsible sidebar (navigation + status pill + theme toggle) with
+    a ``QStackedWidget`` content area that hosts the four main pages:
+
+    - Page 0: Dashboard  – KPI cards, live activity, result file shortcuts.
+    - Page 1: Configure  – Profile settings (ConfigTab) + target list (TargetsTab)
+                           stacked vertically in a splitter.
+    - Page 2: Harvest    – Input file selector, run controls, progress display.
+    - Page 3: Help       – Keyboard shortcuts reference and accessibility link.
+
+    Cross-tab communication is handled entirely through PyQt signals so no page
+    holds a direct reference to another.
+    """
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LCCN Harvester")
@@ -50,14 +82,6 @@ class ModernMainWindow(QMainWindow):
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
             # commit flags (some Qt versions require resetting flags)
             self.setWindowFlags(self.windowFlags())
-        except Exception:
-            pass
-
-        # Small diagnostic print to help debug resize/flag issues (harmless)
-        try:
-            print("[ModernMainWindow] size=%s min=%s max=%s flags=%s" % (
-                str(self.size()), str(self.minimumSize()), str(self.maximumSize()), str(int(self.windowFlags()))
-            ))
         except Exception:
             pass
 
@@ -85,9 +109,9 @@ class ModernMainWindow(QMainWindow):
         # Always start in light mode on launch
         try:
             self._apply_theme("light")
-        except Exception as e:
-            print("Theme generation fallback tripped:", e)
-            self.setStyleSheet(V2_STYLESHEET)
+        except Exception:
+            logger.exception("Theme generation fallback triggered.")
+            self.setStyleSheet(DEFAULT_STYLESHEET)
 
     def _setup_layout(self):
         """Build the Sidebar + Content Layout."""
@@ -134,15 +158,16 @@ class ModernMainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
         self.nav_group.buttonClicked.connect(self._on_nav_clicked)
 
-        # Navigation Buttons (Icon + Text)
-        self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 0)
-        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 1)
-        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 2)
+        # Navigation Buttons — order matches the stacked-widget page indices below.
+        # Dashboard(0) → Configure(1) → Harvest(2) → Help(3)
+        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
+        self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
+        self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
         self.btn_help = self._create_nav_btn("Help", SVG_RESULTS, 3)
 
+        sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_configure)
         sidebar_layout.addWidget(self.btn_harvest)
-        sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_help)
 
         sidebar_layout.addStretch() # Spacer
@@ -176,33 +201,34 @@ class ModernMainWindow(QMainWindow):
         content_layout.setContentsMargins(30, 30, 30, 30)
         content_layout.setSpacing(20)
 
-        # Page Header (Dynamic)
-        self.page_title = QLabel("Configure")
+        # Page Header (Dynamic) — default matches the first visible page (Dashboard)
+        self.page_title = QLabel("Dashboard")
         self.page_title.setObjectName("PageTitle")
         content_layout.addWidget(self.page_title)
 
         # Stacked Pages
         self.stack = QStackedWidget()
         
-        # Instantiate Pages (Using V2 tabs)
-        self.dashboard_tab = DashboardTabV2()
+        # Instantiate pages.
+        self.dashboard_tab = DashboardTab()
         self.targets_config_tab = TargetsConfigTab()
         # Backward-compatibility aliases so all existing signal wiring still works
         self.targets_tab = self.targets_config_tab.targets_tab
         self.config_tab = self.targets_config_tab.config_tab
-        self.harvest_tab = HarvestTabV2()
+        self.harvest_tab = HarvestTab()
         self.help_tab = HelpTab(shortcut_modifier=self._shortcut_modifier)
 
-        self.stack.addWidget(self.targets_config_tab)    # 0
-        self.stack.addWidget(self.harvest_tab)           # 1
-        self.stack.addWidget(self.dashboard_tab)         # 2
-        self.stack.addWidget(self.help_tab)              # 3
+        # Page indices must stay in sync with the nav-button indices above.
+        self.stack.addWidget(self.dashboard_tab)         # 0 – Dashboard
+        self.stack.addWidget(self.targets_config_tab)    # 1 – Configure
+        self.stack.addWidget(self.harvest_tab)           # 2 – Harvest
+        self.stack.addWidget(self.help_tab)              # 3 – Help
 
         content_layout.addWidget(self.stack)
 
         main_layout.addWidget(content_container)
 
-        # --- Wire Up V2 Data Flow ---
+        # Wire up page-to-page data flow.
         # HarvestTab needs access to Config and Targets to run
         self.harvest_tab.set_data_sources(
             config_getter=self.config_tab.get_config,
@@ -220,11 +246,21 @@ class ModernMainWindow(QMainWindow):
         self._refresh_targets_profile_controls()
         self._sync_tab_state()
         
-        # Select default
-        self.btn_configure.setChecked(True)
+        # Select default page: Dashboard (index 0)
+        self.btn_dashboard.setChecked(True)
         self.stack.setCurrentIndex(0)
 
     def _create_nav_btn(self, text, svg_icon, index):
+        """Create a checkable sidebar navigation button and register it with the button group.
+
+        Args:
+            text: Human-readable label shown when the sidebar is expanded.
+            svg_icon: SVG string constant from ``icons.py`` used as the button icon.
+            index: Zero-based stacked-widget page index this button should activate.
+
+        Returns:
+            The configured ``QPushButton`` instance (not yet added to a layout).
+        """
         btn = QPushButton(text)
         btn.setObjectName("NavButton")
         btn.setProperty("class", "NavButton")
@@ -232,6 +268,7 @@ class ModernMainWindow(QMainWindow):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setIcon(get_icon(svg_icon, "#a5adcb"))
         btn.setIconSize(QSize(20, 20))
+        # page_index is read back in _on_nav_clicked to switch the stack
         btn.setProperty("page_index", index)
         # Store original text for expanding/collapsing
         btn.setProperty("full_text", text)
@@ -239,6 +276,7 @@ class ModernMainWindow(QMainWindow):
         return btn
 
     def _setup_accessibility(self):
+        """Set accessible names, descriptions, and tooltips for screen-reader support."""
         self.toggle_btn.setToolTip("Collapse or expand sidebar")
         self.toggle_btn.setAccessibleName("Toggle Sidebar")
         self.toggle_btn.setAccessibleDescription("Collapse or expand left navigation sidebar.")
@@ -250,23 +288,34 @@ class ModernMainWindow(QMainWindow):
 
 
     def _setup_shortcuts(self):
+        """Register all global application keyboard shortcuts.
+
+        Shortcuts are stored in ``self._shortcuts`` so they are not garbage-collected
+        (Qt shortcuts are only active while the owning Python object is alive).
+        The modifier prefix is ``Ctrl`` on Windows/Linux and ``Meta`` on macOS so
+        that shortcuts bind to the physical Control key on every platform.
+        """
         mod = self._shortcut_modifier
         self._shortcuts = []
 
         def add_shortcut(sequence: str, callback):
+            """Create a single application-scoped shortcut and keep a reference."""
             sc = QShortcut(QKeySequence(sequence), self)
+            # ApplicationShortcut means the shortcut fires regardless of which widget has focus
             sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
             sc.activated.connect(callback)
             self._shortcuts.append(sc)
 
         def add_mod_shortcut(key: str, callback):
+            """Convenience wrapper that prepends the platform modifier."""
             add_shortcut(f"{mod}+{key}", callback)
 
         add_mod_shortcut("B", self._toggle_sidebar)
         add_mod_shortcut("Q", self.close)
-        add_mod_shortcut("1", lambda: self.btn_configure.click())
-        add_mod_shortcut("2", lambda: self.btn_harvest.click())
-        add_mod_shortcut("3", lambda: self.btn_dashboard.click())
+        # Numeric shortcuts match visible sidebar order: 1=Dashboard, 2=Configure, 3=Harvest, 4=Help
+        add_mod_shortcut("1", lambda: self.btn_dashboard.click())
+        add_mod_shortcut("2", lambda: self.btn_configure.click())
+        add_mod_shortcut("3", lambda: self.btn_harvest.click())
         add_mod_shortcut("4", lambda: self.btn_help.click())
 
         add_mod_shortcut("Shift+D", lambda: self.btn_dashboard.click())
@@ -278,6 +327,7 @@ class ModernMainWindow(QMainWindow):
         add_mod_shortcut("R", self._shortcut_refresh_dashboard)
 
     def _shortcut_start_harvest(self):
+        """Keyboard shortcut handler: navigate to Harvest tab and start the run."""
         if self.harvest_tab.is_running:
             return
         self.btn_harvest.click()
@@ -285,24 +335,41 @@ class ModernMainWindow(QMainWindow):
             self.harvest_tab.btn_start.click()
 
     def _shortcut_stop_harvest(self):
+        """Keyboard shortcut handler: stop the currently-running harvest."""
         if self.harvest_tab.is_running:
             self.harvest_tab.stop_harvest()
 
     def _shortcut_refresh_dashboard(self):
+        """Keyboard shortcut handler: force an immediate dashboard data refresh."""
         self.dashboard_tab.refresh_data()
 
     def _open_help_tab(self):
+        """Navigate to the Help page via the sidebar nav button."""
         self.btn_help.click()
 
     def _show_accessibility_statement(self):
+        """Open the accessibility statement modal dialog."""
         dialog = AccessibilityStatementDialog(self)
         dialog.exec()
 
     def _toggle_sidebar(self):
+        """Manually toggle sidebar between expanded (240 px) and collapsed (72 px) states."""
+        # Clear the auto-collapse flag so the window-resize logic doesn't fight the user.
         self._sidebar_auto_collapsed = False
         self._set_sidebar_collapsed(not self.sidebar_collapsed, animated=True)
 
     def _set_sidebar_collapsed(self, collapsed: bool, animated: bool = True):
+        """Expand or collapse the sidebar, optionally using a smooth animation.
+
+        When collapsed the sidebar is 72 px wide (icon-only mode); when expanded
+        it is 240 px wide (icon + label mode).  Both ``minimumWidth`` and
+        ``maximumWidth`` are animated in parallel so Qt does not clip the frame
+        during the transition.
+
+        Args:
+            collapsed: ``True`` to collapse, ``False`` to expand.
+            animated: When ``True``, a 300 ms ``InOutQuart`` easing animation is used.
+        """
         if self.sidebar_collapsed == collapsed and animated:
             return
 
@@ -310,6 +377,7 @@ class ModernMainWindow(QMainWindow):
         width = 72 if collapsed else 240
 
         if animated:
+            # Animate both constraints simultaneously so the frame resizes smoothly.
             self.anim = QPropertyAnimation(self.sidebar, b"minimumWidth")
             self.anim.setDuration(300)
             self.anim.setStartValue(self.sidebar.width())
@@ -321,25 +389,30 @@ class ModernMainWindow(QMainWindow):
             self.anim2.setStartValue(self.sidebar.width())
             self.anim2.setEndValue(width)
 
+            # QParallelAnimationGroup fires both animations at the same time.
             self.anim_group = QParallelAnimationGroup()
             self.anim_group.addAnimation(self.anim)
             self.anim_group.addAnimation(self.anim2)
             self.anim_group.start()
         else:
+            # Instant resize (used during window resize events to avoid lag).
             self.sidebar.setMinimumWidth(width)
             self.sidebar.setMaximumWidth(width)
 
+        # Flip the toggle chevron to indicate the new state.
         icon = SVG_CHEVRON_RIGHT if collapsed else SVG_CHEVRON_LEFT
         self.toggle_btn.setIcon(get_icon(icon, "#8aadf4"))
-        
+
         # Update Text Visibility
         self.title_label.setVisible(not self.sidebar_collapsed)
-        
+
         for btn in self.nav_group.buttons():
             if collapsed:
+                # Icon-only mode: clear label text and show tooltip instead.
                 btn.setText("")
                 btn.setToolTip(btn.property("full_text"))
             else:
+                # Expanded mode: show label text and disable tooltip (redundant).
                 btn.setText("  " + btn.property("full_text"))
                 btn.setToolTip("")
 
@@ -355,6 +428,13 @@ class ModernMainWindow(QMainWindow):
                 self.btn_theme.setText("Toggle Theme")
 
     def resizeEvent(self, event):
+        """Auto-collapse/expand the sidebar based on available window width.
+
+        Below 1180 px the sidebar collapses to icon-only mode to reclaim content
+        space.  The collapse is reversed once the window is widened past 1280 px,
+        but only if it was the auto-collapse (not a manual user action) that hid
+        it in the first place.
+        """
         super().resizeEvent(event)
         width = event.size().width()
         if width < 1180 and not self.sidebar_collapsed:
@@ -365,13 +445,21 @@ class ModernMainWindow(QMainWindow):
             self._set_sidebar_collapsed(False, animated=False)
 
     def _on_nav_clicked(self, btn):
+        """Handle a sidebar nav-button click and switch the stacked page.
+
+        Before navigating away from the Configure page (index 1), ask the user to
+        resolve any unsaved profile changes.  If they cancel, restore the currently
+        selected nav button so the UI stays consistent.
+        """
         if btn is None:
             return
 
         current_index = self.stack.currentIndex()
         index = btn.property("page_index")
+        # Guard: prompt for unsaved changes when leaving the Configure page.
         if current_index == 0 and index != 0:
             if not self.targets_config_tab.resolve_unsaved_changes():
+                # User cancelled — restore the previously-checked nav button.
                 current_button = next(
                     (
                         candidate
@@ -381,6 +469,7 @@ class ModernMainWindow(QMainWindow):
                     None,
                 )
                 if current_button is not None:
+                    # blockSignals prevents triggering _on_nav_clicked recursively.
                     current_button.blockSignals(True)
                     current_button.setChecked(True)
                     current_button.blockSignals(False)
@@ -392,6 +481,7 @@ class ModernMainWindow(QMainWindow):
         self.page_title.setText(btn.property("full_text"))
 
     def _connect_signals(self):
+        """Wire all inter-tab signals after every widget has been constructed."""
         
         # Harvest Signals
         self.harvest_tab.harvest_started.connect(self._on_harvest_started)
@@ -428,7 +518,11 @@ class ModernMainWindow(QMainWindow):
         self.help_tab.open_accessibility_requested.connect(self._show_accessibility_statement)
 
     def _on_live_result(self, payload: dict):
-        """Pass real-time structured results directly into the dashboard table."""
+        """Forward a per-ISBN harvest result to the dashboard's recent-results table.
+
+        Args:
+            payload: Dict with keys ``isbn``, ``status``, and ``detail`` from the worker.
+        """
         if hasattr(self.dashboard_tab, '_append_recent_result'):
             self.dashboard_tab._append_recent_result(
                 isbn=payload.get("isbn", ""),
@@ -437,15 +531,18 @@ class ModernMainWindow(QMainWindow):
             )
 
     def _on_harvest_progress(self, isbn, status, source, message):
-        """Pass real-time harvest events to dashboard."""
-        # Calculate approximate progress if possible, or just pass 0 if unknown
-        # We can store total in harvest_tab and pass it, but for now let's pass dummy %
-        # or ask dashboard to use its own logic.
-        # Actually LiveActivityPanel takes (target, isbn, progress, msg).
-        
-        # We need progress %. HarvestTab has it but doesn't pass it in this signal.
-        # Let's peek at harvest_tab.progress_bar.value() or processed_count
-        
+        """Forward a per-ISBN progress event to the dashboard live-activity panel.
+
+        The ``progress_updated`` signal carries (isbn, status, source, message) but
+        not a percentage.  The percentage is derived here by peeking at the worker's
+        ``processed_count`` / ``total_count`` counters on ``harvest_tab``.
+
+        Args:
+            isbn: The ISBN that was just processed.
+            status: Outcome string, e.g. ``"found"``, ``"failed"``, ``"cached"``.
+            source: The target name that produced the result.
+            message: Human-readable status message for the log/activity feed.
+        """
         try:
             total = self.harvest_tab.total_count
             current = self.harvest_tab.processed_count
@@ -477,7 +574,11 @@ class ModernMainWindow(QMainWindow):
             pass
 
     def _on_targets_changed(self, targets):
-        """Fan out target changes to dependent tabs."""
+        """Fan out a target-list change to all tabs that depend on the target configuration.
+
+        Args:
+            targets: List of target config dicts from ``TargetsTab.get_targets()``.
+        """
         self.harvest_tab.on_targets_changed(targets)
         self.config_tab.refresh_targets_preview(targets)
         # Only refresh DB stats if not actively streaming live data
@@ -485,11 +586,17 @@ class ModernMainWindow(QMainWindow):
             self.dashboard_tab.refresh_data()
 
     def _refresh_dashboard_profile_controls(self):
+        """Push the current profile list and active profile name to the dashboard combo."""
         profiles = self.config_tab.list_profile_names()
         current = self._profile_manager.get_active_profile()
         self.dashboard_tab.set_profile_options(profiles, current)
 
     def _on_dashboard_profile_selected(self, name):
+        """Handle a profile selection made from the dashboard profile switcher.
+
+        Args:
+            name: Profile name chosen by the user.
+        """
         if not name:
             return
         self.config_tab.select_profile(name)
@@ -498,11 +605,17 @@ class ModernMainWindow(QMainWindow):
         self._refresh_targets_profile_controls()
 
     def _refresh_targets_profile_controls(self):
+        """Push the current profile list and active profile name to the targets tab combo."""
         profiles = self.config_tab.list_profile_names()
         current = self._profile_manager.get_active_profile()
         self.targets_tab.set_profile_options(profiles, current)
 
     def _on_targets_profile_selected(self, name):
+        """Handle a profile selection made from the targets-tab profile switcher.
+
+        Args:
+            name: Profile name chosen by the user.
+        """
         if not name:
             return
         self.config_tab.select_profile(name)
@@ -510,11 +623,20 @@ class ModernMainWindow(QMainWindow):
         self._refresh_targets_profile_controls()
 
     def _open_profile_settings(self):
+        """Navigate to the Configure page and focus the New Profile button."""
         self.btn_configure.click()
         if hasattr(self.config_tab, "btn_new"):
             self.config_tab.btn_new.setFocus()
 
     def _on_profile_changed(self, profile_name):
+        """React to an active-profile change originating from the Configure tab.
+
+        Persists the new profile, refreshes all profile-aware UI controls, resets
+        the harvest tab, and reloads the dashboard stats from the new profile's DB.
+
+        Args:
+            profile_name: The newly activated profile name.
+        """
         self._profile_manager.set_active_profile(profile_name)
         self._refresh_dashboard_profile_controls()
         self._refresh_targets_profile_controls()
@@ -522,12 +644,16 @@ class ModernMainWindow(QMainWindow):
         self.dashboard_tab.refresh_data()
 
     def _on_page_changed(self, index):
-        """Refresh dependent tabs on navigation to keep views current."""
-        if index == 0:  # Configure (Targets + Settings)
+        """Refresh dependent tabs on navigation to keep views current.
+
+        Index mapping (must stay in sync with stack.addWidget order):
+            0 = Dashboard, 1 = Configure, 2 = Harvest, 3 = Help
+        """
+        if index == 0:  # Dashboard
+            self.dashboard_tab.refresh_data()
+        elif index == 1:  # Configure (Targets + Settings)
             self.targets_tab.refresh_targets()
             self.config_tab.refresh_targets_preview()
-        elif index == 2:  # Dashboard
-            self.dashboard_tab.refresh_data()
 
     # --- Logic ---
 
@@ -538,12 +664,24 @@ class ModernMainWindow(QMainWindow):
                 tab.set_advanced_mode(self.advanced_mode)
 
     def _on_harvest_started(self):
+        """React to the harvest worker signalling that a run has begun."""
         self._set_sidebar_status("Running", "running")
+        # Switch navigation to the Harvest page so progress is immediately visible.
         self.btn_harvest.click()
         self.dashboard_tab.set_running()
 
 
     def _on_harvest_finished(self, success, stats):
+        """React to the harvest worker completing (success, cancellation, or error).
+
+        Updates the sidebar status pill, the dashboard last-run label, KPI cards,
+        and shows an error notification when appropriate.
+
+        Args:
+            success: ``True`` if the harvest completed without errors or cancellation.
+            stats: Dict containing harvest outcome counters and optional ``cancelled``
+                   / ``error`` keys, or a non-dict value when unavailable.
+        """
         from datetime import datetime
         is_cancelled = isinstance(stats, dict) and stats.get("cancelled", False)
         has_error = isinstance(stats, dict) and bool(stats.get("error"))
@@ -588,15 +726,28 @@ class ModernMainWindow(QMainWindow):
         self.dashboard_tab.set_idle()
 
     def _set_sidebar_status(self, text: str, state: str):
-        """Update the sidebar status pill to mirror harvester state."""
+        """Update the sidebar status pill to mirror harvester state.
+
+        Calls ``unpolish`` + ``polish`` to force Qt to re-evaluate the QSS
+        ``[state="..."]`` property selector so the correct pill color is applied
+        without needing to reload the full stylesheet.
+
+        Args:
+            text: Human-readable state label (e.g. ``"Running"``, ``"Idle"``).
+            state: QSS property value matched by the ``StatusPill`` style rules
+                   (``"idle"``, ``"running"``, ``"paused"``, ``"success"``, ``"error"``).
+        """
         if hasattr(self, "status_pill"):
             self.status_pill.setText(text)
         self.sidebar_status.setText(f"● {text}")
         self.sidebar_status.setProperty("state", state)
+        # unpolish/polish forces Qt to re-read the dynamic property and apply the
+        # matching QSS rule (e.g. StatusPill[state="running"] { color: blue; }).
         self.sidebar_status.style().unpolish(self.sidebar_status)
         self.sidebar_status.style().polish(self.sidebar_status)
 
     def closeEvent(self, event):
+        """Prompt the user before closing if a harvest is still in progress."""
         if self.harvest_tab.is_running:
             reply = QMessageBox.question(self, "Harvesting", "Stop harvest and exit?",
                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
@@ -619,7 +770,7 @@ class ModernMainWindow(QMainWindow):
                 pass
 
     def _apply_theme(self, theme: str):
-        """Apply color theme (light or dark) dynamically generated from styles_v2.
+        """Apply the requested color theme using the shared stylesheet helpers.
 
         Strategy:
         - Generate the complete application stylesheet based on the active mode.
@@ -668,6 +819,6 @@ class ModernMainWindow(QMainWindow):
         except Exception:
             # Very last-resort fallback
             try:
-                self.setStyleSheet(V2_STYLESHEET)
+                self.setStyleSheet(DEFAULT_STYLESHEET)
             except Exception:
                 pass

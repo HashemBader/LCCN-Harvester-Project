@@ -54,16 +54,16 @@ The GUI is built with PyQt6. The main window class is `ModernMainWindow` in `mod
 
 | File | Class | Responsibility |
 |------|-------|---------------|
-| `dashboard_v2.py` | `DashboardTabV2` | KPI cards, live activity monitor, recent results table, profile selector |
+| `dashboard.py` | `DashboardTab` | KPI cards, live activity monitor, recent results table, profile selector |
 | `targets_config_tab.py` | `TargetsConfigTab` | Container for Targets and Settings sub-tabs; profile change signals |
-| `targets_tab_v2.py` | `TargetsTab` | Editable target list with enable/disable and priority reordering |
-| `config_tab_v2.py` | `ConfigTabV2` | Profile CRUD, retry interval spinbox, call number mode selector |
-| `harvest_tab_v2.py` | `HarvestTabV2` | File input drop zone, harvest controls, MARC import, output file links |
+| `targets_tab.py` | `TargetsTab` | Editable target list with enable/disable and priority reordering |
+| `config_tab.py` | `ConfigTab` | Profile CRUD, retry interval spinbox, call number mode selector |
+| `harvest_tab.py` | `HarvestTab` | File input drop zone, harvest controls, MARC import, output file links |
 | `help_tab.py` | `HelpTab` | Keyboard shortcut reference, accessibility info, about section |
 
 ### Theming
 
-- Two palettes: `CATPPUCCIN_DARK` and `CATPPUCCIN_LIGHT` (defined in `styles_v2.py`).
+- Two palettes: `CATPPUCCIN_DARK` and `CATPPUCCIN_LIGHT` (defined in `styles.py`).
 - `ThemeManager` (`theme_manager.py`) persists the selected theme across sessions.
 - `generate_stylesheet(colors)` produces a full Qt stylesheet from a palette dict.
 - All tabs that use inline styles implement `refresh_theme(colors)` for live switching.
@@ -91,7 +91,7 @@ Supports parallel ISBN processing via `ThreadPoolExecutor`. Raises `HarvestCance
 
 ### Run Harvest (`run_harvest.py`)
 
-`run_harvest()` is the top-level function called by `HarvestWorkerV2`. It:
+`run_harvest()` is the top-level function called by `HarvestWorker`. It:
 
 - Reads and validates ISBNs from the input file via `parse_isbn_file()`.
 - Creates a `DatabaseManager` for the active profile.
@@ -139,37 +139,44 @@ data/<profile_name>/lccn_harvester.sqlite3
 | Method | Purpose |
 |--------|---------|
 | `init_db()` | Creates tables from `schema.sql`; enables `PRAGMA foreign_keys = ON` |
-| `get_main_record(isbn)` | Look up a successfully harvested ISBN |
-| `insert_main(record)` | Write a successful result |
-| `get_attempted(isbn, target)` | Retry gate read |
-| `insert_attempted(...)` | Retry gate write |
-| `get_linked_isbn(isbn)` | Linked ISBN lookup for edition deduplication |
-| `query_stats()` | Aggregate counts for Dashboard KPI cards |
+| `get_main(isbn)` | Look up a successfully harvested ISBN and collapse row-per-type storage into one combined record |
+| `upsert_main(record)` | Write a successful result into the `main` table |
+| `get_attempted_for(isbn, target, attempt_type)` | Read retry state for a specific ISBN/target/type combination |
+| `upsert_attempted(...)` | Write retry/failure state into the `attempted` table |
+| `get_lowest_isbn(isbn)` / `get_linked_isbns(lowest)` | Resolve canonical ISBNs and linked-edition rows |
+| `get_global_stats()` | Aggregate counts for Dashboard KPI cards |
 
 ### Schema
 
 #### `main` — successful results
 
+The physical `main` table stores one row per `(isbn, call_number_type, source)`.
+`DatabaseManager.get_main()` combines those rows back into the familiar
+LCCN/NLMCN view used by the GUI and exports.
+
 | Column | Type | Notes |
 |--------|------|-------|
-| `isbn` | TEXT (PK) | Normalized, no hyphens |
-| `lccn` | TEXT | MARC 050 |
-| `lccn_source` | TEXT | Target that provided LCCN |
-| `nlmcn` | TEXT | MARC 060 (optional) |
-| `nlmcn_source` | TEXT | Target that provided NLMCN |
-| `loc_class` | TEXT | LoC class prefix, e.g. `QA` |
+| `isbn` | TEXT | Normalized, no hyphens |
+| `call_number` | TEXT | Stored call number value |
+| `call_number_type` | TEXT | `lccn` or `nlmcn` |
+| `classification` | TEXT | LoC class prefix, e.g. `QA` |
 | `source` | TEXT | Winning target name |
 | `date_added` | INTEGER | `yyyymmdd` integer |
+
+Primary key: `(isbn, call_number_type, source)`.
 
 #### `attempted` — failed attempts (retry support)
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `isbn` | TEXT | |
-| `target_attempted` | TEXT | |
-| `date_attempted` | INTEGER | `yyyymmdd` |
+| `last_target` | TEXT | Target most recently tried for this row |
+| `attempt_type` | TEXT | `lccn`, `nlmcn`, or `both` |
+| `last_attempted` | INTEGER | `yyyymmdd` |
+| `fail_count` | INTEGER | Incremented on repeated failures for the same key |
+| `last_error` | TEXT | Most recent failure reason |
 
-Primary key: `(isbn, target_attempted)` — stores the latest attempt per pair.
+Primary key: `(isbn, last_target, attempt_type)` — stores the latest attempt per retry key.
 
 #### `linked_isbns` — edition linking
 
@@ -180,17 +187,14 @@ Primary key: `(isbn, target_attempted)` — stores the latest attempt per pair.
 
 Primary key: `(lowest_isbn, other_isbn)`.
 
-#### `subjects` — subject phrases (schema-ready; not populated by pipeline)
+#### `subjects`
 
-| Column | Type |
-|--------|------|
-| `lowest_isbn` | TEXT |
-| `subject_phrase` | TEXT |
-| `source` | TEXT |
+Not implemented in the shipped schema for this project branch. The subject-harvesting
+stretch goal was scoped out, so no `subjects` table is created or populated.
 
 ### Date Storage
 
-All dates are stored as `yyyymmdd` integers (e.g., `20260404`). Helpers in `db_manager.py`:
+All dates are stored as `yyyymmdd` integers (e.g., `20260404`). Helpers live in `src/database/date_utils.py`:
 
 - `today_yyyymmdd()` — returns today as int.
 - `yyyymmdd_to_iso_date(value)` — converts to `YYYY-MM-DD` string for display.
@@ -532,7 +536,7 @@ Restart the application for changes to take effect.
 
 ## Known Limitations
 
-- Subject phrases (`subjects` table) — schema exists but the pipeline does not populate it.
+- Subject phrases / `subjects` table — not implemented in this delivery.
 - Internationalization (French UI) — not implemented; UI strings are English-only.
 - SG3 (SRU) and SG4 (additional protocols) — reserved but not built; see the Source Groups section above for implementation guidance.
 

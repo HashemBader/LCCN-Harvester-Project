@@ -160,6 +160,28 @@ def _prepare_marc_import_records(
     return selected_rows, parsed_records, written, skipped, no_isbn
 
 
+class FileParseWorker(QThread):
+    """Background worker that parses an ISBN input file without blocking the UI."""
+
+    completed = pyqtSignal(object, float)   # (ParsedISBNFile | Exception, size_kb)
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+
+    def run(self):
+        from pathlib import Path as _Path
+        p = _Path(self._path)
+        size_kb = p.stat().st_size / 1024
+        sampled = p.stat().st_size > 20 * 1024 * 1024
+        max_lines = 200_000 if sampled else 0
+        try:
+            result = parse_isbn_file(p, max_lines=max_lines)
+            self.completed.emit(result, size_kb)
+        except Exception as exc:
+            self.completed.emit(exc, size_kb)
+
+
 class HarvestWorkerV2(QThread):
     """Background worker thread for harvest operations (V2)."""
 
@@ -236,7 +258,7 @@ class HarvestWorkerV2(QThread):
             # Track stats for GUI updates using centralized RunStats
             self.run_stats = RunStats(
                 total_rows=parsed.total_nonempty,
-                valid_rows=parsed.valid_count,
+                valid_rows=len(parsed.unique_valid),  # unique ISBNs that will be processed
                 duplicates=parsed.duplicate_count,
                 invalid=invalid_count,
                 processed_unique=0,
@@ -1594,83 +1616,95 @@ class HarvestTabV2(QWidget):
             self.btn_start.setEnabled(False)
 
         path_obj = Path(path)
+        if not path_obj.exists():
+            self._set_invalid_state(path_obj.name, "File not found.")
+            return
 
-        # Extension Check removed to allow all file types
-        # parse_isbn_file will handle non-text files correctly by returning 0 valid rows
+        # Show a "reading…" placeholder so the UI remains responsive
+        self.file_path_edit.setText(path_obj.name)
+        self.btn_clear_file.setEnabled(True)
+        self.btn_clear_file.setVisible(True)
+        self.log_output.setText("Reading file…")
+        self.btn_start.setEnabled(False)
 
-        # Content Check (Real Validation)
-        try:
-            size_kb = path_obj.stat().st_size / 1024
-            sampled = path_obj.stat().st_size > 20 * 1024 * 1024  # 20 MB
-            INFO_SAMPLE_MAX_LINES = 200_000
+        # Cancel any previous parse that is still running
+        if hasattr(self, "_file_parse_worker") and self._file_parse_worker.isRunning():
+            self._file_parse_worker.quit()
+            self._file_parse_worker.wait(500)
 
-            parsed = parse_isbn_file(
-                path_obj, max_lines=INFO_SAMPLE_MAX_LINES if sampled else 0
-            )
+        self._pending_parse_path = path
+        self._file_parse_worker = FileParseWorker(path, parent=self)
+        self._file_parse_worker.completed.connect(self._on_file_parsed)
+        self._file_parse_worker.start()
 
-            unique_valid = len(parsed.unique_valid)
-            valid_rows = parsed.valid_count
-            invalid_rows = len(parsed.invalid_isbns)
-            duplicate_valid_rows = parsed.duplicate_count
+    def _on_file_parsed(self, result, size_kb):
+        """Called on the main thread when FileParseWorker finishes."""
+        path = getattr(self, "_pending_parse_path", None)
+        if path is None:
+            return
+        path_obj = Path(path)
 
-            sample_note = ""
-            if sampled:
-                sample_note = f"\nNote: Large file detected. Stats based on first {INFO_SAMPLE_MAX_LINES:,} lines."
+        if isinstance(result, Exception):
+            self._set_invalid_state(path_obj.name, f"Error reading file: {result}")
+            return
 
-            print(
-                f"DEBUG: Validation Results - Unique Valid: {unique_valid}, Invalid: {invalid_rows}"
-            )
+        parsed = result
+        unique_valid = len(parsed.unique_valid)
+        valid_rows = parsed.valid_count
+        invalid_rows = len(parsed.invalid_isbns)
+        duplicate_valid_rows = parsed.duplicate_count
 
-            if valid_rows == 0:
-                msg = "File contains no valid ISBNs"
-                if invalid_rows > 0:
-                    msg += f" ({invalid_rows} invalid lines)"
-                self._set_invalid_state(path_obj.name, msg)
-                return
+        print(
+            f"DEBUG: Validation Results - Unique Valid: {unique_valid}, Invalid: {invalid_rows}"
+        )
 
-            # Success State
-            self.input_file = path
-
-            # Update Path Display with blue accent border (theme-neutral)
-            self.file_path_edit.setText(str(path_obj))
-            self.file_path_edit.setStyleSheet(
-                "border: 1.5px solid #3b82f6; border-radius: 6px; padding: 4px 8px;"
-            )
-
-            # Show quiet ghost Clear button
-            self.btn_clear_file.setEnabled(True)
-            self.btn_clear_file.setVisible(True)
-
-            # Labels and Preview
-            self.progress_bar.setFormat(f"0 / {unique_valid}")
-            self.log_output.setText(f"Ready to harvest {unique_valid} unique ISBNs.")
-
-            self.file_path_edit.setText(str(path_obj))
-            # File summary
-            self.lbl_val_size.setText(f"{size_kb:.2f} KB")
-            self.lbl_val_rows_valid.setText(str(valid_rows))
-            self.lbl_val_rows.setText(str(valid_rows + invalid_rows))
-            self.lbl_val_loaded.setText(str(unique_valid))
-
-            # Red highlight if invalid > 0
-            self.lbl_val_invalid.setText(str(invalid_rows))
+        if valid_rows == 0:
+            msg = "File contains no valid ISBNs"
             if invalid_rows > 0:
-                self.lbl_val_invalid.setProperty("state", "error")
-            else:
-                self.lbl_val_invalid.setProperty("state", "idle")
-            self.lbl_val_invalid.style().unpolish(self.lbl_val_invalid)
-            self.lbl_val_invalid.style().polish(self.lbl_val_invalid)
+                msg += f" ({invalid_rows} invalid lines)"
+            self._set_invalid_state(path_obj.name, msg)
+            return
 
-            self.lbl_val_duplicates.setText(str(duplicate_valid_rows))
+        # Success State
+        self.input_file = path
 
-            self.file_path_edit.setText(path_obj.name)
-            self.btn_clear_file.setVisible(True)
-            self._load_file_preview_v2()
+        # Update Path Display with blue accent border (theme-neutral)
+        self.file_path_edit.setText(str(path_obj))
+        self.file_path_edit.setStyleSheet(
+            "border: 1.5px solid #3b82f6; border-radius: 6px; padding: 4px 8px;"
+        )
 
-            self._check_start_conditions(unique_valid)
+        # Show quiet ghost Clear button
+        self.btn_clear_file.setEnabled(True)
+        self.btn_clear_file.setVisible(True)
 
-        except Exception as e:
-            self._set_invalid_state(path_obj.name, f"Error reading file: {e}")
+        # Labels and Preview
+        self.progress_bar.setFormat(f"0 / {unique_valid}")
+        self.log_output.setText(f"Ready to harvest {unique_valid} unique ISBNs.")
+
+        self.file_path_edit.setText(str(path_obj))
+        # File summary
+        self.lbl_val_size.setText(f"{size_kb:.2f} KB")
+        self.lbl_val_rows_valid.setText(str(valid_rows))
+        self.lbl_val_rows.setText(str(valid_rows + invalid_rows))
+        self.lbl_val_loaded.setText(str(unique_valid))
+
+        # Red highlight if invalid > 0
+        self.lbl_val_invalid.setText(str(invalid_rows))
+        if invalid_rows > 0:
+            self.lbl_val_invalid.setProperty("state", "error")
+        else:
+            self.lbl_val_invalid.setProperty("state", "idle")
+        self.lbl_val_invalid.style().unpolish(self.lbl_val_invalid)
+        self.lbl_val_invalid.style().polish(self.lbl_val_invalid)
+
+        self.lbl_val_duplicates.setText(str(duplicate_valid_rows))
+
+        self.file_path_edit.setText(path_obj.name)
+        self.btn_clear_file.setVisible(True)
+        self._load_file_preview_v2()
+
+        self._check_start_conditions(unique_valid)
 
     def _check_start_conditions(self, isbn_count=None):
         """Enable start button when a valid file is loaded.

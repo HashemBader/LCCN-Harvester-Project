@@ -14,7 +14,7 @@ class Z3950Client:
     A client for Z39.50 servers using the PyZ3950 (zoom) library.
     """
 
-    def __init__(self, host: str, port: int, database: str, syntax: str = 'USMARC', encoding: str = 'utf-8', timeout: int = 5):
+    def __init__(self, host: str, port: int, database: str, syntax: str = 'USMARC', encoding: str = 'utf-8', timeout: int = 15, username: str = '', password: str = ''):
         """
         Initialize the Z39.50 client.
 
@@ -24,6 +24,9 @@ class Z3950Client:
             database (str): The database name to query.
             syntax (str): The record syntax to request (default: USMARC).
             encoding (str): The encoding to use for records (default: utf-8).
+            timeout (int): Connection timeout in seconds (default: 15).
+            username (str): Optional username for authenticated servers.
+            password (str): Optional password for authenticated servers.
         """
         self.host = host
         self.port = port
@@ -31,6 +34,8 @@ class Z3950Client:
         self.syntax = syntax
         self.encoding = encoding
         self.timeout = timeout
+        self.username = username
+        self.password = password
         self.conn = None
         self.logger = logging.getLogger(__name__)
 

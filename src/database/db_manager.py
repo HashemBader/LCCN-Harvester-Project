@@ -643,31 +643,6 @@ class DatabaseManager:
                 (isbn,),
             ).fetchall()
 
-    def find_isbns_by_call_number(
-        self,
-        call_number_type: str,
-        call_number: str,
-        *,
-        exclude_isbn: str | None = None,
-    ) -> list[str]:
-        """Return ISBNs that already share the same call number in main."""
-        if not call_number_type or not call_number:
-            return []
-
-        with self.connect() as conn:
-            if exclude_isbn:
-                rows = conn.execute(
-                    "SELECT DISTINCT isbn FROM main WHERE call_number_type = ? AND call_number = ? AND isbn <> ?",
-                    (call_number_type, call_number, exclude_isbn),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT DISTINCT isbn FROM main WHERE call_number_type = ? AND call_number = ?",
-                    (call_number_type, call_number),
-                ).fetchall()
-
-        return [str(row["isbn"]) for row in rows]
-
     def upsert_main(self, record: MainRecord, *, clear_attempted_on_success: bool = True) -> None:
         with self.transaction() as conn:
             self._upsert_main_conn(conn, record, clear_attempted_on_success=clear_attempted_on_success)

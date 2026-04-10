@@ -1,27 +1,54 @@
 """
-Module: marc_parser.py
+marc_parser.py
+
 MARC record parsing utilities for bibliographic data extraction.
 
 Part of the LCCN Harvester Project.
 
-This module provides utilities for extracting MARC fields from different formats:
-  - MARC-JSON: For Z39.50, SRU JSON responses, and other JSON-based MARC sources
-  - MARCXML: For LOC SRU, Harvard, and other XML-based MARC sources
-  - Binary MARC-21: Reserved for future implementation
+This module provides format-agnostic functions for extracting target MARC
+fields from the three representation formats encountered in the harvester:
+
+MARC-JSON
+    The standard JSON serialisation of MARC 21 records (used by the LoC SRU
+    JSON endpoint, Z39.50 servers, and modern library systems).  Structure::
+
+        {"fields": [{"050": {"subfields": [{"a": "QA76.73"}, {"b": "P38"}]}}]}
+
+MARCXML
+    The W3C XML representation of MARC 21 records (default for LoC SRU and
+    OAI-PMH).  The ``marc:`` namespace prefix maps to
+    ``http://www.loc.gov/MARC21/slim``.
+
+Binary MARC-21
+    Not yet implemented; reserved for future direct Z39.50 byte-stream
+    support.
+
+Target MARC fields
+------------------
+050 ($a, $b)
+    LC Classification (Library of Congress call number).
+060 ($a, $b)
+    NLM Classification (National Library of Medicine call number).
+020 ($a)
+    ISBN (used to collect all ISBNs linked to a record for deduplication).
+
+Extracted subfield strings are passed to
+:mod:`src.utils.call_number_normalizer` for assembly into a single call
+number string.
 
 Examples
 --------
-Extract from MARC-JSON:
+Extract from MARC-JSON::
 
     >>> from src.utils.marc_parser import extract_marc_fields_from_json
     >>> marc_json = {"fields": [...]}
     >>> fields = extract_marc_fields_from_json(marc_json)
     >>> lccn = " ".join(fields["050"]["a"] + fields["050"]["b"])
 
-Extract from MARCXML:
+Extract from MARCXML::
 
     >>> from src.utils.marc_parser import extract_marc_fields_from_xml
-    >>> fields = extract_marc_fields_from_xml("path/to/record.xml")
+    >>> fields = extract_marc_fields_from_xml(root_element)
     >>> lccn = " ".join(fields["050"]["a"] + fields["050"]["b"])
 """
 
@@ -70,6 +97,8 @@ def extract_marc_fields_from_json(record: Dict) -> Dict[str, Dict[str, List[str]
     - Returns empty lists if fields not found
     - Strips whitespace from extracted values
     """
+    # Pre-populate the result dict so callers can always access ["050"]["a"]
+    # etc. without KeyError, even when those fields are absent in the record.
     result = {
         "020": {"a": []},
         "050": {"a": [], "b": []},
@@ -88,6 +117,7 @@ def extract_marc_fields_from_json(record: Dict) -> Dict[str, Dict[str, List[str]
                         if isinstance(text, str):
                             result[tag]["a"].append(text.strip())
                     elif tag != "020" and "b" in sf:
+                        # MARC 020 does not use $b for ISBNs; skip $b for that tag.
                         text = sf["b"]
                         if isinstance(text, str):
                             result[tag]["b"].append(text.strip())
@@ -141,20 +171,24 @@ def extract_marc_fields_from_xml(
     - Strips whitespace from extracted values
     """
     if namespaces is None:
+        # Default MARCXML namespace as defined by the Library of Congress.
         namespaces = {"marc": "http://www.loc.gov/MARC21/slim"}
 
+    # Pre-populate so callers always get a consistent structure.
     result = {
         "020": {"a": []},
         "050": {"a": [], "b": []},
         "060": {"a": [], "b": []},
     }
 
-    # Find all datafield elements (works with or without namespace prefix)
+    # ".//marc:datafield" is a descendant search that works whether the caller
+    # passes a full <record> element or just a fragment of the XML tree.
     for datafield in xml_element.findall(".//marc:datafield", namespaces):
         tag = datafield.get("tag")
         if tag in result:
             for subfield in datafield.findall("marc:subfield", namespaces):
                 code = subfield.get("code")
+                # Only collect $a and $b; other subfield codes are not needed.
                 if code in ("a", "b") and subfield.text:
                     result[tag][code].append(subfield.text.strip())
 
@@ -183,7 +217,8 @@ def extract_call_numbers_from_json(record: Dict) -> Tuple[Optional[str], Optiona
     """
     fields = extract_marc_fields_from_json(record)
 
-    # Normalize using FIRST $a with all $b values
+    # normalize_call_number returns "" when no subfields are present;
+    # convert that to None so callers can do a simple truthiness check.
     lccn = normalize_call_number(fields["050"]["a"], fields["050"]["b"]) or None
     nlmcn = normalize_call_number(fields["060"]["a"], fields["060"]["b"]) or None
 
@@ -217,7 +252,8 @@ def extract_call_numbers_from_xml(
     """
     fields = extract_marc_fields_from_xml(xml_element, namespaces)
 
-    # Normalize using FIRST $a with all $b values
+    # normalize_call_number returns "" when no subfields are present;
+    # convert that to None so callers can use a simple truthiness check.
     lccn = normalize_call_number(fields["050"]["a"], fields["050"]["b"]) or None
     nlmcn = normalize_call_number(fields["060"]["a"], fields["060"]["b"]) or None
 
@@ -247,6 +283,8 @@ def extract_isbns_from_json(record: Dict) -> List[str]:
     isbns = []
     for isbn_raw in fields["020"]["a"]:
         normalized = normalize_isbn_subfield(isbn_raw)
+        # Only keep values whose length is exactly 10 or 13 digits — anything
+        # else is not a valid ISBN (e.g. qualifying text that slipped through).
         if len(normalized) in (10, 13):
             isbns.append(normalized)
     return isbns
@@ -280,6 +318,7 @@ def extract_isbns_from_xml(
     isbns = []
     for isbn_raw in fields["020"]["a"]:
         normalized = normalize_isbn_subfield(isbn_raw)
+        # Only keep values whose length is exactly 10 or 13 digits.
         if len(normalized) in (10, 13):
             isbns.append(normalized)
     return isbns

@@ -106,12 +106,9 @@ def verify_integration():
 
         tab_checks = [
             ("Dashboard", window.dashboard_tab),
-            ("Input", window.input_tab),
-            ("Targets", window.targets_tab),
-            ("Config", window.config_tab),
+            ("Targets/Config", window.targets_config_tab),
             ("Harvest", window.harvest_tab),
-            ("Results", window.results_tab),
-            ("AI Assistant", window.ai_assistant_tab),
+            ("Help", window.help_tab),
         ]
 
         all_tabs_ok = all(tab is not None for _, tab in tab_checks)
@@ -119,7 +116,6 @@ def verify_integration():
 
         # Check signal connections
         signals_ok = all([
-            hasattr(window.input_tab, 'file_selected'),
             hasattr(window.harvest_tab, 'harvest_started'),
             hasattr(window.harvest_tab, 'harvest_finished'),
             hasattr(window.targets_tab, 'targets_changed'),

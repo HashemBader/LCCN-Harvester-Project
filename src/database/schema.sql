@@ -1,6 +1,7 @@
 -- LCCN Harvester - SQLite Schema
 -- Core tables: main (successful results) + attempted (failed / retry tracking)
--- Optional tables included as stretch; app can ignore for now.
+-- Implemented stretch support: linked_isbns. Untackled stretch tables such as
+-- subjects are intentionally not created in this shipped schema.
 
 PRAGMA foreign_keys = ON;
 
@@ -13,7 +14,7 @@ CREATE TABLE IF NOT EXISTS main (
     call_number_type TEXT NOT NULL, -- 'lccn' or 'nlmcn'
     classification  TEXT,
     source          TEXT NOT NULL DEFAULT '',
-    date_added      DATETIME NOT NULL, -- ISO-8601 string (e.g. 2026-03-17 12:00:00)
+    date_added      INTEGER NOT NULL, -- yyyymmdd integer (e.g. 20260409)
     PRIMARY KEY (isbn, call_number_type, source)
 );
 
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS attempted (
     isbn              TEXT NOT NULL,
     last_target       TEXT NOT NULL,
     attempt_type      TEXT NOT NULL DEFAULT 'both',
-    last_attempted    DATETIME NOT NULL,  -- ISO-8601 string (e.g. 2026-03-17 12:00:00)
+    last_attempted    INTEGER NOT NULL,  -- yyyymmdd integer (e.g. 20260409)
     fail_count        INTEGER NOT NULL DEFAULT 1,
     last_error        TEXT,
     PRIMARY KEY (isbn, last_target, attempt_type)

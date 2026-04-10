@@ -1,4 +1,24 @@
-"""run_harvest.py: Define the harvest pipeline interface using HarvestOrchestrator."""
+"""
+High-level harvest pipeline entry point.
+
+This module bridges user-facing input (an ISBN file) with the
+``HarvestOrchestrator`` runtime.  It is the primary entry point for both the
+GUI harvest tab and the CLI.
+
+Public API:
+    parse_isbn_file(path)  -- Read an ISBN file and return validated, deduplicated ISBNs.
+    run_harvest(path, ...) -- Full pipeline: parse → configure targets → run → return summary.
+
+Supported input formats:
+    .txt / .tsv  -- One ISBN per line (tab-separated files use column 0 as primary).
+    .csv         -- Comma-separated; column 0 = primary, columns 1+ = linked variants.
+    .xlsx / .xls -- Excel; column 0 = primary, columns 1+ = linked variants.
+
+Multi-column files
+    When a file has more than one column, extra columns are treated as linked
+    ISBN variants for the same edition.  The orchestrator tries all variants
+    together via ``process_isbn_group``.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +37,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class HarvestSummary:
+    """Aggregate outcome statistics returned by ``run_harvest``.
+
+    Attributes:
+        total_rows:           Total ISBNs submitted (after deduplication).
+        total_isbns:          Same as ``total_rows`` (alias for compatibility).
+        cached_hits:          ISBNs found in the local DB without an API call.
+        skipped_recent_fail:  ISBNs still within the retry suppression window.
+        attempted:            ISBNs that were actually looked up externally.
+        successes:            ISBNs for which a call number was found.
+        failures:             ISBNs attempted but not found.
+        dry_run:              ``True`` if the run was read-only (no DB writes).
+    """
     total_rows: int
     total_isbns: int
     cached_hits: int
@@ -29,6 +61,17 @@ class HarvestSummary:
 
 @dataclass
 class ParsedISBNFile:
+    """Result of parsing an ISBN input file.
+
+    Attributes:
+        unique_valid:     Deduplicated list of normalised valid ISBNs (in input order).
+        valid_count:      Total number of valid ISBNs seen (including duplicates).
+        duplicate_count:  ``valid_count - len(unique_valid)``.
+        invalid_isbns:    Raw strings that could not be normalised.
+        total_nonempty:   Total non-empty rows read (header excluded).
+        linked:           Mapping of primary ISBN → list of linked variant ISBNs.
+                          Empty dict for single-column files.
+    """
     unique_valid: list[str]
     valid_count: int
     duplicate_count: int
@@ -42,6 +85,11 @@ class ParsedISBNFile:
 
 @dataclass
 class RunStats:
+    """Mutable running counters used by GUI progress tracking.
+
+    Updated incrementally during a harvest run so the UI can display
+    live progress without waiting for the final ``HarvestSummary``.
+    """
     total_rows: int = 0
     valid_rows: int = 0
     duplicates: int = 0
@@ -52,7 +100,27 @@ class RunStats:
     skipped: int = 0
 
 def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
-    """Parse a TSV/CSV/TXT or Excel file and return structured statistics and deduplicated ISBNs."""
+    """Parse an ISBN input file and return validated, deduplicated ISBNs with statistics.
+
+    Handles four file formats:
+      - ``.xlsx`` / ``.xls``: Excel workbook read via ``pandas``; column 0 is
+        the primary ISBN, columns 1+ are linked variant ISBNs.
+      - ``.csv``: Comma-separated; same column convention as Excel.
+      - ``.tsv`` / ``.txt``: Tab-separated; column 0 is the primary ISBN,
+        columns 1+ are linked variants.
+
+    For all formats, rows starting with ``#`` and blank rows are skipped.
+    A header row is detected and skipped when the first non-empty cell
+    matches a known header token (``"isbn"``, ``"isbn13"``, etc.).
+
+    Args:
+        input_path: Path to the input file.
+        max_lines:  If > 0, stop after this many data rows (useful for previews).
+
+    Returns:
+        A ``ParsedISBNFile`` with deduplicated valid ISBNs, invalid raw strings,
+        counters, and a ``linked`` mapping of primary ISBN → variant list.
+    """
     valid_isbns: list[str] = []
     invalid_isbns: list[str] = []
     seen = set()
@@ -93,7 +161,8 @@ def parse_isbn_file(input_path: Path, max_lines: int = 0) -> ParsedISBNFile:
 
                 first_data_row_seen = True
 
-                # Remove '.0' if pandas parsed it as a float
+                # pandas reads pure-digit ISBN-13s as floats, e.g. 9780131103627.0.
+                # Stripping ".0" restores the correct 13-digit string before validation.
                 if raw_isbn.endswith(".0"):
                     raw_isbn = raw_isbn[:-2]
 
@@ -199,22 +268,47 @@ def run_harvest(
     db_only: bool = False,
     both_stop_policy: str | None = None,
 ) -> HarvestSummary:
+    """Parse *input_path* and run a full harvest, returning aggregate statistics.
+
+    Args:
+        input_path:          Path to the ISBN input file (.txt, .tsv, .csv, .xlsx).
+        dry_run:             When ``True``, targets are queried but no DB writes occur.
+        db_path:             Path to the SQLite database file.
+        retry_days:          Suppress re-trying ISBNs that failed within this many days.
+        targets:             Pre-built target list.  Defaults to API targets (+ Z39.50
+                             if ``include_z3950=True``) when ``None``.
+        bypass_retry_isbns:  ISBNs to force-retry regardless of the retry window.
+        bypass_cache_isbns:  ISBNs to look up even if already in the DB cache.
+        progress_cb:         Optional ``(event, payload)`` progress callback.
+        cancel_check:        Optional callable returning ``True`` to abort the run.
+        max_workers:         Number of parallel lookup threads (1 = sequential).
+        call_number_mode:    ``"lccn"``, ``"nlmcn"``, or ``"both"`` (default).
+        stop_rule:           When to stop querying further targets after a result.
+        include_z3950:       When ``True`` and ``targets`` is ``None``, Z39.50 targets
+                             from the config files are also included.
+        db_only:             When ``True``, only the local DB is consulted (no APIs).
+        both_stop_policy:    Deprecated alias; use ``stop_rule`` instead.
+
+    Returns:
+        A ``HarvestSummary`` with outcome counts for the entire batch.
+    """
 
     input_path = input_path.expanduser().resolve()
 
     db = DatabaseManager(db_path)
-    db.init_db()
+    db.init_db()  # Ensure schema and migrations are applied before any reads/writes
 
     parsed = parse_isbn_file(input_path)
     isbns = parsed.unique_valid
 
     if targets is None:
         if db_only:
-            targets = []  # no API targets in db_only mode
+            targets = []  # db_only mode: no external API calls; orchestrator uses cache only
         else:
             targets = []
             targets.extend(build_default_api_targets())
             if include_z3950:
+                # Z39.50 targets are optional; only loaded when explicitly requested
                 from src.harvester.z3950_targets import build_default_z3950_targets
                 targets.extend(build_default_z3950_targets())
 

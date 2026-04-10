@@ -1,6 +1,29 @@
-"""
-Module: config_tab_v2.py
-V2 Configuration Tab with modern borderless design and clean form layout.
+"""Configuration page — profile management and harvest settings.
+
+This module contains two widgets:
+
+``CreateProfileDialog``
+    A modal dialog that collects a new profile name, an optional source profile
+    to copy settings from, and starting values for retry interval and call-number
+    mode.  Accepted via ``QDialogButtonBox`` with custom validation.  Signals on
+    the spin/combo are blocked during source-profile population to avoid spurious
+    dirty-change events.
+
+``ConfigTab``
+    The settings pane that sits in the upper half of ``TargetsConfigTab``'s
+    vertical splitter.  It lets the user switch between saved profiles, edit
+    the retry interval and call-number mode for the active profile, and
+    create/delete profiles.  All changes are dirty-tracked (``has_unsaved_changes``)
+    so the user is prompted before navigating away from unsaved work.
+
+    The ``stop_rule_combo`` is intentionally hidden on this page; it is kept as a
+    round-trip storage vehicle so ``get_config`` / ``_save_current_profile`` can
+    persist the stop-rule value that is edited in ``HarvestTab``'s own UI.
+
+Signals emitted:
+    ``config_changed(dict)`` — whenever a setting is modified but not yet saved.
+    ``profile_changed(str)`` — when the active profile is switched or a new one
+        is created/deleted.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -9,22 +32,37 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from pathlib import Path
 import shutil
-import sys
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.profile_manager import ProfileManager
+from src.config.profile_manager import ProfileManager
 from .combo_boxes import ConsistentComboBox
 from .icons import get_pixmap, SVG_SETTINGS, SVG_HARVEST
-from .styles_v2 import CATPPUCCIN_THEME
+from .styles import CATPPUCCIN_THEME
 
 
 class CreateProfileDialog(QDialog):
-    """Profile creation dialog with inline settings controls."""
+    """Modal dialog for creating a new harvest profile.
+
+    Lets the user choose a name, select a source profile to copy settings from,
+    and optionally override the retry interval and call-number mode before
+    clicking "Create Profile".
+
+    Key widgets:
+        source_combo: Profile to copy settings and targets from.
+        name_edit: Text field for the new profile name.
+        retry_spin: QSpinBox pre-filled with the source profile's retry interval.
+        mode_combo: Call-number mode combo pre-filled from the source profile.
+    """
 
     def __init__(self, profile_manager: ProfileManager, parent=None, initial_source="Default Settings"):
+        """
+        Args:
+            profile_manager: Application-wide ``ProfileManager`` instance used to
+                enumerate existing profiles and load their settings.
+            parent: Optional parent widget.
+            initial_source: Profile name to pre-select in the source combo (defaults
+                to ``"Default Settings"``).
+        """
         super().__init__(parent)
         self.profile_manager = profile_manager
         self.setWindowTitle("Create Profile")
@@ -120,6 +158,7 @@ class CreateProfileDialog(QDialog):
         self._on_source_changed(self.source_combo.currentText())
 
     def _validate_and_accept(self):
+        """Validate that a non-empty profile name was entered before accepting the dialog."""
         if not self.name_edit.text().strip():
             QMessageBox.warning(self, "Missing Name", "Please enter a profile name.")
             self.name_edit.setFocus()
@@ -127,6 +166,10 @@ class CreateProfileDialog(QDialog):
         self.accept()
 
     def _load_source_settings(self, source_name: str) -> dict:
+        """Load the settings dict for *source_name* from the profile manager.
+
+        Returns an empty dict if the profile does not exist or has no settings key.
+        """
         profile = self.profile_manager.load_profile(source_name)
         settings = profile.get("settings", {}) if isinstance(profile, dict) else {}
         if not isinstance(settings, dict):
@@ -134,24 +177,44 @@ class CreateProfileDialog(QDialog):
         return settings
 
     def _on_source_changed(self, source_name: str):
+        """Populate the starting-settings controls from the newly selected source profile.
+
+        Signals on the spin/combo are blocked during population to avoid triggering
+        unsaved-changes logic in the parent dialog.  ``findData`` is used to match the
+        combo by the internal data value (e.g. ``"lccn"``) rather than the display text.
+        """
         self._selected_source = source_name or "Default Settings"
         settings = self._load_source_settings(self._selected_source)
+        # Block signals to prevent spurious change notifications while pre-filling.
         self.retry_spin.blockSignals(True)
         self.mode_combo.blockSignals(True)
         self.retry_spin.setValue(int(settings.get("retry_days", 7)))
         mode = settings.get("call_number_mode", "lccn")
+        # findData looks up by the item's UserRole data (the mode string), not the label.
         idx = self.mode_combo.findData(mode)
         self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.retry_spin.blockSignals(False)
         self.mode_combo.blockSignals(False)
 
     def profile_name(self) -> str:
+        """Return the stripped profile name entered by the user."""
         return self.name_edit.text().strip()
 
     def source_profile_name(self) -> str:
+        """Return the name of the profile whose settings will be copied."""
         return self._selected_source or "Default Settings"
 
     def profile_settings(self) -> dict:
+        """Return the settings dict to use when creating the new profile.
+
+        Validates the ``call_number_mode`` value against the allowed set; defaults
+        to ``"lccn"`` if the combo returns an unexpected value.
+
+        Returns:
+            Dict with keys ``retry_days``, ``call_number_mode``, ``collect_lccn``,
+            ``collect_nlmcn``, ``stop_rule``, ``output_tsv``, and
+            ``output_invalid_isbn_file``.
+        """
         mode = self.mode_combo.currentData()
         mode = mode if mode in {"lccn", "nlmcn", "both"} else "lccn"
         return {
@@ -165,16 +228,44 @@ class CreateProfileDialog(QDialog):
         }
 
 
-class ConfigTabV2(QWidget):
+class ConfigTab(QWidget):
+    """Profile-settings pane displayed in the upper half of the Configure page splitter.
+
+    Contains a profile selector combo with New/Save/Delete buttons, and a compact
+    harvest-settings row (retry interval, call-number mode).
+
+    Key instance variables:
+        profile_manager (ProfileManager): Shared profile storage/retrieval helper.
+        current_profile_name (str): Name of the currently loaded profile.
+        has_unsaved_changes (bool): ``True`` when a control has been edited since the
+            last save or load; drives the "Save Changes" button's enabled state.
+
+    Key widgets built by ``_setup_ui``:
+        profile_combo: Active-profile selector.
+        btn_new / btn_save / btn_delete: Profile management buttons.
+        spin_retry: Retry-interval spin box (0–365 days).
+        call_number_combo: Call-number mode selector (LCCN/NLMCN/Both).
+        stop_rule_combo: Hidden combo that round-trips the stop-rule setting; the
+            visible control lives in ``HarvestTab``.
+
+    Signals:
+        config_changed(dict): Emitted whenever a setting control is modified.
+        profile_changed(str): Emitted when the active profile is switched, created,
+            or deleted.
+    """
+
+    # Emitted with the current get_config() dict whenever a control value changes.
     config_changed = pyqtSignal(dict)
+    # Emitted with the new profile name when the active profile changes.
     profile_changed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.profile_manager = ProfileManager()
         self.current_profile_name = self.profile_manager.get_active_profile()
-        self.has_unsaved_changes = False
+        self.has_unsaved_changes = False  # True whenever a control is edited but not yet saved.
         self._setup_ui()
+        # Populate controls with the persisted settings for the active profile.
         self._load_profile(self.current_profile_name)
         self.refresh_targets_preview()
 
@@ -269,6 +360,7 @@ class ConfigTabV2(QWidget):
         self.spin_retry.setMinimumWidth(80)
         self.spin_retry.setAccessibleName("Retry interval")
         self.spin_retry.setToolTip("Days to wait before retrying recently failed ISBNs")
+        # Wire value-changed signals so any edit marks the profile dirty.
         self.spin_retry.valueChanged.connect(self._on_setting_changed)
         retry_lbl.setBuddy(self.spin_retry)
 
@@ -287,32 +379,35 @@ class ConfigTabV2(QWidget):
         self.call_number_combo.addItem("LCCN only", "lccn")
         self.call_number_combo.addItem("NLMCN only", "nlmcn")
         self.call_number_combo.addItem("Both", "both")
-        self.call_number_combo.currentTextChanged.connect(self._on_setting_changed)
+        self.call_number_combo.currentTextChanged.connect(self._on_setting_changed)  # marks profile dirty
         mode_lbl.setBuddy(self.call_number_combo)
 
         settings_row.addWidget(mode_lbl)
         settings_row.addWidget(self.call_number_combo)
         settings_row.addStretch()
 
-        # Hidden stop-rule combo (read/written by _load_profile / get_config)
+        # The stop-rule combo is managed in the Harvest tab's UI, not here.
+        # It is kept as a hidden control so _load_profile / get_config can
+        # read and write the persisted stop_rule value without touching the harvest tab.
         self.stop_rule_combo = ConsistentComboBox()
         self.stop_rule_combo.addItem("Stop if either found", "stop_either")
         self.stop_rule_combo.addItem("Stop if LCCN found", "stop_lccn")
         self.stop_rule_combo.addItem("Stop if NLMCN found", "stop_nlmcn")
         self.stop_rule_combo.addItem("Continue until both found", "continue_both")
-        self.stop_rule_combo.hide()
+        self.stop_rule_combo.hide()  # Not shown on this page; value is round-tripped via get_config.
 
         layout.addWidget(settings_frame)
 
     def _toggle_stop_rule_visibility(self):
-        """No-op: Stop Rule is now shown in the Harvester tab."""
-        pass
+        """No-op stub; stop-rule visibility is managed by ``HarvestTab`` in the current UI."""
+        return None
 
     def refresh_targets_preview(self, targets=None):
-        """No-op stub — targets are now shown in the live TargetsTabV2 below."""
-        pass
+        """No-op stub; targets are displayed live in ``TargetsTab``, not here."""
+        return None
 
     def _create_divider(self):
+        """Return a horizontal sunken QFrame to use as a visual section divider."""
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -320,7 +415,18 @@ class ConfigTabV2(QWidget):
         return line
 
     def _comparable_settings(self, settings):
-        """Normalize settings for duplicate-content comparisons."""
+        """Return a canonical subset of *settings* used for duplicate-content comparisons.
+
+        Normalises the mode field via ``_mode_from_settings`` so legacy
+        ``collect_lccn``/``collect_nlmcn`` booleans are treated equivalently to the
+        modern ``call_number_mode`` string.
+
+        Args:
+            settings: Raw settings dict (may be legacy flat dict or modern nested dict).
+
+        Returns:
+            Dict with the four fields that determine whether two profiles are "the same".
+        """
         if not isinstance(settings, dict):
             return {}
         mode = self._mode_from_settings(settings)
@@ -332,7 +438,16 @@ class ConfigTabV2(QWidget):
         }
 
     def _find_profile_with_same_settings(self, candidate_settings, exclude_name: str = ""):
-        """Return the first profile name whose comparable settings match *candidate_settings*."""
+        """Return the first profile name whose comparable settings match *candidate_settings*.
+
+        Args:
+            candidate_settings: Settings dict to compare against.
+            exclude_name: Profile name to skip (typically the one being saved, to
+                avoid a false "duplicate" match with itself).
+
+        Returns:
+            Matching profile name string, or ``None`` if no duplicate is found.
+        """
         normalized_candidate = self._comparable_settings(candidate_settings)
         for profile_name in self.profile_manager.list_profiles():
             if profile_name == exclude_name:
@@ -347,34 +462,61 @@ class ConfigTabV2(QWidget):
     # Logic Methods (Adapted from original ConfigTab)
     # =========================================================================
     def _extract_profile_settings(self, profile_data):
-        """Normalize profile payloads from ProfileManager to a flat settings dict."""
+        """Normalize profile payloads from ProfileManager to a flat settings dict.
+
+        ProfileManager returns a nested ``{"settings": {...}}`` dict.  Legacy
+        profiles may have been saved as a flat dict without the ``"settings"`` key;
+        this method handles both shapes.
+
+        Args:
+            profile_data: Raw payload returned by ``ProfileManager.load_profile``.
+
+        Returns:
+            Flat settings dict, or an empty dict if ``profile_data`` is not a dict.
+        """
         if not isinstance(profile_data, dict):
             return {}
         settings = profile_data.get("settings")
         if isinstance(settings, dict):
             return settings
-        # Backward compatibility with any legacy flat payload
+        # Backward compatibility: legacy profiles stored settings at the top level.
         return profile_data
 
     def _refresh_profile_list(self):
+        """Repopulate the profile combo box from the profile manager without emitting signals.
+
+        Signals are blocked so ``_on_profile_selected`` is not triggered during the
+        repopulation, which would cause a recursive unsaved-changes check.
+        """
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
         profiles = self.profile_manager.list_profiles()
         self.profile_combo.addItems(profiles)
-        
+
+        # Re-select the currently active profile after repopulating.
         current = self.profile_manager.get_active_profile()
         idx = self.profile_combo.findText(current)
         if idx >= 0:
             self.profile_combo.setCurrentIndex(idx)
-        
+
         self.profile_combo.blockSignals(False)
 
     def _load_profile(self, profile_name):
+        """Load *profile_name* from disk and populate all settings controls.
+
+        Signals are blocked while the controls are populated to prevent
+        ``_on_setting_changed`` from marking the profile as having unsaved changes
+        immediately after loading.  On completion, emits ``profile_changed`` and
+        ``config_changed`` to notify sibling tabs.
+
+        Args:
+            profile_name: Name of the profile to load (must exist in the manager).
+        """
         self.current_profile_name = profile_name
         profile = self.profile_manager.load_profile(profile_name)
         config = self._extract_profile_settings(profile)
-        
-        # Populate UI
+
+        # Block signals while populating to avoid spurious has_unsaved_changes flags.
         self.spin_retry.blockSignals(True)
         self.call_number_combo.blockSignals(True)
         
@@ -396,9 +538,24 @@ class ConfigTabV2(QWidget):
         self.config_changed.emit(self.get_config())
 
     def has_pending_changes(self) -> bool:
+        """Return ``True`` if any setting has been edited but not yet saved."""
         return bool(self.has_unsaved_changes)
 
     def resolve_unsaved_changes(self, action_label: str = "continue") -> bool:
+        """Prompt the user to save or discard pending changes before a destructive action.
+
+        If there are no pending changes the method returns ``True`` immediately.
+        For the read-only "Default Settings" profile the only option is to discard.
+
+        Args:
+            action_label: Human-readable continuation verb shown in the dialog
+                (e.g. ``"switch profiles"``, ``"create a new profile"``).
+
+        Returns:
+            ``True`` if it is safe to proceed (saved or discarded), ``False`` if
+            the user needs to stay on the current profile (currently never returned,
+            but kept for forward compatibility).
+        """
         if not self.has_unsaved_changes:
             return True
 
@@ -439,22 +596,42 @@ class ConfigTabV2(QWidget):
         return True
 
     def _on_profile_selected(self, name):
+        """Handle profile-combo selection change.
+
+        If the current profile has unsaved changes the user is prompted.
+        If they cancel, the combo is reverted to the previous profile name
+        (signals blocked to avoid recursion).
+        """
         if not name: return
         if not self.resolve_unsaved_changes("switch profiles"):
+            # Revert the combo to the previously active profile without re-triggering this slot.
             self.profile_combo.blockSignals(True)
             self.profile_combo.setCurrentText(self.current_profile_name)
             self.profile_combo.blockSignals(False)
             return
-        
+
         self.profile_manager.set_active_profile(name)
         self._load_profile(name)
 
     def _on_setting_changed(self):
+        """Mark the current profile as having pending changes and enable the Save button."""
         self.has_unsaved_changes = True
         self.btn_save.setEnabled(True)
 
     def _save_current_profile(self, *, show_confirmation: bool = True) -> bool:
+        """Persist the current control values to the active profile.
+
+        Args:
+            show_confirmation: When ``True`` (default), display a success dialog.
+                               Pass ``False`` when called programmatically (e.g. from
+                               ``resolve_unsaved_changes``).
+
+        Returns:
+            ``True`` if saved successfully, ``False`` if the save was blocked (e.g.
+            attempting to modify the read-only "Default Settings" profile).
+        """
         if self.current_profile_name == "Default Settings":
+            # The default profile is read-only; guard against accidental overwrites.
             if show_confirmation:
                 QMessageBox.information(
                     self,
@@ -467,8 +644,10 @@ class ConfigTabV2(QWidget):
         config = {
             "retry_days": self.spin_retry.value(),
             "call_number_mode": mode,
+            # Legacy boolean flags kept for backward compatibility with older code paths.
             "collect_lccn": mode in {"lccn", "both"},
             "collect_nlmcn": mode in {"nlmcn", "both"},
+            # stop_rule is only meaningful in "both" mode; default to "stop_either" otherwise.
             "stop_rule": self.stop_rule_combo.currentData() if mode == "both" else "stop_either",
         }
         self.profile_manager.save_profile(self.current_profile_name, config)
@@ -508,6 +687,7 @@ class ConfigTabV2(QWidget):
         self.profile_combo.setCurrentText(name) # Will trigger load
 
     def _delete_current_profile(self):
+        """Prompt for confirmation then delete the active profile and fall back to Default Settings."""
         if self.current_profile_name == "Default Settings":
             QMessageBox.warning(self, "Error", "Cannot delete default profile.")
             return
@@ -525,11 +705,19 @@ class ConfigTabV2(QWidget):
             # It will auto-select default or first available
 
     def list_profile_names(self):
-        """Public accessor for available profile names."""
+        """Return the list of all saved profile names from ``ProfileManager``."""
         return self.profile_manager.list_profiles()
 
     def select_profile(self, name: str) -> bool:
-        """Switch profiles through the existing UI flow (prompts included)."""
+        """Switch to *name* by updating the profile combo, including unsaved-changes prompts.
+
+        Args:
+            name: Profile name to activate.
+
+        Returns:
+            ``True`` if the switch succeeded (the combo now shows *name*), ``False``
+            if the profile does not exist or the name is empty.
+        """
         if not name:
             return False
         self._refresh_profile_list()
@@ -571,3 +759,5 @@ class ConfigTabV2(QWidget):
         if collect_nlmcn:
             return "nlmcn"
         return "lccn"
+
+

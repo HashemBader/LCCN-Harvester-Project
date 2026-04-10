@@ -232,7 +232,7 @@ git checkout -b hotfix/short-description
 
 Examples:
   S1-T03: add docs/contribution_guide.md
-  S5-T07: implement profile CRUD in config_tab_v2
+  S5-T07: implement profile CRUD in config_tab
 ```
 
 Keep messages short and meaningful. The sprint-task ID makes it easy to trace commits back to the sprint log.

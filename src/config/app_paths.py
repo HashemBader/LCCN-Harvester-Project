@@ -1,21 +1,26 @@
 """
-Module: app_paths.py
-Resolves file-system paths for both development and frozen (PyInstaller) builds.
+File-system path resolver for the LCCN Harvester.
 
-Usage
------
-    from config.app_paths import get_app_root, get_bundle_root, ensure_user_data_setup
+Abstracts the difference between a development checkout (where the project
+root is both the bundle root and the writable data directory) and a frozen
+PyInstaller build (where read-only bundled resources live under
+``sys._MEIPASS`` and writable user data lives in a platform-specific
+application-support folder).
 
-In development
-    get_bundle_root()  -> project root   (read-only resources live here)
-    get_app_root()     -> project root   (writable data also lives here)
+Public API:
+    get_bundle_root()         -- Root of read-only bundled resources.
+    get_user_data_dir()       -- Writable directory for config, DB, exports.
+    get_app_root()            -- Alias for ``get_user_data_dir()``.
+    ensure_user_data_setup()  -- Sync bundled defaults into user data (frozen only).
 
-When frozen (PyInstaller)
-    get_bundle_root()  -> sys._MEIPASS   (read-only bundled resources)
-    get_app_root()     -> platform user-data dir  (writable)
-                          macOS:   ~/Library/Application Support/LCCN Harvester/
-                          Windows: %APPDATA%/LCCN Harvester/
-                          Linux:   ~/.lccn_harvester/
+Path layout (frozen build):
+    macOS:   ~/Library/Application Support/LCCN Harvester/
+    Windows: %APPDATA%/LCCN Harvester/
+    Linux:   ~/.lccn_harvester/
+
+Path layout (development):
+    Both ``get_bundle_root()`` and ``get_app_root()`` return the project root
+    (two levels above ``src/config/``).
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import shutil
 import sys
 from pathlib import Path
 
+# True when running as a PyInstaller-frozen executable; False during development
 _IS_FROZEN: bool = getattr(sys, "frozen", False)
 
 
@@ -46,16 +52,24 @@ def get_bundle_root() -> Path:
 
 
 def _find_local_workspace_root() -> Path | None:
-    """Detect a developer-local frozen build inside the project workspace.
+    """Detect a developer-local frozen build running inside the project workspace.
 
-    When the packaged app is launched from ``<project>/dist/...``, we want it to
-    behave exactly like ``src/gui_launcher.py`` and reuse the project's live
-    ``config/`` and ``data/`` files instead of a separate app-support folder.
+    When the packaged app is launched from ``<project>/dist/...``, we want it
+    to behave exactly like running ``src/gui_launcher.py`` directly and reuse
+    the project's live ``config/`` and ``data/`` files instead of copying
+    defaults into a separate app-support folder.
+
+    Detection strategy: walk the executable's ancestor directories looking for
+    the sentinel file ``src/gui_launcher.py``.
+
+    Returns:
+        The project root ``Path``, or ``None`` if not running inside a workspace.
     """
     if not _IS_FROZEN:
         return None
 
     executable = Path(sys.executable).resolve()
+    # Walk up the directory tree until we find the project root sentinel
     for candidate in executable.parents:
         if (candidate / "src" / "gui_launcher.py").exists():
             return candidate
@@ -136,6 +150,9 @@ def ensure_user_data_setup() -> None:
     bundle_root = get_bundle_root()
     user_dir = get_user_data_dir()
 
+    # These entries are always overwritten from the bundle so the packaged app
+    # stays in sync with the currently shipped defaults.  User-generated files
+    # (databases, export outputs) are intentionally absent from this list.
     managed_entries = (
         ("config/active_profile.txt", "config/active_profile.txt"),
         ("config/default_profile.json", "config/default_profile.json"),
@@ -148,8 +165,9 @@ def ensure_user_data_setup() -> None:
     for bundle_rel, user_rel in managed_entries:
         _sync_bundle_entry(bundle_root / bundle_rel, user_dir / user_rel)
 
-    # Profiles are app-managed defaults; replace the whole directory so removed
-    # bundled profiles do not linger in user data across rebuilds.
+    # Profiles directory is fully replaced (not merged) so profiles removed
+    # from the bundle do not linger in the user's data directory across rebuilds.
     _replace_bundle_directory(bundle_root / "config/profiles", user_dir / "config/profiles")
 
+    # Ensure the data directory exists for new installs before the DB is created
     (user_dir / "data").mkdir(parents=True, exist_ok=True)

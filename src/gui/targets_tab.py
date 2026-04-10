@@ -1,16 +1,24 @@
-"""
-Module: targets_tab_v2.py
-Purpose: A modern, dark-themed Target Management tab.
-         Integrates with TargetsManager for persistence.
+"""Target management page — configuring API and Z39.50 harvest sources.
+
+``TargetsTab`` renders the lower half of the Configure page splitter.  It shows
+a table of all configured targets with their on/off status, rank, type (API vs
+Z39.50), and last-checked connectivity status.  Users can add, edit, remove, and
+reorder targets from this page.
+
+Connectivity is checked in a ``ThreadPoolExecutor`` on startup (and on demand)
+so the UI stays responsive while Z39.50 socket probes are in flight.
+
+Key design:
+- The targets list is persisted by ``TargetsManager`` (in the active profile's
+  targets JSON file) and reloaded whenever the profile changes.
+- Each table row is backed by a ``Target`` dataclass from ``src.utils.targets_manager``.
+- The ``targets_changed`` signal is emitted after every structural change so the
+  harvest tab and dashboard can react without polling.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-import sys
 import urllib.request
-
-# Add src to path for utils/z3950 imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QIcon, QColor
@@ -24,11 +32,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
-    QDialog,
-    QFormLayout,
     QLineEdit,
-    QSpinBox,
-    QDialogButtonBox,
     QMessageBox,
     QCheckBox,
     QComboBox,
@@ -37,288 +41,28 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
-from utils.targets_manager import TargetsManager, Target
-from config.profile_manager import ProfileManager
-from z3950.session_manager import validate_connection
-from gui.combo_boxes import ConsistentComboBox
-from gui.theme_manager import ThemeManager
-from gui.icons import get_icon
+from src.config.profile_manager import ProfileManager
+from src.utils.targets_manager import TargetsManager, Target
+from src.z3950.session_manager import validate_connection
+
+from .combo_boxes import ConsistentComboBox
+from .icons import get_icon
+from .theme_manager import ThemeManager
+from .target_dialog import TargetDialog
 
 
-class TargetDialog(QDialog):
-    """Dialog for adding/editing Z39.50 targets with dark theme support."""
+class TargetsTab(QWidget):
+    """Main widget for managing harvest targets (APIs and Z39.50 servers).
 
-    def __init__(self, parent=None, target: Target | None = None, total_targets: int = 1):
-        super().__init__(parent)
-        self.setWindowTitle("Add Target" if target is None else "Edit Target")
-        self.target = target
-        self.total_targets = total_targets
-        self.connection_status = None  # Store connection test result
-        self.remove_requested = False
-        self._setup_ui()
-        self._apply_styles()
+    Displays a sortable/selectable table of targets.  Provides buttons to add
+    custom Z39.50 targets via ``TargetDialog``, toggle target selection, change
+    rank, and test connectivity.
 
-    def _setup_ui(self):
-        layout = QVBoxLayout()
-        form_layout = QFormLayout()
-
-        self.name_edit = QLineEdit(self.target.name if self.target else "")
-        self.host_edit = QLineEdit(self.target.host if self.target else "")
-        self.port_spin = QSpinBox()
-        self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(self.target.port if self.target and self.target.port else 210)
-        self.database_edit = QLineEdit(self.target.database if self.target else "")
-
-        # Rank selector — range grows to include +1 slot when adding
-        self.rank_spin = QSpinBox()
-        self.rank_spin.setRange(1, self.total_targets)
-        if self.target:
-            self.rank_spin.setValue(self.target.rank if self.target.rank else 1)
-        else:
-            self.rank_spin.setValue(self.total_targets)  # default: last
-
-        form_layout.addRow("Target Name:", self.name_edit)
-        form_layout.addRow("Host Address:", self.host_edit)
-        form_layout.addRow("Port:", self.port_spin)
-        form_layout.addRow("Database Name:", self.database_edit)
-        form_layout.addRow("Rank:", self.rank_spin)
-
-        layout.addLayout(form_layout)
-
-        self.btn_test = QPushButton("Test Connection")
-        self.btn_test.clicked.connect(self.test_connection)
-        layout.addWidget(self.btn_test)
-
-        # Bottom row: Remove (left, edit-only) | Ok / Cancel (right)
-        bottom_layout = QHBoxLayout()
-
-        if self.target is not None:
-            self.btn_remove_dlg = QPushButton("Remove")
-            self.btn_remove_dlg.setObjectName("DangerButton")
-            self.btn_remove_dlg.clicked.connect(self._on_remove_clicked)
-            bottom_layout.addWidget(self.btn_remove_dlg)
-
-        bottom_layout.addStretch()
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.try_accept)
-        buttons.rejected.connect(self.reject)
-        bottom_layout.addWidget(buttons)
-
-        layout.addLayout(bottom_layout)
-
-        self.setLayout(layout)
-
-
-    def test_connection(self):
-        """Manually test connection and show result."""
-        host = self.host_edit.text().strip()
-        port = self.port_spin.value()
-        database = self.database_edit.text().strip()
-
-        if not host:
-            QMessageBox.warning(self, "Input Error", "Please enter a host to test.")
-            return
-
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        success = validate_connection(host, port)
-        self.unsetCursor()
-        
-        self.connection_status = success  # Store the result
-        address = f"{host}:{port}/{database}" if database else f"{host}:{port}"
-
-        if success:
-            QMessageBox.information(self, "Success", f"Successfully connected to {address}")
-        else:
-            QMessageBox.critical(
-                self,
-                "Connection Failed",
-                f"Could not connect to {address}.\nPlease check the details and try again.",
-            )
-
-    def try_accept(self):
-        """Validate connection before accepting, with user override."""
-        host = self.host_edit.text().strip()
-        port = self.port_spin.value()
-        database = self.database_edit.text().strip()
-
-        if not self.name_edit.text().strip() or not host:
-            QMessageBox.warning(self, "Validation Error", "Name and Host are required.")
-            return
-
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        success = validate_connection(host, port)
-        self.unsetCursor()
-        
-        self.connection_status = success  # Store the result
-        address = f"{host}:{port}/{database}" if database else f"{host}:{port}"
-
-        if success:
-            self.accept()
-        else:
-            reply = QMessageBox.question(
-                self,
-                "Connection Failed",
-                f"Could not connect to {address}.\n\nDo you want to save this target anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.accept()
-
-    def get_data(self):
-        """Return a dictionary of the input data."""
-        return {
-            "name": self.name_edit.text().strip(),
-            "host": self.host_edit.text().strip(),
-            "port": self.port_spin.value(),
-            "database": self.database_edit.text().strip(),
-            "rank": self.rank_spin.value(),
-        }
-    
-    def get_connection_status(self):
-        """Return the connection test result (True/False/None)."""
-        return self.connection_status
-
-    def _on_remove_clicked(self):
-        """Flag that remove was requested and close the dialog."""
-        self.remove_requested = True
-        self.reject()
-
-    def _apply_styles(self):
-        """Apply theme-aware styles for both dark and light modes."""
-        mode = ThemeManager().get_theme()
-        icons_dir = (Path(__file__).parent / "icons").as_posix()
-        if mode == "dark":
-            self.setStyleSheet(
-                """
-                QDialog {
-                    background-color: #1e1e2e;
-                    color: #cdd6f4;
-                }
-                QLabel {
-                    color: #cdd6f4;
-                    font-weight: bold;
-                }
-                QLineEdit, QSpinBox {
-                    background-color: #313244;
-                    border: 1px solid #45475a;
-                    border-radius: 4px;
-                    padding: 6px;
-                    color: #ffffff;
-                }
-                QSpinBox::up-button, QSpinBox::down-button {
-                    width: 20px;
-                    background-color: #313244;
-                    border: none;
-                    border-left: 1px solid #45475a;
-                }
-                QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                    background-color: #45475a;
-                }
-                QSpinBox::up-arrow {
-                    width: 12px;
-                    height: 12px;
-                    image: url(src/gui/icons/plus.svg);
-                    border: none;
-                }
-                QSpinBox::down-arrow {
-                    width: 12px;
-                    height: 12px;
-                    image: url(src/gui/icons/minus.svg);
-                    border: none;
-                }
-                QLineEdit:focus, QSpinBox:focus {
-                    border: 1px solid #89b4fa;
-                }
-                QPushButton {
-                    background-color: #313244;
-                    color: white;
-                    border: 1px solid #45475a;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background-color: #45475a;
-                }
-                QPushButton#DangerButton {
-                    background-color: #ed8796;
-                    color: #1e1e2e;
-                    border: 1px solid #d97082;
-                }
-                QPushButton#DangerButton:hover {
-                    background-color: #d97082;
-                }
-            """.replace("url(src/gui/icons/", f"url({icons_dir}/")
-            )
-        else:
-            self.setStyleSheet(
-                """
-                QDialog {
-                    background-color: #ffffff;
-                    color: #0f172a;
-                }
-                QLabel {
-                    color: #0f172a;
-                    font-weight: bold;
-                }
-                QLineEdit, QSpinBox {
-                    background-color: #f3f4f6;
-                    border: 1px solid #cbd5e1;
-                    border-radius: 4px;
-                    padding: 6px;
-                    color: #0f172a;
-                }
-                QSpinBox::up-button, QSpinBox::down-button {
-                    width: 20px;
-                    background-color: #f3f4f6;
-                    border: none;
-                    border-left: 1px solid #cbd5e1;
-                }
-                QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                    background-color: #e2e8f0;
-                }
-                QSpinBox::up-arrow {
-                    width: 12px;
-                    height: 12px;
-                    image: url(src/gui/icons/plus.svg);
-                    border: none;
-                }
-                QSpinBox::down-arrow {
-                    width: 12px;
-                    height: 12px;
-                    image: url(src/gui/icons/minus.svg);
-                    border: none;
-                }
-                QLineEdit:focus, QSpinBox:focus {
-                    border: 1px solid #3b82f6;
-                }
-                QPushButton {
-                    background-color: #f1f5f9;
-                    color: #0f172a;
-                    border: 1px solid #cbd5e1;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background-color: #e2e8f0;
-                }
-                QPushButton#DangerButton {
-                    background-color: #dc2626;
-                    color: #ffffff;
-                    border: 1px solid #b91c1c;
-                }
-                QPushButton#DangerButton:hover {
-                    background-color: #b91c1c;
-                }
-            """.replace("url(src/gui/icons/", f"url({icons_dir}/")
-            )
-
-
-class TargetsTabV2(QWidget):
-    """
-    The main widget for configuring targets.
+    Signals:
+        targets_changed(list): Emitted with the updated list of target dicts
+            after any structural change (add/remove/reorder/toggle).
+        profile_selected(str): Emitted when the user picks a different profile
+            from the profile combo in this tab.
     """
 
     targets_changed = pyqtSignal(list)
@@ -432,11 +176,21 @@ class TargetsTabV2(QWidget):
         layout.addLayout(btn_layout)
 
         # Table
+        # --- Table column layout ---
+        # Col 0: Rank         — ConsistentComboBox; ResizeToContents (narrow)
+        # Col 1: Active       — QPushButton toggle; ResizeToContents (narrow)
+        # Col 2: Target Name  — QTableWidgetItem; UserRole stores Target object
+        # Col 3: Host / IP    — QTableWidgetItem; Stretch
+        # Col 4: Port         — QTableWidgetItem; ResizeToContents (short number)
+        # Col 5: Database     — QTableWidgetItem; Stretch
+        # Col 6: Edit         — QPushButton (pencil icon); ResizeToContents
+        # Col 7: Server       — status pill widget; ResizeToContents
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(
             ["Rank", "Active", "Target Name", "Host / IP", "Port", "Database", "Edit", "Server"]
         )
+        # Default all columns to Stretch, then pin the narrow utility columns.
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -464,17 +218,47 @@ class TargetsTabV2(QWidget):
         return None
 
     def _emit_targets_changed(self):
+        """Emit ``targets_changed`` with the current normalised targets list."""
         self.targets_changed.emit(self.get_targets())
 
     def _can_mutate_targets(self, action_label: str = "change targets") -> bool:
+        """Check whether a structural target mutation is permitted.
+
+        Delegates to the ``before_mutation`` callable injected by
+        ``TargetsConfigTab``.  That callable typically prompts the user to save
+        or discard unsaved profile settings before the mutation proceeds.
+
+        Args:
+            action_label: Short description of the mutation used in any
+                          confirmation prompt (e.g. ``"add a target"``).
+
+        Returns:
+            ``True`` if the mutation may proceed, ``False`` if blocked.
+        """
         if callable(self.before_mutation):
+            # before_mutation is injected by TargetsConfigTab to act as a
+            # pre-flight check (e.g. unsaved settings guard).
             return bool(self.before_mutation(action_label))
         return True
 
     @staticmethod
     def _check_api_online(target_name: str) -> bool:
-        """Check if a built-in API target is reachable via HTTP."""
+        """Check if a built-in API target is reachable via HTTP.
+
+        Each known API target is mapped to a lightweight probe URL.  A HEAD
+        request is tried first; if that fails (some servers reject HEAD) a
+        regular GET is attempted as a fallback.  Any HTTP status below 500 is
+        treated as "online".
+
+        Args:
+            target_name: The display name of the target as stored in the
+                         targets JSON file.
+
+        Returns:
+            ``True`` if a probe request succeeds, ``False`` otherwise.
+        """
         name = target_name.strip().lower()
+        # Map each known API target name to a cheap probe URL.
         if "library of congress" in name or name == "loc":
             url = "http://lx2.loc.gov:210/LCDB?operation=explain&version=1.1"
         elif "harvard" in name:
@@ -484,6 +268,7 @@ class TargetsTabV2(QWidget):
         else:
             return False
         try:
+            # Prefer HEAD to avoid downloading a response body.
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", "LCCNHarvester/0.1")
             with urllib.request.urlopen(req, timeout=4) as resp:
@@ -491,6 +276,7 @@ class TargetsTabV2(QWidget):
         except Exception:
             pass
         try:
+            # HEAD failed — fall back to a GET request.
             req2 = urllib.request.Request(url)
             req2.add_header("User-Agent", "LCCNHarvester/0.1")
             with urllib.request.urlopen(req2, timeout=4) as resp:
@@ -538,25 +324,32 @@ class TargetsTabV2(QWidget):
         self.table.blockSignals(True)
 
         for row, target in enumerate(targets):
+            # --- Rank combo (column 0) ---
+            # Cap popup height at 12 items so the list doesn't overflow the screen.
             rank_combo = ConsistentComboBox(
                 popup_object_name="RankComboPopup",
                 max_visible_items=min(len(targets), 12) or 1,
             )
             rank_combo.setMinimumHeight(32)
+            # objectName must match the QSS rule QComboBox#RankCombo in styles.py.
             rank_combo.setObjectName("RankCombo")
             for i in range(1, len(targets) + 1):
                 rank_combo.addItem(str(i), i)
-            # Set current rank using userData (robust)
+            # Use findData (by userData int) rather than findText so locale-
+            # specific number formatting can never cause a mismatch.
             index = rank_combo.findData(target.rank)
             if index != -1:
                 rank_combo.setCurrentIndex(index)
             else:
-                # fallback: put it at the end
+                # Rank value not in the list (data integrity issue) — put it last.
                 rank_combo.setCurrentIndex(rank_combo.count() - 1)
+            # Capture both the combo widget and target at the time the lambda is
+            # created so the closure doesn't close over a loop variable.
             rank_combo.currentIndexChanged.connect(
                 lambda _, t=target, c=rank_combo: self._on_rank_changed(c.currentData(), t)
             )
             rank_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            # eventFilter blocks accidental wheel scrolling (see eventFilter above).
             rank_combo.installEventFilter(self)
 
             self.table.setCellWidget(row, 0, rank_combo)
@@ -599,27 +392,32 @@ class TargetsTabV2(QWidget):
             db_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 5, db_item)
 
-            # Edit button (pencil icon)
+            # --- Edit button (column 6) — pencil icon, theme-aware color ---
             edit_btn = QPushButton()
             edit_btn.setMinimumHeight(32)
             edit_btn.setMinimumWidth(40)
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             edit_btn.setToolTip("Edit target")
+            # Read the raw SVG from disk so its stroke can be recolored at render time.
             pencil_svg = (Path(__file__).parent / "icons" / "pencil.svg").read_text(encoding="utf-8")
+            # Choose icon tint based on the current theme so it stays legible.
             pencil_color = "#ffffff" if ThemeManager().get_theme() == "dark" else "#000000"
+            # get_icon replaces "currentColor" in the SVG with pencil_color, then
+            # rasterizes the result into a QIcon via QSvgRenderer.
             edit_btn.setIcon(get_icon(pencil_svg, pencil_color))
             edit_btn.setIconSize(QSize(18, 18))
             edit_btn.setProperty("class", "IconButton")
             edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
             self.table.setCellWidget(row, 6, edit_btn)
 
-            # Server status indicator
+            # --- Server status indicator (column 7) ---
+            # None = not yet checked; True = online; False = offline.
             is_online = self.server_status.get(target.target_id, None)
 
             if is_online is None:
                 btn_text = "UNKNOWN"
-                btn_color = "#6b7280"  # grey
+                btn_color = "#6b7280"  # grey — status not yet probed
             elif is_online:
                 btn_text = "ONLINE"
                 btn_color = "#16a34a"  # green
@@ -631,7 +429,10 @@ class TargetsTabV2(QWidget):
             server_btn.setMinimumHeight(32)
             server_btn.setMinimumWidth(104)
             server_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            # ForbiddenCursor signals the pill is display-only, not clickable.
             server_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+            # Inline stylesheet applied directly to this instance so the pill
+            # colour overrides the global QPushButton rule from styles.py.
             server_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {btn_color};
@@ -657,10 +458,20 @@ class TargetsTabV2(QWidget):
         self._emit_targets_changed()
 
     def get_targets(self):
-        """Return targets formatted for harvest target factory."""
+        """Return targets formatted for the harvest target factory.
+
+        Normalises the stored ``target_type`` string to either ``"z3950"`` or
+        ``"api"`` so downstream code never has to deal with raw type variants.
+
+        Returns:
+            A list of dicts with keys: ``target_id``, ``name``, ``type``,
+            ``host``, ``port``, ``database``, ``record_syntax``, ``rank``,
+            ``selected``.
+        """
         mapped_targets = []
         for t in self.manager.get_all_targets():
             target_type = (t.target_type or "").strip().lower()
+            # Normalise: any type string containing "z" is treated as Z39.50.
             normalized = "z3950" if "z" in target_type else "api"
             mapped_targets.append(
                 {
@@ -678,25 +489,38 @@ class TargetsTabV2(QWidget):
         return mapped_targets
 
     def _on_rank_changed(self, new_rank, target):
+        """Handle a rank combo-box change and reorder all targets accordingly.
+
+        Implements a splice-and-reassign strategy: the target is removed from
+        its current position in the sorted list and re-inserted at the desired
+        index, then every target is assigned a clean sequential rank starting
+        from 1 to avoid gaps or duplicates.
+
+        Args:
+            new_rank: The rank value selected by the user (1-based integer).
+            target: The ``Target`` object whose rank was changed.
+        """
         if not new_rank or new_rank == target.rank:
             return
         if not self._can_mutate_targets("change target priority"):
+            # Pre-flight guard rejected — refresh to restore the original display.
             self.refresh_targets()
             return
 
+        # Sort the full list by current rank so insertion position is predictable.
         all_targets = sorted(
             self.manager.get_all_targets(),
             key=lambda t: t.rank
         )
 
-        # remove target from list
+        # Remove the moved target from the ordered list.
         all_targets = [t for t in all_targets if t.target_id != target.target_id]
 
-        # insert at new position
+        # Clamp the insertion index to valid list bounds.
         new_index = max(0, min(new_rank - 1, len(all_targets)))
         all_targets.insert(new_index, target)
 
-        # reassign clean ranks
+        # Reassign sequential ranks to all targets and persist each change.
         for i, t in enumerate(all_targets, start=1):
             t.rank = i
             self.manager.modify_target(t)
@@ -704,37 +528,40 @@ class TargetsTabV2(QWidget):
         self.refresh_targets()
 
     def add_target(self):
+        """Open the add-target dialog and persist any new target on acceptance."""
         if not self._can_mutate_targets("add a target"):
             return
         all_targets = self.manager.get_all_targets()
-        total = len(all_targets) + 1  # +1 to include the new slot
+        # Pass the post-add count so the rank spin box includes the new slot.
+        total = len(all_targets) + 1
         dialog = TargetDialog(self, total_targets=total)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
             chosen_rank = data["rank"]
 
             new_target = Target(
-                target_id="",
+                target_id="",          # ID assigned by TargetsManager on add
                 name=data["name"],
                 target_type="Z3950",
                 host=data["host"],
                 port=data["port"],
                 database=data["database"],
                 record_syntax="USMARC",
-                rank=total,  # temporary; reordering below
+                rank=total,            # temporary end-of-list rank; reordered below
                 selected=True,
             )
             self.manager.add_target(new_target)
 
-            # Get the newly added target and store its connection status
+            # Look up the newly added target by name+host to retrieve its assigned ID.
             added_targets = self.manager.get_all_targets()
             added_target = next((t for t in added_targets if t.name == data["name"] and t.host == data["host"]), None)
             if added_target:
+                # Cache the connection test result gathered by the dialog.
                 connection_status = dialog.get_connection_status()
                 if connection_status is not None:
                     self.server_status[added_target.target_id] = connection_status
 
-                # Apply chosen rank via reorder; if rank didn't change, refresh directly
+                # Move to the rank the user chose; if unchanged, just refresh.
                 if chosen_rank != added_target.rank:
                     self._on_rank_changed(chosen_rank, added_target)
                 else:
@@ -743,6 +570,7 @@ class TargetsTabV2(QWidget):
                 self.refresh_targets()
 
     def edit_target(self):
+        """Edit the currently selected table row's target (keyboard/menu entry point)."""
         target = self._get_selected_target()
         if target:
             self._edit_specific_target(target)
@@ -788,6 +616,7 @@ class TargetsTabV2(QWidget):
                 self.refresh_targets()
 
     def remove_target(self):
+        """Remove the currently selected table row's target (keyboard/menu entry point)."""
         target = self._get_selected_target()
         if target:
             self._remove_specific_target(target)
@@ -854,10 +683,16 @@ class TargetsTabV2(QWidget):
                 self._edit_specific_target(target)
 
     def _get_selected_target(self):
+        """Return the ``Target`` object for the currently selected row, or ``None``.
+
+        The ``Target`` object is stored in column 2 (Target Name) via
+        ``Qt.ItemDataRole.UserRole`` so it can be retrieved without maintaining a
+        separate row-to-target mapping.
+        """
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 2)  # Name column reverted to index 2
+        item = self.table.item(row, 2)  # Target Name column carries the UserRole data
         if item:
             return item.data(Qt.ItemDataRole.UserRole)
         return None
@@ -869,4 +704,5 @@ class TargetsTabV2(QWidget):
             name = name_item.text().lower() if name_item else ""
             visible = text in name
             self.table.setRowHidden(row, not visible)
+
 

@@ -162,6 +162,17 @@ def test_lookup_client_import_failure_returns_error():
     assert result.error
 
 
+def test_lookup_skips_client_when_pyz3950_is_unavailable():
+    """A broken PyZ3950 install should short-circuit before any connection attempt."""
+    with patch("src.harvester.z3950_targets.ensure_pyz3950_importable", return_value=(False, "lexer build failed")), \
+         patch("src.z3950.client.Z3950Client") as mock_cls:
+        result = _make_target().lookup("0000000000")
+
+    assert result.success is False
+    assert "z39.50 support not available" in result.error.lower()
+    mock_cls.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # build_default_z3950_targets()
 # ---------------------------------------------------------------------------

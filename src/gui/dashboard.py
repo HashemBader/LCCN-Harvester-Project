@@ -1,211 +1,97 @@
+"""Dashboard page with KPIs, live activity, and recent results.
+
+``DashboardTab`` is the home page of the application.  It displays four KPI
+cards (Processed, Successful, Failed, Invalid) that update in real time as a
+harvest runs, a panel for opening the live result files, a recent-results
+table, and an embedded Linked ISBNs management sub-page.
+
+The dashboard also hosts a profile selector so the user can switch active
+profiles without navigating to the Configure page.
+
+Design notes:
+- Stats are stored in ``session_stats`` and only come from the live
+  ``live_stats_ready`` signal (``RunStats`` dataclass) or from the final
+  ``harvest_finished`` dict; the 2-second auto-refresh timer updates the
+  result-file button states (enabled/disabled), not the KPI counts, during a run.
+- A ``QStackedWidget`` (``_main_stack``) is used to swap between the main
+  dashboard view (index 0) and the Linked ISBNs sub-page (index 1).
+- Responsive layout breakpoint: below 900 px the KPI cards move to a 2×2 grid
+  and the two content columns stack vertically.
+- The status pill (``lbl_run_status``) uses a ``state`` dynamic property
+  (``"idle"``, ``"running"``, ``"paused"``, ``"success"``, ``"error"``) so
+  QSS can colour it without any inline style overrides.
 """
-Module: dashboard_v2.py
-Professional V2 Dashboard with Header, KPIs, Live Activity, and Recent Results.
-"""
+import logging
+from datetime import datetime
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QBoxLayout, QLabel, QFrame,
-    QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QSizePolicy, QMessageBox, QStackedWidget,
     QLineEdit, QTextEdit, QFormLayout
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QUrl
-from datetime import datetime
-from pathlib import Path
-from PyQt6.QtGui import QColor, QPainter, QPen, QDesktopServices
-import re
+from PyQt6.QtGui import QDesktopServices
 
-from database import DatabaseManager
+from src.database import DatabaseManager
 from .combo_boxes import ConsistentComboBox
 from .icons import (
     get_icon, get_pixmap, SVG_ACTIVITY, SVG_CHECK_CIRCLE, SVG_ALERT_CIRCLE,
     SVG_X_CIRCLE, SVG_DASHBOARD, SVG_FOLDER_OPEN
 )
 from .database_browser_dialog import DatabaseBrowserDialog
+from .dashboard_components import (
+    DashboardCard,
+    ProfileSwitchCombo,
+    RecentResultsPanel,
+    problems_button_label,
+    safe_filename,
+    truncate_text,
+    write_csv_copy,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def _write_csv_copy(tsv_path: str, csv_path: str) -> None:
-    """Convert a TSV file to a UTF-8 CSV file for spreadsheet apps."""
-    import csv
+class DashboardTab(QWidget):
+    """Home-page widget showing live harvest KPIs, result file shortcuts, and recent results.
 
-    with open(tsv_path, newline="", encoding="utf-8") as source:
-        rows = csv.reader(source, delimiter="\t")
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as target:
-            writer = csv.writer(target)
-            writer.writerows(rows)
+    The widget is structured around a ``QStackedWidget`` (``_main_stack``) with
+    two pages:
+    - Page 0: the main dashboard (header, KPI cards, result-files panel, recent-results).
+    - Page 1: the Linked ISBNs sub-page (query, link, and rewrite operations).
 
+    Key instance variables:
+        db (DatabaseManager): Shared database handle, initialised at construction.
+        result_files (dict): Maps bucket keys to ``Path`` objects for the current run's
+            output files.  Populated by ``set_result_files`` when a harvest starts.
+        session_stats (dict): Live counters for the current view session.
+        session_recent (list[dict]): Up to 10 most-recent harvest result rows.
+        _is_running (bool): True while a harvest is active; guards the refresh timer
+            from overwriting live KPI counts.
+        _responsive_mode (str | None): Tracks whether the layout is ``"compact"``
+            or ``"wide"`` to avoid redundant grid rebuilds in ``resizeEvent``.
 
-def _safe_filename(s: str) -> str:
-    cleaned = "".join("_" if c in '\\/:*?"<>| ' else c for c in (s or "").strip())
-    cleaned = cleaned.strip("_")
-    return cleaned or "default"
-
-
-def _problems_button_label(
-    profile_name: str | None,
-    file_name: str | None = None,
-    include_profile: bool = False,
-) -> str:
-    return "Open targets problems"
-
-
-def _truncate_text(text: str, limit: int = 110) -> str:
-    text = str(text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
-
-
-def _normalize_recent_detail(text: str) -> str:
-    parts: list[str] = []
-    for piece in re.split(r"[+,;|]", str(text or "")):
-        cleaned = piece.strip()
-        if cleaned.upper() == "UCB":
-            cleaned = "UBC"
-        elif cleaned.upper() == "UBC":
-            cleaned = "UBC"
-        if cleaned and cleaned not in parts:
-            parts.append(cleaned)
-    return " + ".join(parts) if parts else (str(text or "").strip() or "-")
-
-class DashboardCard(QFrame):
+    Signals:
+        profile_selected(str): Emitted when the user picks a profile in the dashboard combo.
+        create_profile_requested(): Emitted when the user clicks the "New Profile" affordance.
+        page_title_changed(str): Emitted to ask ModernMainWindow to update the page-title label
+            (used when switching to/from the Linked ISBNs sub-page).
     """
-    A single KPI card with Icon, Title, Value, Helper Text.
-    """
-    def __init__(self, title, icon_svg, accent_color="#8aadf4"):
-        super().__init__()
-        self.setProperty("class", "Card")
-        self.setMinimumWidth(220)
-        self._setup_ui(title, icon_svg, accent_color)
 
-    def _setup_ui(self, title, icon_svg, accent_color):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(5)
-        
-        # Header: Title + Icon
-        header_layout = QHBoxLayout()
-        lbl_title = QLabel(title)
-        lbl_title.setProperty("class", "CardTitle")
-        
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(get_pixmap(icon_svg, accent_color, 24))
-        
-        header_layout.addWidget(lbl_title)
-        header_layout.addStretch()
-        header_layout.addWidget(icon_lbl)
-        
-        layout.addLayout(header_layout)
-        
-        # Value
-        self.lbl_value = QLabel("0")
-        self.lbl_value.setProperty("class", "CardValue")
-        layout.addWidget(self.lbl_value)
-        
-        # Helper Text
-        self.lbl_helper = QLabel("Total records")
-        self.lbl_helper.setProperty("class", "CardHelper")
-        layout.addWidget(self.lbl_helper)
-
-    def set_data(self, value, helper_text=""):
-        self.lbl_value.setText(str(value))
-        if helper_text:
-            self.lbl_helper.setText(helper_text)
-
-class RecentResultsPanel(QFrame):
-    """
-    Table showing last 10 outcomes.
-    """
-    def __init__(self):
-        super().__init__()
-        self.setProperty("class", "Card")
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        header = QLabel("RECENT RESULTS")
-        header.setProperty("class", "CardTitle")
-        layout.addWidget(header)
-        
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["ISBN", "Status", "Detail"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.table.setWordWrap(False)
-        self.table.setStyleSheet("background: transparent; border: none;")
-        
-        layout.addWidget(self.table)
-    
-    def update_data(self, records):
-        """Records: list of dict(isbn, status, detail, time)"""
-        self.table.setRowCount(0)
-        for row_idx, r in enumerate(records):
-            self.table.insertRow(row_idx)
-            
-            # ISBN
-            item_isbn = QTableWidgetItem(r['isbn'])
-            # We don't force a white foreground so it remains visible in Light Mode
-            self.table.setItem(row_idx, 0, item_isbn)
-            
-            # Status
-            status = r['status']
-            item_status = QTableWidgetItem(status)
-            if status in {"Successful", "Found", "Linked ISBN"}:
-                item_status.setForeground(QColor("#2e7d32"))
-            else:
-                item_status.setForeground(QColor("#c62828"))
-            self.table.setItem(row_idx, 1, item_status)
-            
-            # Detail (Truncated with Tooltip)
-            detail_text = _normalize_recent_detail(r.get('detail') or "-")
-            item_detail = QTableWidgetItem(_truncate_text(detail_text, 90))
-            item_detail.setToolTip(detail_text) # Full text on hover
-            self.table.setItem(row_idx, 2, item_detail)
-        self._fit_table_height()
-
-    def _fit_table_height(self):
-        header_height = self.table.horizontalHeader().height() or 34
-        row_height = self.table.verticalHeader().defaultSectionSize() or 26
-        visible_rows = max(10, self.table.rowCount())
-        self.table.setFixedHeight(header_height + (row_height * visible_rows) + 8)
-
-
-class ProfileSwitchCombo(QComboBox):
-    """Dashboard profile switcher with a guaranteed visible chevron affordance."""
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#e6eaf6"), 2))
-        cx = self.width() - 21
-        cy = self.height() // 2 + 1
-        s = 5
-        painter.drawLine(cx - s, cy - 2, cx, cy + 3)
-        painter.drawLine(cx, cy + 3, cx + s, cy - 2)
-        painter.end()
-
-
-class DashboardTabV2(QWidget):
+    # Emitted when the user picks a profile from the dashboard combo box.
     profile_selected = pyqtSignal(str)
+    # Emitted when the user clicks the "New Profile" affordance in the header.
     create_profile_requested = pyqtSignal()
+    # Emitted to ask ModernMainWindow to update its page-title label (e.g. "Dashboard" vs "Linked ISBNs").
     page_title_changed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
+        # Shared database manager; init_db() is idempotent so it is safe to call at construction.
         self.db = DatabaseManager()
         self.db.init_db()
-        # No result files until a harvest runs this session
+        # No result files until a harvest runs this session; keys must match HarvestWorker.live_paths.
         self.result_files = {
             "successful": None,
             "invalid": None,
@@ -227,13 +113,16 @@ class DashboardTabV2(QWidget):
             "failed": 0,
             "invalid": 0,
         }
-        self._is_running = False  # Guard: live RunStats stream prevents tab-switch overwrite
+        # True while a harvest is active; prevents refresh_data from overwriting live KPI counters.
+        self._is_running = False
         self.session_recent = []
         self.last_run_text = "Last Run: Never"
+        # Tracks the current responsive layout mode ("compact" or "wide"); avoids redundant re-layouts.
         self._responsive_mode = None
         self._setup_ui()
-        
-        # Auto-refresh timer (2s for live feel)
+
+        # Polls every 2 s to keep result-file button states and the last-run label current.
+        # Note: KPI counts are updated via signals, not here.
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_data)
         self.timer.start(2000)
@@ -241,11 +130,26 @@ class DashboardTabV2(QWidget):
         self.refresh_data()
 
     def _setup_ui(self):
+        """Build the full dashboard UI.
+
+        Layout structure (top to bottom):
+        1. ``_main_stack`` (``QStackedWidget``) fills the whole widget.
+           - Index 0: main dashboard page (header, KPI grid, content split).
+           - Index 1: Linked ISBNs sub-page (built by ``_build_linked_isbn_page``).
+
+        Within the dashboard page:
+        - Header bar: status pill (``lbl_run_status``) + last-run label.
+        - KPI grid (``kpi_layout``): responsive 1×4 or 2×2 placement managed by
+          ``_apply_responsive_layout``.
+        - Content split (``content_split``): left column (result files panel +
+          Browse DB button) and right column (recent results + Linked ISBNs button).
+        """
         _outer = QVBoxLayout(self)
         _outer.setContentsMargins(0, 0, 0, 0)
         _outer.setSpacing(0)
 
-        # Top-level stack: 0 = dashboard, 1 = Linked ISBNs panel
+        # QStackedWidget holds the full-page dashboard (index 0) and the Linked ISBNs sub-page (index 1).
+        # Navigating between them is done via _go_to_linked_isbn_page / _go_to_dashboard.
         self._main_stack = QStackedWidget()
         _outer.addWidget(self._main_stack)
 
@@ -348,11 +252,21 @@ class DashboardTabV2(QWidget):
         self._sync_panel_heights()
 
     def _apply_responsive_layout(self, width: int):
+        """Rearrange KPI cards and content columns based on available width.
+
+        Below 900 px the four KPI cards are shown in a 2×2 grid and the
+        content columns stack vertically.  At 900 px and above the cards sit
+        in a single row and the columns are laid out side by side.
+
+        Args:
+            width: Current widget width in pixels.
+        """
         mode = "compact" if width < 900 else "wide"
         if mode == self._responsive_mode:
             return
         self._responsive_mode = mode
 
+        # Remove all items from the grid without deleting the widgets so they can be re-added.
         while self.kpi_layout.count():
             self.kpi_layout.takeAt(0)
 
@@ -380,8 +294,15 @@ class DashboardTabV2(QWidget):
         self._sync_panel_heights()
 
     def _sync_panel_heights(self):
+        """Lock the result-files panel and recent-results panel to the same height.
+
+        Both panels sit side-by-side; forcing them to the same fixed height prevents one
+        from expanding and pushing the other out of alignment.  Called after every resize
+        and responsive-layout change.
+        """
         if not hasattr(self, "result_files_panel") or not hasattr(self, "recent_panel"):
             return
+        # Take the larger of the two natural heights so neither panel is clipped.
         panel_height = max(
             self.result_files_panel.sizeHint().height(),
             self.recent_panel.sizeHint().height(),
@@ -393,6 +314,18 @@ class DashboardTabV2(QWidget):
             self.recent_panel.setMaximumHeight(panel_height)
 
     def _build_result_files_panel(self):
+        """Build the Result Files card.
+
+        Contains:
+        - Header row: "RESULT FILES" title, TSV/CSV format combo, folder-open button.
+        - Subtitle helper text.
+        - Four file-open buttons (successful, failed, invalid, problem targets).
+        - Linked ISBNs open button.
+        - Reset Dashboard Stats danger button.
+
+        Returns:
+            Configured ``QFrame`` with the "Card" QSS class.
+        """
         panel = QFrame()
         panel.setProperty("class", "Card")
         layout = QVBoxLayout(panel)
@@ -405,7 +338,8 @@ class DashboardTabV2(QWidget):
         header.addWidget(title)
         header.addStretch()
 
-        # Format Switch
+        # Format combo: switching between TSV and CSV triggers a button-state refresh
+        # so the correct file extension is checked for existence.
         self.format_combo = ConsistentComboBox(popup_object_name="ResultFormatComboPopup", max_visible_items=2)
         self.format_combo.setObjectName("ResultFormatCombo")
         self.format_combo.addItems(["TSV (.tsv)", "CSV (.csv)"])
@@ -458,17 +392,39 @@ class DashboardTabV2(QWidget):
         return panel
 
     def _create_result_open_button(self, text, key):
+        """Build a disabled-by-default button that opens the result file for *key*.
+
+        The button is enabled once a harvest run creates the file; this is checked
+        each time ``_refresh_result_file_buttons`` runs.
+
+        Args:
+            text: Button label text.
+            key: Dict key into ``self.result_files`` (e.g. ``"successful"``).
+
+        Returns:
+            The configured ``QPushButton``.
+        """
         btn = QPushButton(text)
         btn.setProperty("class", "SecondaryButton")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setMinimumHeight(42)
         btn.setEnabled(False)
+        # Lambda captures `key` by value so each button opens its own file.
         btn.clicked.connect(lambda: self._open_result_file(key))
         return btn
 
 
     def set_result_files(self, paths: dict):
-        """Called when a new harvest starts with the paths of the live output files."""
+        """Store the live output file paths for the current run and refresh button states.
+
+        Called by ``ModernMainWindow`` when the worker emits ``result_files_ready``
+        at harvest start.
+
+        Args:
+            paths: Dict mapping bucket keys (``"successful"``, ``"failed"``,
+                   ``"invalid"``, ``"problems"``, ``"linked"``, ``"profile_dir"``)
+                   to absolute path strings.
+        """
         self.result_files = {
             "successful": Path(paths["successful"]) if paths.get("successful") else None,
             "invalid": Path(paths["invalid"]) if paths.get("invalid") else None,
@@ -480,6 +436,11 @@ class DashboardTabV2(QWidget):
         self._refresh_result_file_buttons()
 
     def _refresh_result_file_buttons(self):
+        """Enable/disable and re-label result file buttons based on what exists on disk.
+
+        Called after every harvest event and on the auto-refresh timer tick.
+        The correct file extension (.tsv or .csv) is determined from the format combo.
+        """
         if not hasattr(self, "btn_open_successful"):
             return
         default_labels = {
@@ -523,16 +484,33 @@ class DashboardTabV2(QWidget):
         self.btn_open_profile_folder.setEnabled(profile_dir is not None and profile_dir.exists())
 
     def _result_file_has_content(self, path: Path | None) -> bool:
+        """Return True if the file exists and contains at least one data row (beyond a header).
+
+        Args:
+            path: Path to check, or ``None``.
+
+        Returns:
+            ``True`` if the file has two or more lines, ``False`` otherwise.
+        """
         if path is None or not path.exists():
             return False
         try:
             with open(path, "r", encoding="utf-8-sig", newline="") as handle:
-                next(handle, None)
+                next(handle, None)   # skip header
                 return next(handle, None) is not None
         except Exception:
             return False
 
     def _open_result_file(self, key):
+        """Open the result file for *key* in the default system application.
+
+        If the user has selected CSV format and only a TSV exists on disk, a CSV
+        copy is generated on the fly before opening.
+
+        Args:
+            key: Result bucket key — one of ``"successful"``, ``"failed"``,
+                 ``"invalid"``, ``"problems"``, ``"linked"``.
+        """
         path = self.result_files[key]
         is_csv = getattr(self, "format_combo", None) and self.format_combo.currentText().startswith("CSV")
         ext = ".csv" if is_csv else ".tsv"
@@ -541,7 +519,7 @@ class DashboardTabV2(QWidget):
         # Generate on the fly if CSV is selected mid-harvest.
         if is_csv and not target_path.exists() and path.exists():
             try:
-                _write_csv_copy(str(path), str(target_path))
+                write_csv_copy(str(path), str(target_path))
             except Exception as e:
                 QMessageBox.warning(self, "CSV Not Ready", f"Could not generate live CSV view:\n{e}")
                 return
@@ -554,7 +532,13 @@ class DashboardTabV2(QWidget):
             QMessageBox.warning(self, "Open Failed", f"Could not open {target_path}.")
 
     def _export_linked_isbns(self):
-        """Export the linked_isbns table to a TSV/CSV file and open it."""
+        """Export the ``linked_isbns`` DB table to a timestamped TSV or CSV file and open it.
+
+        Queries ``linked_isbns`` ordered by canonical ISBN, writes both a TSV and (if CSV
+        mode is selected) a CSV copy into the active profile's data directory, then opens
+        the file with the default system application.  Shows an informational dialog if
+        the table is empty.
+        """
         import csv as _csv
         from datetime import datetime as _dt
 
@@ -586,7 +570,7 @@ class DashboardTabV2(QWidget):
         out_dir = self._profile_dir_path()
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = _dt.now().strftime("%Y-%m-%d-%H-%M-%S")
-        out_path = out_dir / f"{_safe_filename(self.current_profile)}-linked-isbns-{stamp}{ext}"
+        out_path = out_dir / f"{safe_filename(self.current_profile)}-linked-isbns-{stamp}{ext}"
 
         try:
             delimiter = "," if is_csv else "\t"
@@ -602,9 +586,11 @@ class DashboardTabV2(QWidget):
             QMessageBox.warning(self, "Open Failed", f"Exported to {out_path} but could not open it.")
 
     def _profile_dir_path(self) -> Path:
-        return Path("data") / _safe_filename(self.current_profile)
+        """Return the ``data/<profile>`` directory path for the active profile."""
+        return Path("data") / safe_filename(self.current_profile)
 
     def _open_profile_folder(self):
+        """Open the active profile's output directory in the default file manager."""
         path = self.result_files.get("profile_dir") or self._profile_dir_path()
         if not path.exists():
             QMessageBox.warning(self, "Folder Not Found", f"{path} does not exist yet.")
@@ -614,7 +600,12 @@ class DashboardTabV2(QWidget):
             QMessageBox.warning(self, "Open Failed", f"Could not open {path}.")
 
     def _reset_dashboard_stats(self):
-        """Reset only the visible dashboard state."""
+        """Prompt the user and, if confirmed, clear all in-memory session counters.
+
+        Guards against resetting while a harvest is actively running.
+        Delegates the actual clear to ``reset_dashboard_stats`` and then
+        refreshes the UI and resets the status pill to IDLE.
+        """
         if "RUNNING" in self.lbl_run_status.text():
             QMessageBox.information(self, "Harvest Running", "Stop the current harvest before resetting dashboard stats.")
             return
@@ -631,14 +622,18 @@ class DashboardTabV2(QWidget):
         self.set_idle(None)
 
     def _open_database_browser(self):
+        """Open the DatabaseBrowserDialog as a modal window."""
         dialog = DatabaseBrowserDialog(parent=self, db=self.db)
         dialog.exec()
 
     def _go_to_linked_isbn_page(self):
+        """Switch the main stack to the Linked ISBNs sub-page (index 1)."""
         self._main_stack.setCurrentIndex(1)
+        # Notify the window so the page-title label reads "Linked ISBNs" instead of "Dashboard".
         self.page_title_changed.emit("Linked ISBNs")
 
     def _go_to_dashboard(self):
+        """Return to the main dashboard page (index 0)."""
         self._main_stack.setCurrentIndex(0)
         self.page_title_changed.emit("Dashboard")
 
@@ -646,6 +641,20 @@ class DashboardTabV2(QWidget):
     # Linked ISBNs sub-page (embedded in the dashboard stack)
     # ------------------------------------------------------------------
     def _build_linked_isbn_page(self) -> QWidget:
+        """Build and return the Linked ISBNs sub-page widget (stack index 1).
+
+        Layout:
+        - Back button row at the top.
+        - Subtitle helper text.
+        - Two-column body:
+          - Left (Query): ISBN lookup form and read-only result display.
+          - Right (Link + Rewrite): two QFormLayouts separated by a divider,
+            each with a pair of ISBN inputs and a corresponding action button.
+        - Status bar at the bottom for feedback messages.
+
+        Returns:
+            Fully built ``QWidget`` to be added to ``_main_stack`` at index 1.
+        """
         page = QWidget()
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 16)
@@ -822,11 +831,23 @@ class DashboardTabV2(QWidget):
         return page
 
     def _li_set_status(self, msg: str, error: bool = False):
+        """Show a feedback message at the bottom of the Linked ISBNs sub-page.
+
+        Args:
+            msg: Human-readable result or error description.
+            error: When ``True`` the text is rendered in red; green otherwise.
+        """
+        # Inline style overrides the theme colour for this single feedback label only.
         color = "#ef4444" if error else "#22c55e"
         self._li_status.setText(msg)
         self._li_status.setStyleSheet(f"color: {color};")
 
     def _li_run_query(self):
+        """Look up the canonical lowest ISBN and all siblings for the entered ISBN.
+
+        Queries ``DatabaseManager.get_lowest_isbn`` and ``get_linked_isbns``, formats
+        the results as plain text, and populates ``_li_query_result``.
+        """
         isbn = self._li_query_input.text().strip()
         if not isbn:
             self._li_set_status("Please enter an ISBN.", error=True)
@@ -852,6 +873,7 @@ class DashboardTabV2(QWidget):
             self._li_set_status(str(exc), error=True)
 
     def _li_run_link(self):
+        """Save a lowest → other ISBN mapping via ``DatabaseManager.upsert_linked_isbn``."""
         lowest = self._li_link_lowest.text().strip()
         other = self._li_link_other.text().strip()
         if not lowest or not other:
@@ -869,6 +891,12 @@ class DashboardTabV2(QWidget):
             self._li_set_status(str(exc), error=True)
 
     def _li_run_rewrite(self):
+        """Merge all records from the *other* ISBN onto the *lowest* ISBN in the DB.
+
+        Calls ``DatabaseManager.rewrite_to_lowest_isbn``, which moves rows in both
+        the ``main`` and ``attempted`` tables.  This is a destructive operation and
+        cannot be undone; the button is styled as ``DangerButton`` to signal this.
+        """
         lowest = self._li_rw_lowest.text().strip()
         other = self._li_rw_other.text().strip()
         if not lowest or not other:
@@ -886,27 +914,61 @@ class DashboardTabV2(QWidget):
             self._li_set_status(str(exc), error=True)
 
     def refresh_data(self):
-        """Refresh dashboard-only state without repopulating cleared results."""
+        """Refresh dashboard UI state from in-memory session data.
+
+        Called on the 2-second auto-refresh timer and after harvest events.
+        Updates result-file button states, KPI labels, recent-results table,
+        and the last-run label.  Does *not* re-query the database.
+        """
         try:
             self._refresh_result_file_buttons()
             self._render_session_stats()
             self.recent_panel.update_data(self.session_recent)
             self.lbl_last_run.setText(self.last_run_text)
-        except Exception as e:
-            print(f"Dashboard Refresh Error: {e}")
+        except Exception:
+            logger.exception("Dashboard refresh failed.")
 
     def update_live_status(self, target, isbn, progress, msg):
-        """Called by MainWindow during harvest."""
-        self.last_run_text = _truncate_text(f"Last Event: {msg}", 140)
+        """Update the last-event label with a truncated progress message.
+
+        Connected to ``HarvestTab.progress_updated`` via ``ModernMainWindow``.
+        Called for every per-ISBN progress event during a live harvest.
+
+        Args:
+            target: Target name string (currently unused in this display path).
+            isbn: The ISBN being processed (currently unused in this display path).
+            progress: Progress fraction or count (currently unused in this display path).
+            msg: Human-readable status message to display.
+        """
+        self.last_run_text = truncate_text(f"Last Event: {msg}", 140)
         self.lbl_last_run.setText(self.last_run_text)
 
     def record_harvest_event(self, isbn: str, status: str, detail: str):
+        """Record a harvest event into the recent-results list.
+
+        Only terminal outcome statuses are recorded; intermediate or informational
+        statuses are silently ignored.
+
+        Args:
+            isbn: The processed ISBN.
+            status: Outcome string from the worker (``"found"``, ``"failed"``,
+                    ``"cached"``, ``"skipped"``).
+            detail: Human-readable explanation to show in the detail column.
+        """
         if status not in ("found", "failed", "cached", "skipped"):
             return
         self._append_recent_result(isbn, status, detail)
 
     def apply_run_stats(self, stats):
-        """Accept either a dict (legacy) or a RunStats dataclass."""
+        """Accept either a dict (legacy) or a RunStats dataclass and update session_stats.
+
+        The harvester can emit either a raw dict (older code path) or the newer ``RunStats``
+        dataclass embedded under the ``"run_stats"`` key.  Both shapes are normalised into
+        the same ``session_stats`` dict.
+
+        Args:
+            stats: Either a ``RunStats`` dataclass or a dict containing harvest summary keys.
+        """
         # Prefer the embedded RunStats object when available in a dict
         if isinstance(stats, dict) and hasattr(stats.get("run_stats"), 'processed_unique'):
             stats = stats["run_stats"]
@@ -935,7 +997,14 @@ class DashboardTabV2(QWidget):
         self._render_session_stats()
 
     def update_live_stats(self, stats):
-        """Live update session_stats from a RunStats object emitted by HarvestWorkerV2."""
+        """Live update session stats from a RunStats object emitted by the worker.
+
+        Connected to ``HarvestWorker.stats_update`` via ``live_stats_ready``.  Called every
+        5 ISBNs so the KPI cards stay current without a per-ISBN DB round-trip.
+
+        Args:
+            stats: A ``RunStats`` dataclass.  Non-dataclass values are silently ignored.
+        """
         if not hasattr(stats, 'processed_unique'):
             return  # Only handle RunStats dataclass
             
@@ -953,6 +1022,10 @@ class DashboardTabV2(QWidget):
         self._render_session_stats()
 
     def reset_dashboard_stats(self):
+        """Clear all in-memory session counters and the recent-results list.
+
+        Does not touch the SQLite database; only the displayed dashboard state is reset.
+        """
         self._baseline_stats = {
             "processed": 0,
             "found": 0,
@@ -972,6 +1045,17 @@ class DashboardTabV2(QWidget):
         self._render_session_stats()
 
     def _append_recent_result(self, isbn: str, status: str, detail: str):
+        """Prepend a single result row to the session recent-results list and refresh the panel.
+
+        The list is capped at 10 entries (most recent first).  Status strings are
+        normalised to one of three display labels: ``"Successful"``, ``"Linked ISBN"``,
+        or ``"Failed"``.
+
+        Args:
+            isbn: The processed ISBN string.
+            status: Raw outcome string from the worker.
+            detail: Additional context for the detail column.
+        """
         normalized = status.strip().lower() if status else ""
         if normalized in ("found", "cached", "successful"):
             status_label = "Successful"
@@ -988,20 +1072,32 @@ class DashboardTabV2(QWidget):
                 "time": datetime.now().isoformat(),
             },
         )
+        # Cap at 10 entries (most recent first) to avoid unbounded memory growth.
         self.session_recent = self.session_recent[:10]
         self.recent_panel.update_data(self.session_recent)
 
     def _render_session_stats(self):
+        """Push the current ``session_stats`` values to the four KPI cards."""
         self.card_proc.set_data(self.session_stats["processed"], "Processed in this dashboard view")
         self.card_found.set_data(self.session_stats["successful"], "Successfully harvested")
         self.card_failed.set_data(self.session_stats["failed"], "Failed or skipped in this dashboard view")
         self.card_invalid.set_data(self.session_stats["invalid"], "Invalid ISBNs in this run")
 
     def set_profile_options(self, profiles, current_profile):
+        """Update the active profile and clear stale session state when the profile changes.
+
+        Called by ``ModernMainWindow`` whenever the profile list or active profile changes.
+
+        Args:
+            profiles: Full list of available profile names (currently unused but kept for
+                      forward compatibility with a profile combo in the dashboard).
+            current_profile: The newly active profile name.
+        """
         incoming = current_profile or "default"
         profile_changed = incoming != self.current_profile
         self.current_profile = incoming
         if profile_changed:
+            # A different profile has its own DB and result files — discard the old state.
             self.reset_dashboard_stats()
             self.result_files = {
                 "successful": None,
@@ -1015,15 +1111,25 @@ class DashboardTabV2(QWidget):
         self._refresh_result_file_buttons()
 
     def _on_profile_combo_changed(self, name):
+        """Relay profile-combo selection to the main window via the ``profile_selected`` signal."""
         if name:
             self.profile_selected.emit(name)
         
 
     def set_advanced_mode(self, enabled):
-        pass
+        """Called by the main window when the advanced-mode toggle changes.
+
+        No UI changes are required for the Dashboard tab; this method exists so
+        ``ModernMainWindow`` can iterate over all tabs uniformly.
+        """
 
     def set_running(self):
-        self._is_running = True
+        """Switch the dashboard status pill to RUNNING and reset in-session counters.
+
+        Called by ``ModernMainWindow._on_harvest_started`` at the start of each run so
+        the dashboard shows a clean slate for the new harvest.
+        """
+        self._is_running = True  # Prevents the 2-s timer from overwriting live KPI counts.
         self.session_stats = {
             "processed": 0,
             "successful": 0,
@@ -1038,6 +1144,11 @@ class DashboardTabV2(QWidget):
         self._refresh_status_style()
 
     def set_paused(self, is_paused: bool):
+        """Update the dashboard status pill to reflect a pause or resume.
+
+        Args:
+            is_paused: ``True`` to show PAUSED, ``False`` to show RUNNING.
+        """
         if is_paused:
             self.lbl_run_status.setText("● PAUSED")
             self.lbl_run_status.setProperty("state", "paused")
@@ -1047,6 +1158,11 @@ class DashboardTabV2(QWidget):
         self._refresh_status_style()
 
     def set_idle(self, success: bool | None = None):
+        """Transition the dashboard status pill to a terminal state after a harvest ends.
+
+        Args:
+            success: ``True`` → COMPLETED, ``False`` → Cancelled/Error, ``None`` → IDLE.
+        """
         self._is_running = False
         self._refresh_result_file_buttons()
         if success is True:
@@ -1061,6 +1177,14 @@ class DashboardTabV2(QWidget):
         self._refresh_status_style()
         
     def _refresh_status_style(self):
+        """Force Qt to re-evaluate the ``state`` property selector on the status pill.
+
+        Qt caches dynamic property lookups; calling ``unpolish`` followed by ``polish``
+        invalidates that cache so the correct QSS color rule (idle/running/paused/success/error)
+        is applied immediately after a ``setProperty("state", ...)`` call.
+        """
+        # unpolish removes the cached style; polish re-applies rules using the new property value.
         self.lbl_run_status.style().unpolish(self.lbl_run_status)
         self.lbl_run_status.style().polish(self.lbl_run_status)
-    
+
+

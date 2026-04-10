@@ -102,6 +102,15 @@ def _seed_link(db: DatabaseManager, lowest: str, other: str) -> None:
         db._upsert_linked_isbn_conn(conn, lowest_isbn=lowest, other_isbn=other)
 
 
+def _linked_rows(db: DatabaseManager):
+    """Return linked ISBN pairs in table order for structural assertions."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT lowest_isbn, other_isbn FROM linked_isbns ORDER BY lowest_isbn, other_isbn"
+        ).fetchall()
+    return [(str(row["lowest_isbn"]), str(row["other_isbn"])) for row in rows]
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 1. Canonical selection
 # ═══════════════════════════════════════════════════════════════════════
@@ -216,6 +225,69 @@ def test_no_regression_single_isbn(tmp_path):
     assert db.get_main(ISBN13) is not None
 
     assert _query_canonical(db, ISBN13) is None
+
+
+def test_process_isbn_group_emits_one_terminal_event(tmp_path):
+    """Grouped lookups should emit one final outcome for the group, not per candidate."""
+    db = _make_db(tmp_path / "test.sqlite3")
+
+    target = PerISBNTarget("T", {ISBN10: TargetResult(success=True, lccn="PZ7.R65")})
+    terminal_events = []
+
+    def _progress_cb(event_name, _payload):
+        if event_name in {
+            "success",
+            "linked_success",
+            "failed",
+            "cached",
+            "linked_cached",
+            "skip_retry",
+            "not_in_local_catalog",
+        }:
+            terminal_events.append(event_name)
+
+    orch = HarvestOrchestrator(
+        db,
+        targets=[target],
+        call_number_mode="lccn",
+        stop_rule="stop_either",
+        progress_cb=_progress_cb,
+    )
+
+    pending_main, pending_attempted, pending_linked = [], [], []
+    status = orch.process_isbn_group(
+        ISBN13, [ISBN10],
+        dry_run=False,
+        pending_main=pending_main,
+        pending_attempted=pending_attempted,
+        pending_linked=pending_linked,
+    )
+
+    assert status == "success"
+    assert terminal_events == ["success"], f"unexpected terminal events: {terminal_events}"
+
+
+def test_shared_call_number_does_not_create_implicit_links(tmp_path):
+    """Matching call numbers alone must not auto-link unrelated ISBNs."""
+    db = _make_db(tmp_path / "test.sqlite3")
+
+    isbn_a = "1111111111"
+    isbn_b = "2222222222"
+    target = PerISBNTarget(
+        "T",
+        {
+            isbn_a: TargetResult(success=True, lccn="QA76"),
+            isbn_b: TargetResult(success=True, lccn="QA76"),
+        },
+    )
+    orch = HarvestOrchestrator(db, targets=[target], call_number_mode="lccn", stop_rule="stop_either")
+
+    summary = orch.run([isbn_a, isbn_b], dry_run=False)
+
+    assert summary.successes == 2
+    assert db.get_main(isbn_a) is not None
+    assert db.get_main(isbn_b) is not None
+    assert _linked_rows(db) == [], "shared call numbers alone must not populate linked_isbns"
 
 
 # ═══════════════════════════════════════════════════════════════════════

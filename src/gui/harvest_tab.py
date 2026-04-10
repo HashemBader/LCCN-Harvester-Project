@@ -49,8 +49,8 @@ from PyQt6.QtWidgets import (
     QCheckBox,
 )
 from datetime import datetime, timezone
-from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize
-from PyQt6.QtGui import QShortcut, QKeySequence, QColor, QBrush
+from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QUrl
+from PyQt6.QtGui import QShortcut, QKeySequence, QColor, QBrush, QDesktopServices
 from pathlib import Path
 from enum import Enum, auto
 from itertools import islice
@@ -71,6 +71,7 @@ from .harvest_support import (
 )
 
 from src.harvester.marc_import import MarcImportService
+from src.harvester.run_harvest import parse_isbn_file
 from src.database import now_datetime_str
 from src.config.profile_manager import ProfileManager
 from src.utils.isbn_validator import normalize_isbn
@@ -263,17 +264,21 @@ class HarvestTab(QWidget):
         layout.addWidget(self.banner_frame)
 
         # ── 3. 2×2 grid: [Run Setup | File Statistics] / [MARC Import | File Preview]
-        middle_row = QGridLayout()
-        middle_row.setSpacing(12)
-        middle_row.setColumnStretch(0, 1)
-        middle_row.setColumnStretch(1, 1)
-        middle_row.setRowStretch(0, 1)
-        middle_row.setRowStretch(1, 1)
+        # Keep the top row pinned neatly under the status banner. The upper
+        # cards should use their natural height, while the lower row absorbs
+        # the remaining vertical space when the action/completion area is shown.
+        self.content_grid = QGridLayout()
+        self.content_grid.setContentsMargins(0, 6, 0, 0)
+        self.content_grid.setSpacing(12)
+        self.content_grid.setColumnStretch(0, 1)
+        self.content_grid.setColumnStretch(1, 1)
+        self.content_grid.setRowStretch(0, 0)
+        self.content_grid.setRowStretch(1, 1)
 
         # ── LEFT: Run Setup card ───────────────────────────────────────────────
         self.input_card = DroppableGroupBox("Run Setup")
         self.input_card.file_dropped.connect(self.set_input_file)
-        self.input_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.input_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         input_layout = QVBoxLayout(self.input_card)
         input_layout.setContentsMargins(16, 10, 16, 10)
         input_layout.setSpacing(6)
@@ -445,9 +450,9 @@ class HarvestTab(QWidget):
         marc_file_row.addWidget(self._btn_import_marc)
         marc_vbox.addLayout(marc_file_row)
 
-        stats_card = QGroupBox("File Statistics")
-        stats_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        stats_card_layout = QVBoxLayout(stats_card)
+        self.stats_card = QGroupBox("File Statistics")
+        self.stats_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        stats_card_layout = QVBoxLayout(self.stats_card)
         stats_card_layout.setContentsMargins(14, 14, 14, 14)
         stats_card_layout.setSpacing(10)
 
@@ -525,12 +530,12 @@ class HarvestTab(QWidget):
         self.preview_text = QTextEdit()
         self.preview_text.setVisible(False)
 
-        middle_row.addWidget(self.input_card,  0, 0)
-        middle_row.addWidget(stats_card,       0, 1)
-        middle_row.addWidget(marc_card,        1, 0)
-        middle_row.addWidget(preview_frame,    1, 1)
-        
-        layout.addLayout(middle_row, stretch=1)
+        self.content_grid.addWidget(self.input_card, 0, 0)
+        self.content_grid.addWidget(self.stats_card, 0, 1)
+        self.content_grid.addWidget(marc_card, 1, 0)
+        self.content_grid.addWidget(preview_frame, 1, 1)
+
+        layout.addLayout(self.content_grid, stretch=1)
 
         # ── 4. Status pill + elapsed timer ────────────────────────────────────
         self.lbl_run_status = QLabel("Idle")
@@ -1171,6 +1176,11 @@ class HarvestTab(QWidget):
         self.lbl_val_invalid.setText("-")
         self.lbl_val_duplicates.setText("-")
         self.preview_text.clear()
+        # Restore the preview table to the same empty baseline shown on first load.
+        self.preview_table.clearContents()
+        self.preview_table.setColumnCount(2)
+        self.preview_table.setRowCount(0)
+        self.preview_table.setHorizontalHeaderLabels(["ISBN", "Status"])
         self.lbl_preview_filename.setText("No file selected")
 
         # Reset clear button
@@ -1808,62 +1818,48 @@ class HarvestTab(QWidget):
     def _open_output_folder_path(self, folder: Path):
         """Open *folder* in the platform's native file manager.
 
-        Uses ``os.startfile`` on Windows, ``open`` on macOS, and ``xdg-open``
-        on Linux.  Creates the folder first if it does not exist.
+        Uses Qt's cross-platform ``QDesktopServices`` helper so the same code
+        path works across macOS, Windows, and Linux desktop environments.
+        Creates the folder first if it does not exist.
 
         Args:
             folder: ``Path`` object for the directory to open.
         """
-        import os
         folder = folder.resolve()
         folder.mkdir(parents=True, exist_ok=True)
-        if os.name == "nt":
-            os.startfile(str(folder))
-        elif sys.platform == "darwin":
-            import subprocess
-            subprocess.Popen(["open", str(folder)])
-        else:
-            import subprocess
-            subprocess.Popen(["xdg-open", str(folder)])
+        self._open_local_path(folder, missing_title="Folder Not Found", open_title="Open Failed")
 
     def _open_output_folder(self):
         """Open the top-level ``data/`` folder in the platform's native file manager."""
         out_path = Path("data").resolve()
         out_path.mkdir(parents=True, exist_ok=True)
-        import os
-
-        if os.name == "nt":
-            os.startfile(str(out_path))
-        elif sys.platform == "darwin":
-            import subprocess
-
-            subprocess.Popen(["open", str(out_path)])
-        else:
-            import subprocess
-
-            subprocess.Popen(["xdg-open", str(out_path)])
+        self._open_local_path(out_path, missing_title="Folder Not Found", open_title="Open Failed")
 
     def _open_file_in_explorer(self, relative_path: str):
         """Open a specific file in the default associated application."""
         file_path = Path(relative_path).resolve()
-        if not file_path.exists():
-            QMessageBox.warning(
-                self, "Not Found", f"File does not exist:\n{file_path.name}"
-            )
-            return
+        self._open_local_path(file_path, missing_title="Not Found", open_title="Open Failed")
 
-        import os
+    def _open_local_path(self, path: Path, *, missing_title: str, open_title: str) -> bool:
+        """Open a local file or folder using Qt's platform-native shell integration.
 
-        if os.name == "nt":
-            os.startfile(str(file_path))
-        elif sys.platform == "darwin":
-            import subprocess
+        Args:
+            path: Path to the file or directory to open.
+            missing_title: Dialog title used if the path does not exist.
+            open_title: Dialog title used if the OS declines to open the path.
 
-            subprocess.Popen(["open", str(file_path)])
-        else:
-            import subprocess
-
-            subprocess.Popen(["xdg-open", str(file_path)])
+        Returns:
+            ``True`` when the path was handed off to the OS successfully,
+            ``False`` otherwise.
+        """
+        path = path.resolve()
+        if not path.exists():
+            QMessageBox.warning(self, missing_title, f"Path does not exist:\n{path.name}")
+            return False
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, open_title, f"Could not open:\n{path}")
+            return False
+        return True
 
     def set_advanced_mode(self, val):
         """Called by the main window when the advanced-mode toggle changes.
@@ -2155,5 +2151,3 @@ class HarvestTab(QWidget):
                         results.append(_extract(rec))
 
         return results
-
-

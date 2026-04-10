@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 from src.harvester.orchestrator import HarvestTarget, TargetResult
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,13 @@ class Z3950Target(HarvestTarget):
             records, no 050/060 field is present, or the connection fails.
         """
         syntax = self.record_syntax or "USMARC"
+        ok, reason = ensure_pyz3950_importable()
+        if not ok:
+            return TargetResult(
+                success=False,
+                source=self.name,
+                error=f"Z39.50 support not available: {reason}",
+            )
 
         try:
             from src.z3950.client import Z3950Client

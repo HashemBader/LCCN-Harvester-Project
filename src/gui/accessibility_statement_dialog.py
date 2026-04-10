@@ -1,12 +1,9 @@
-"""Read-only dialog that displays the application's WCAG accessibility statement.
+"""Accessibility statement helpers and legacy dialog view.
 
-``AccessibilityStatementDialog`` loads a Markdown file from the project's
-``docs/`` directory (``wcag.md`` or ``WCAG_ACCESSIBILITY.md``) and renders it
-inside a ``QTextBrowser``.  If neither file can be found or read, a brief
-fallback message is shown instead so the dialog always opens successfully.
-
-The dialog is opened from ``HelpTab`` via a signal so the help page does not
-hold a direct reference to it.
+The shared ``load_accessibility_statement`` helper resolves the markdown file
+used by both the Help page's embedded statement view and the legacy dialog
+class in this module. If the statement file cannot be loaded, a short fallback
+message is returned so the UI always has something meaningful to display.
 """
 from pathlib import Path
 
@@ -15,6 +12,32 @@ from PyQt6.QtCore import Qt
 
 from .theme_manager import ThemeManager
 from .styles import generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
+
+
+def load_accessibility_statement() -> str:
+    """Read and return the accessibility statement Markdown text.
+
+    The preferred source is ``docs/wcag.md``. The legacy packaged path
+    ``docs/WCAG_ACCESSIBILITY.md`` is still supported so existing builds and
+    packaging rules continue to work without changes.
+    """
+    root = Path(__file__).resolve().parent.parent.parent
+    statement_paths = [
+        root / "docs" / "wcag.md",
+        root / "docs" / "WCAG_ACCESSIBILITY.md",
+    ]
+    for statement_path in statement_paths:
+        if not statement_path.exists():
+            continue
+        try:
+            return statement_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+    return (
+        "# Accessibility Statement\n\n"
+        "The accessibility statement file could not be loaded.\n\n"
+        "Expected file: `docs/wcag.md` or `docs/WCAG_ACCESSIBILITY.md`.\n"
+    )
 
 
 class AccessibilityStatementDialog(QDialog):
@@ -70,7 +93,7 @@ class AccessibilityStatementDialog(QDialog):
         viewer.setOpenExternalLinks(True)   # allow links in the statement to open a browser
         # "TerminalViewport" class applies the monospace terminal-style QSS rule.
         viewer.setProperty("class", "TerminalViewport")
-        viewer.setMarkdown(self._load_statement())
+        viewer.setMarkdown(load_accessibility_statement())
         layout.addWidget(viewer, stretch=1)
 
         btn_row = QHBoxLayout()
@@ -81,33 +104,3 @@ class AccessibilityStatementDialog(QDialog):
         btn_row.addWidget(close_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
-
-    def _load_statement(self) -> str:
-        """Read and return the accessibility statement Markdown text.
-
-        Tries two candidate file paths in priority order.  If both fail (file
-        missing or unreadable), returns a short fallback string so the dialog
-        always has content to display.
-
-        Returns:
-            Markdown text of the accessibility statement, or a fallback message.
-        """
-        # Resolve the project root by walking three levels up from this source file.
-        root = Path(__file__).resolve().parent.parent.parent
-        statement_paths = [
-            root / "docs" / "wcag.md",              # preferred path
-            root / "docs" / "WCAG_ACCESSIBILITY.md", # legacy path
-        ]
-        for statement_path in statement_paths:
-            if not statement_path.exists():
-                continue
-            try:
-                return statement_path.read_text(encoding="utf-8")
-            except Exception:
-                continue
-        # Neither file could be read — return a brief inline fallback.
-        return (
-            "# Accessibility Statement\n\n"
-            "The accessibility statement file could not be loaded.\n\n"
-            "Expected file: `docs/wcag.md` or `docs/WCAG_ACCESSIBILITY.md`.\n"
-        )

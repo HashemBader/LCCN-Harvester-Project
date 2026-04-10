@@ -32,7 +32,6 @@ from .help_tab import HelpTab
 
 # Dialogs & Utils
 from .notifications import NotificationManager
-from .accessibility_statement_dialog import AccessibilityStatementDialog
 from .styles import DEFAULT_STYLESHEET, generate_stylesheet, CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .icons import (
     get_icon, get_pixmap, 
@@ -56,7 +55,7 @@ class ModernMainWindow(QMainWindow):
     - Page 1: Configure  – Profile settings (ConfigTab) + target list (TargetsTab)
                            stacked vertically in a splitter.
     - Page 2: Harvest    – Input file selector, run controls, progress display.
-    - Page 3: Help       – Keyboard shortcuts reference and accessibility link.
+    - Page 3: Help       – Keyboard shortcuts reference and embedded accessibility page.
 
     Cross-tab communication is handled entirely through PyQt signals so no page
     holds a direct reference to another.
@@ -347,11 +346,6 @@ class ModernMainWindow(QMainWindow):
         """Navigate to the Help page via the sidebar nav button."""
         self.btn_help.click()
 
-    def _show_accessibility_statement(self):
-        """Open the accessibility statement modal dialog."""
-        dialog = AccessibilityStatementDialog(self)
-        dialog.exec()
-
     def _toggle_sidebar(self):
         """Manually toggle sidebar between expanded (240 px) and collapsed (72 px) states."""
         # Clear the auto-collapse flag so the window-resize logic doesn't fight the user.
@@ -478,7 +472,11 @@ class ModernMainWindow(QMainWindow):
                 btn.blockSignals(False)
                 return
         self.stack.setCurrentIndex(index)
-        self.page_title.setText(btn.property("full_text"))
+        current_page = self.stack.widget(index)
+        if hasattr(current_page, "current_page_title"):
+            self.page_title.setText(current_page.current_page_title())
+        else:
+            self.page_title.setText(btn.property("full_text"))
 
     def _connect_signals(self):
         """Wire all inter-tab signals after every widget has been constructed."""
@@ -512,10 +510,10 @@ class ModernMainWindow(QMainWindow):
         self.dashboard_tab.profile_selected.connect(self._on_dashboard_profile_selected)
         self.dashboard_tab.create_profile_requested.connect(self._open_profile_settings)
         self.dashboard_tab.page_title_changed.connect(self.page_title.setText)
+        self.help_tab.page_title_changed.connect(self.page_title.setText)
 
         # Keep tab state fresh when navigating
         self.stack.currentChanged.connect(self._on_page_changed)
-        self.help_tab.open_accessibility_requested.connect(self._show_accessibility_statement)
 
     def _on_live_result(self, payload: dict):
         """Forward a per-ISBN harvest result to the dashboard's recent-results table.

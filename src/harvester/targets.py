@@ -25,6 +25,7 @@ from typing import Optional
 from src.harvester.orchestrator import TargetResult
 from src.utils import messages
 from src.utils.call_number_validators import validate_lccn, validate_nlmcn
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,14 @@ class Z3950Target:
             fields populated if MARC 050/060 fields were found; otherwise
             ``success=False`` with an error message.
         """
+        ok, reason = ensure_pyz3950_importable()
+        if not ok:
+            return TargetResult(
+                success=False,
+                source=self.name,
+                error=f"Z39.50 support not available: {reason}",
+            )
+
         # Lazy import Z3950Client to avoid crash if PyZ3950 has issues
         global Z3950_AVAILABLE, Z3950Client
         if Z3950_AVAILABLE is None:

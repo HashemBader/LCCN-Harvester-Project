@@ -36,9 +36,7 @@ Batched writes
 
 Linked ISBNs
     Different ISBNs for the same edition (e.g. 10-digit vs 13-digit) can be
-    grouped before the run via the ``linked`` argument to ``run()``.  The
-    orchestrator also *detects* implicit groups at flush time when distinct
-    ISBNs share the same call number (``_detect_implicit_linked_isbns``).
+    grouped before the run via the ``linked`` argument to ``run()``.
 """
 
 from __future__ import annotations
@@ -509,6 +507,7 @@ class HarvestOrchestrator:
         dry_run: bool,
         pending_main: list[MainRecord],
         pending_attempted: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]],
+        emit_terminal: bool = True,
     ) -> ProcessOutcome:
         """Core single-ISBN processing logic shared by sequential and parallel paths.
 
@@ -532,6 +531,9 @@ class HarvestOrchestrator:
             dry_run:          When ``True``, results are computed but not written.
             pending_main:     Mutable list; successful ``MainRecord``s are appended here.
             pending_attempted: Mutable list; failed-attempt tuples are appended here.
+            emit_terminal:    When ``False``, suppress final cache/success/failure
+                events so a linked-ISBN group can probe candidates quietly and
+                emit one terminal outcome for the group as a whole.
 
         Returns:
             A ``ProcessOutcome`` with status, optional record, and attempt rows.
@@ -567,13 +569,15 @@ class HarvestOrchestrator:
                     nlmcn_source=found_nlmcn_source,
                 )
                 event_name = "linked_cached" if is_linked_input else "cached"
-                self._emit_result(event_name, isbn=isbn, target=record.source or "Cache", record=record)
+                if emit_terminal:
+                    self._emit_result(event_name, isbn=isbn, target=record.source or "Cache", record=record)
                 return ProcessOutcome("cached", record, tuple())
 
         # db_only mode: never hit any API target. If we reach here the ISBN was
         # not in the local DB (or had insufficient data). Report and stop.
         if self.db_only:
-            self._emit("not_in_local_catalog", {"isbn": isbn})
+            if emit_terminal:
+                self._emit("not_in_local_catalog", {"isbn": isbn})
             return ProcessOutcome("not_in_local_catalog", None, tuple())
 
         # No cache hit: walk the selected targets and remember the best data we
@@ -678,7 +682,8 @@ class HarvestOrchestrator:
                 nlmcn_source=best_nlmcn_source,
             )
             event_name = "linked_success" if is_linked_input else "success"
-            self._emit_result(event_name, isbn=isbn, target=rec.source or "Unknown", record=rec)
+            if emit_terminal:
+                self._emit_result(event_name, isbn=isbn, target=rec.source or "Unknown", record=rec)
 
             if dry_run:
                 rec = None
@@ -716,28 +721,30 @@ class HarvestOrchestrator:
                 if attempted_rows:
                     pending_attempted.extend(attempted_rows)
 
-            self._emit(
-                "failed",
-                self._build_failed_payload(
-                    isbn=isbn,
-                    last_target=last_target,
-                    last_error=last_error,
-                    not_found_targets=not_found_targets,
-                    other_errors=other_errors,
-                ),
-            )
+            if emit_terminal:
+                self._emit(
+                    "failed",
+                    self._build_failed_payload(
+                        isbn=isbn,
+                        last_target=last_target,
+                        last_error=last_error,
+                        not_found_targets=not_found_targets,
+                        other_errors=other_errors,
+                    ),
+                )
             return ProcessOutcome("failed", rec if dry_run else None, tuple(attempted_rows))
 
         if skipped_retry_targets and not not_found_targets and not other_errors:
-            self._emit(
-                "skip_retry",
-                {
-                    "isbn": isbn,
-                    "retry_days": self.retry_days,
-                    "targets": skipped_retry_targets,
-                    "attempt_type": self.call_number_mode,
-                },
-            )
+            if emit_terminal:
+                self._emit(
+                    "skip_retry",
+                    {
+                        "isbn": isbn,
+                        "retry_days": self.retry_days,
+                        "targets": skipped_retry_targets,
+                        "attempt_type": self.call_number_mode,
+                    },
+                )
             return ProcessOutcome("skip_retry", None, tuple())
 
         if not_found_targets and not other_errors:
@@ -752,16 +759,17 @@ class HarvestOrchestrator:
         elif other_errors:
             last_error = " ; ".join(f"{t}: {e}" for t, e in other_errors)
 
-        self._emit(
-            "failed",
-            self._build_failed_payload(
-                isbn=isbn,
-                last_target=last_target,
-                last_error=last_error,
-                not_found_targets=not_found_targets,
-                other_errors=other_errors,
-            ),
-        )
+        if emit_terminal:
+            self._emit(
+                "failed",
+                self._build_failed_payload(
+                    isbn=isbn,
+                    last_target=last_target,
+                    last_error=last_error,
+                    not_found_targets=not_found_targets,
+                    other_errors=other_errors,
+                ),
+            )
         if not dry_run and attempted_rows:
             pending_attempted.extend(attempted_rows)
         return ProcessOutcome("failed", None, tuple(attempted_rows))
@@ -820,12 +828,13 @@ class HarvestOrchestrator:
         """Try primary_isbn then each linked variant in order until a call number is found.
 
         On the first success:
-          - The result is stored under ``primary_isbn`` (same as a normal harvest).
-          - Cross-reference records are queued for every OTHER isbn in the group
-            (source tagged as ``"Linked from <primary_isbn>"``).
+          - The result is stored under the numerically lowest ISBN across the
+            whole group, regardless of which variant produced the hit.
+          - All non-canonical ISBNs are recorded in ``linked_isbns`` as
+            ``(canonical_isbn, other_isbn)`` pairs.
 
         On total failure across the whole group:
-          - The attempted table entry is written for ``primary_isbn`` only.
+          - The attempted table entry is written for the canonical ISBN only.
           - Linked variants are NOT added to attempted (they may succeed in a
             future run when paired with a different primary).
         """
@@ -845,6 +854,7 @@ class HarvestOrchestrator:
                 dry_run=dry_run,
                 pending_main=[],          # we collect the result ourselves below
                 pending_attempted=[],     # ditto
+                emit_terminal=False,      # emit one final outcome for the whole group
             )
             if outcome.status in ("success", "cached"):
                 winning_record = outcome.record
@@ -894,156 +904,6 @@ class HarvestOrchestrator:
             pending_linked.extend(linked_pairs)
 
         return "success"
-
-    def _detect_implicit_linked_isbns(
-        self,
-        pending_main: list[MainRecord],
-        pending_linked: list[tuple[str, str]],
-    ) -> None:
-        """Infer implicit linked-ISBN groups from shared call numbers in the current batch.
-
-        When two or more ISBNs in ``pending_main`` (or already in the DB)
-        resolve to the same LCCN or NLMCN they are almost certainly different
-        editions of the same work.  This method clusters such ISBNs, picks the
-        numerically lowest one as the canonical key, rewrites ``pending_main``
-        in-place so all records use the canonical ISBN, and appends
-        ``(canonical, other)`` pairs to ``pending_linked`` for the DB flush.
-
-        Uses a union-find algorithm to cluster ISBNs that share the same LC or
-        NLM call number (either within the current batch or already present in
-        the DB).  The lowest ISBN in each cluster becomes the canonical key and
-        all others are added to ``pending_linked`` as ``(canonical, other)``
-        pairs.  The ``pending_main`` list is rewritten in-place so every
-        record is stored under its canonical ISBN.
-
-        Args:
-            pending_main:   In-flight main records (mutated in place).
-            pending_linked: In-flight linked-ISBN pairs (extended in place).
-        """
-        if not pending_main:
-            return
-
-        # Group ISBNs by shared call number signatures.
-        record_by_isbn = {record.isbn: record for record in pending_main}
-        signatures: dict[tuple[str, str], set[str]] = {}
-        for record in pending_main:
-            if record.lccn:
-                signatures.setdefault(("lccn", record.lccn), set()).add(record.isbn)
-            if record.nlmcn:
-                signatures.setdefault(("nlmcn", record.nlmcn), set()).add(record.isbn)
-
-        # Find any existing ISBNs in the DB that share the same call numbers.
-        existing_records: dict[str, MainRecord] = {}
-        for call_type, call_number in list(signatures.keys()):
-            db_isbns = self.db.find_isbns_by_call_number(call_type, call_number)
-            for isbn in db_isbns:
-                signatures[(call_type, call_number)].add(isbn)
-                if isbn not in existing_records and isbn not in record_by_isbn:
-                    existing = self.db.get_main(isbn)
-                    if existing is not None:
-                        existing_records[isbn] = existing
-
-        # Union-find (disjoint-set) data structure for grouping ISBNs that
-        # share a call number.  Path compression is applied in find() so
-        # repeated queries stay O(α(n)) amortised.
-        parent: dict[str, str] = {}
-
-        def find(isbn: str) -> str:
-            """Return the root representative of *isbn*'s connected component."""
-            parent.setdefault(isbn, isbn)
-            while parent[isbn] != isbn:
-                parent[isbn] = parent[parent[isbn]]  # path compression (halving)
-                isbn = parent[isbn]
-            return isbn
-
-        def union(a: str, b: str) -> None:
-            """Merge the components containing *a* and *b*."""
-            root_a = find(a)
-            root_b = find(b)
-            if root_a != root_b:
-                parent[root_b] = root_a
-
-        for isbns in signatures.values():
-            isbns = list(isbns)
-            for i in range(1, len(isbns)):
-                union(isbns[0], isbns[i])
-
-        components: dict[str, set[str]] = {}
-        for isbn in parent:
-            root = find(isbn)
-            components.setdefault(root, set()).add(isbn)
-
-        # Only keep groups where more than one ISBN share a call number.
-        isbn_to_canonical: dict[str, str] = {}
-        for group in components.values():
-            if len(group) < 2:
-                continue
-            canonical_isbn = pick_lowest_isbn(group)
-            for other_isbn in group:
-                if other_isbn != canonical_isbn:
-                    isbn_to_canonical[other_isbn] = canonical_isbn
-                    pending_linked.append((canonical_isbn, other_isbn))
-
-        if not isbn_to_canonical:
-            return
-
-        # Deduplicate pairs while preserving insertion order (Python 3.7+ dict guarantee)
-        pending_linked[:] = list(dict.fromkeys(pending_linked))
-
-        def _merge_records(primary: MainRecord, secondary: MainRecord) -> MainRecord:
-            return self._build_record(
-                isbn=primary.isbn,
-                lccn=primary.lccn or secondary.lccn,
-                lccn_source=primary.lccn_source or secondary.lccn_source,
-                nlmcn=primary.nlmcn or secondary.nlmcn,
-                nlmcn_source=primary.nlmcn_source or secondary.nlmcn_source,
-            )
-
-        canonical_records: dict[str, MainRecord] = {}
-        for record in pending_main:
-            canonical = isbn_to_canonical.get(record.isbn)
-            if not canonical:
-                canonical_records[record.isbn] = record
-                continue
-
-            if canonical in canonical_records:
-                canonical_records[canonical] = _merge_records(canonical_records[canonical],
-                                                             self._build_record(
-                                                                 isbn=canonical,
-                                                                 lccn=record.lccn,
-                                                                 lccn_source=record.lccn_source,
-                                                                 nlmcn=record.nlmcn,
-                                                                 nlmcn_source=record.nlmcn_source,
-                                                             ))
-            else:
-                canonical_records[canonical] = self._build_record(
-                    isbn=canonical,
-                    lccn=record.lccn,
-                    lccn_source=record.lccn_source,
-                    nlmcn=record.nlmcn,
-                    nlmcn_source=record.nlmcn_source,
-                )
-
-        for isbn, canonical in isbn_to_canonical.items():
-            if canonical not in canonical_records and isbn in existing_records:
-                canonical_records[canonical] = self._build_record(
-                    isbn=canonical,
-                    lccn=existing_records[isbn].lccn,
-                    lccn_source=existing_records[isbn].lccn_source,
-                    nlmcn=existing_records[isbn].nlmcn,
-                    nlmcn_source=existing_records[isbn].nlmcn_source,
-                )
-            elif canonical in canonical_records and isbn in existing_records:
-                canonical_records[canonical] = _merge_records(canonical_records[canonical],
-                                                             self._build_record(
-                                                                 isbn=canonical,
-                                                                 lccn=existing_records[isbn].lccn,
-                                                                 lccn_source=existing_records[isbn].lccn_source,
-                                                                 nlmcn=existing_records[isbn].nlmcn,
-                                                                 nlmcn_source=existing_records[isbn].nlmcn_source,
-                                                             ))
-
-        pending_main[:] = list(canonical_records.values())
 
     def run(self, isbns: list[str], *, dry_run: bool,
             linked: Optional[dict[str, list[str]]] = None) -> HarvestSummary:
@@ -1122,10 +982,6 @@ class HarvestOrchestrator:
                 filtered_attempted = [
                     row for row in pending_attempted if (row[0], row[2]) not in successful_pairs
                 ]
-
-            # Detect implicit linked ISBNs when the same call number appears across
-            # different ISBNs in the current batch or already in the DB.
-            self._detect_implicit_linked_isbns(pending_main, pending_linked)
 
             wrote_attempted = len(filtered_attempted)
 

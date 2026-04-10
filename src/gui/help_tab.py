@@ -1,26 +1,23 @@
-"""Help page — keyboard shortcuts reference and accessibility information.
+"""Help page — keyboard shortcuts, accessibility overview, and statement page.
 
-``HelpTab`` renders a full-screen (no scroll) help page with:
-- A keyboard shortcuts quick-reference section using styled ``<kbd>``-style badge
-  labels.
-- An accessibility section with a link to the full accessibility statement dialog.
+``HelpTab`` uses a small internal ``QStackedWidget``:
+- Page 0: the main Help Center overview.
+- Page 1: a full accessibility statement page embedded in the tab itself.
 
-The page is theme-aware: on a theme toggle, ``ModernMainWindow`` calls
-``refresh_theme(colors)`` to update the inline styles of every badge, divider,
-and panel without rebuilding the widget tree.
-
-Widget registries (``_kbd_labels``, ``_dividers``, etc.) are populated during
-``_setup_ui`` so ``refresh_theme`` can iterate them in O(n) without querying the
-widget tree.
+This mirrors the in-tab navigation pattern used elsewhere in the app, so the
+accessibility statement behaves like a real page instead of a popup dialog.
+The tab remains theme-aware: ``ModernMainWindow`` calls ``refresh_theme`` to
+update inline-styled labels and panels without rebuilding the widget tree.
 """
 import sys
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFrame, QPushButton, QSizePolicy, QScrollArea,
+    QFrame, QPushButton, QSizePolicy, QScrollArea, QStackedWidget, QTextBrowser,
 )
 
+from .accessibility_statement_dialog import load_accessibility_statement
 from .icons import get_pixmap, SVG_RESULTS, SVG_SETTINGS, SVG_CHECK_CIRCLE, SVG_ACTIVITY
 from .styles import CATPPUCCIN_DARK, CATPPUCCIN_LIGHT
 from .theme_manager import ThemeManager
@@ -30,12 +27,11 @@ class HelpTab(QWidget):
     """Redesigned Help tab — fills available space, no scroll, modern KBD key styling.
 
     Signals:
-        open_accessibility_requested(): Emitted when the user clicks the
-            "Open Accessibility Statement" button so ``ModernMainWindow`` can
-            open the dialog without the help tab holding a reference to it.
+        page_title_changed(str): Emitted when the active Help sub-page changes
+            so the main window header can stay in sync.
     """
 
-    open_accessibility_requested = pyqtSignal()
+    page_title_changed = pyqtSignal(str)
 
     def __init__(self, shortcut_modifier: str = "Ctrl"):
         super().__init__()
@@ -183,21 +179,23 @@ class HelpTab(QWidget):
     # Root layout
     # ──────────────────────────────────────────────────────────────────
     def _setup_ui(self) -> None:
-        """Construct the full page layout: scroll area wrapping header + two-column body.
-
-        Layout hierarchy:
-            QVBoxLayout (_outer)
-            └── QScrollArea (_scroll)
-                └── QWidget (_scr_content)
-                    └── QVBoxLayout (root)
-                        ├── _build_header()
-                        └── QHBoxLayout (body)
-                            ├── _build_shortcuts_panel() [stretch=3]
-                            └── _build_right_panel()    [stretch=2]
-        """
+        """Construct the Help tab stack with overview and statement pages."""
         _outer = QVBoxLayout(self)
         _outer.setContentsMargins(0, 0, 0, 0)
         _outer.setSpacing(0)
+
+        self._main_stack = QStackedWidget()
+        self._main_stack.addWidget(self._build_help_center_page())
+        self._main_stack.addWidget(self._build_accessibility_page())
+        _outer.addWidget(self._main_stack)
+
+    def _build_help_center_page(self) -> QWidget:
+        """Build the main Help Center overview page."""
+        page = QWidget()
+        _outer = QVBoxLayout(page)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+
         _scroll = QScrollArea()
         _scroll.setWidgetResizable(True)
         _scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -220,6 +218,81 @@ class HelpTab(QWidget):
         body.addWidget(self._build_right_panel(), 2)
 
         root.addLayout(body, 1)
+        return page
+
+    def _build_accessibility_page(self) -> QWidget:
+        """Build the embedded accessibility statement page."""
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(16)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_accessibility_back = QPushButton("← Back to Help")
+        self.btn_accessibility_back.setProperty("class", "SecondaryButton")
+        self.btn_accessibility_back.setFixedHeight(36)
+        self.btn_accessibility_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_accessibility_back.clicked.connect(self.show_help_overview)
+        header_row.addWidget(self.btn_accessibility_back)
+        header_row.addStretch()
+        root.addLayout(header_row)
+
+        sub = QLabel(
+            "Read the full accessibility statement, including keyboard support, "
+            "current coverage, and recommended validation steps for each release."
+        )
+        sub.setProperty("class", "HelperText")
+        sub.setWordWrap(True)
+        self._desc_labels.append(sub)
+        root.addWidget(sub)
+
+        frame = QFrame()
+        frame.setObjectName("HelpPanel")
+        frame.setStyleSheet(self._panel_style())
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._panel_frames.append(frame)
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(26, 22, 26, 22)
+        frame_layout.setSpacing(12)
+
+        heading = QLabel("Accessibility Statement")
+        self._set_text_label(heading, "font-size: 18px; font-weight: 800; color: {color};")
+        frame_layout.addWidget(heading)
+
+        helper = QLabel("Links inside this statement open in your default browser.")
+        helper.setProperty("class", "HelperText")
+        helper.setWordWrap(True)
+        self._desc_labels.append(helper)
+        frame_layout.addWidget(helper)
+
+        self.accessibility_viewer = QTextBrowser()
+        self.accessibility_viewer.setReadOnly(True)
+        self.accessibility_viewer.setOpenExternalLinks(True)
+        self.accessibility_viewer.setFrameShape(QFrame.Shape.NoFrame)
+        self.accessibility_viewer.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none; padding: 4px 0; font-size: 13px; }"
+        )
+        self.accessibility_viewer.setMarkdown(load_accessibility_statement())
+        frame_layout.addWidget(self.accessibility_viewer, stretch=1)
+
+        root.addWidget(frame, stretch=1)
+        return page
+
+    def show_accessibility_page(self) -> None:
+        """Switch to the embedded accessibility statement page."""
+        self.accessibility_viewer.setMarkdown(load_accessibility_statement())
+        self._main_stack.setCurrentIndex(1)
+        self.page_title_changed.emit("Accessibility Statement")
+
+    def show_help_overview(self) -> None:
+        """Return to the main Help Center overview page."""
+        self._main_stack.setCurrentIndex(0)
+        self.page_title_changed.emit("Help")
+
+    def current_page_title(self) -> str:
+        """Return the title that matches the currently visible Help sub-page."""
+        return "Accessibility Statement" if self._main_stack.currentIndex() == 1 else "Help"
 
     # ──────────────────────────────────────────────────────────────────
     # Header
@@ -385,9 +458,8 @@ class HelpTab(QWidget):
         """Build the right panel containing the accessibility feature list and About info.
 
         The panel has two sections separated by a divider:
-        - Accessibility — a bulleted feature list and a button that emits
-          ``open_accessibility_requested`` so ``ModernMainWindow`` can open
-          the full statement dialog.
+        - Accessibility — a bulleted feature list and a button that opens the
+          embedded accessibility statement page.
         - About — version, organisation, and platform metadata rows.
 
         Returns:
@@ -446,7 +518,8 @@ class HelpTab(QWidget):
         stmt_btn = QPushButton("View Full Accessibility Statement  →")
         stmt_btn.setProperty("class", "PrimaryButton")
         stmt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        stmt_btn.clicked.connect(self.open_accessibility_requested.emit)
+        self.btn_view_accessibility_statement = stmt_btn
+        stmt_btn.clicked.connect(self.show_accessibility_page)
         stmt_btn.setFixedHeight(36)
         lay.addWidget(stmt_btn)
 

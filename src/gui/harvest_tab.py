@@ -1925,38 +1925,43 @@ class HarvestTab(QWidget):
         return digest.hexdigest()
 
     def _resolve_marc_source_conflict(self, db_path: str, source_name: str, path: str, file_hash: str) -> bool | None:
-        """Return replacement intent for a MARC source name, or ``None`` to abort."""
+        """Return replacement intent for a MARC source name, or ``None`` to abort.
+
+        The source name is a free label and is not tied to any specific file —
+        multiple MARC files may be imported under the same name.  The only prompt
+        shown is when the exact same file (matching hash) is imported again.
+        """
         db = DatabaseManager(db_path)
         existing = db.get_marc_import(source_name)
         if existing is None:
             return False
 
         existing_hash = (existing["file_hash"] or "").strip()
-        existing_name = (existing["file_name"] or "").strip()
         current_name = Path(path).name
 
+        # Different file — just insert without asking; source name is only a label.
         if existing_hash != file_hash:
-            QMessageBox.warning(
-                self,
-                "Source Already Used",
-                f"The source name '{source_name}' is already linked to a different MARC file "
-                f"({existing_name}). Please choose a different source name.",
-            )
-            return None
+            return False
 
+        # Same file imported again — ask whether to replace or insert again.
         dialog = QMessageBox(self)
-        dialog.setWindowTitle("Replace Existing Import")
+        dialog.setWindowTitle("File Already Imported")
         dialog.setIcon(QMessageBox.Icon.Question)
         dialog.setText(
-            f"The source '{source_name}' was already imported from the same MARC file "
-            f"({current_name}). Choose whether to insert again or replace the existing import "
-            f"for that source."
+            f"'{current_name}' was already imported under '{source_name}'.\n\n"
+            f"Insert to add its records again, or Replace to remove the previous import first."
         )
         replace_button = dialog.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
         insert_button = dialog.addButton("Insert", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         dialog.setDefaultButton(replace_button)
         dialog.exec()
-        return dialog.clickedButton() == replace_button
+        clicked = dialog.clickedButton()
+        if clicked == replace_button:
+            return True
+        if clicked == insert_button:
+            return False
+        return None
 
     def _import_marc_file(self):
         """Run the three-step MARC import pipeline for the currently selected file.

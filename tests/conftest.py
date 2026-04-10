@@ -16,3 +16,6 @@ for path in (PROJECT_ROOT, SRC_DIR):
     path_str = str(path)
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
+        
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
+ensure_pyz3950_importable()

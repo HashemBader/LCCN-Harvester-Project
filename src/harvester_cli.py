@@ -32,6 +32,7 @@ from pathlib import Path
 from src.database import DatabaseManager
 from src.harvester.run_harvest import run_harvest, parse_isbn_file
 from src.utils import isbn_validator
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
 
 
 def parse_args(argv=None):
@@ -159,6 +160,8 @@ def main(argv=None) -> int:
         int: Exit code — ``0`` on success, ``1`` on fatal pre-harvest error
             (validation or database failures call ``sys.exit`` internally).
     """
+    # Apply PyZ3950 hotfix early for CLI usage
+    ensure_pyz3950_importable()
     args = parse_args(argv)
     input_path = validate_input_file(args.input_file)
 

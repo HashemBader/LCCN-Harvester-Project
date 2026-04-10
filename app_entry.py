@@ -81,6 +81,10 @@ def main() -> None:
 
     from PyQt6.QtWidgets import QApplication
     from gui.modern_window import ModernMainWindow
+    from src.z3950.pyz3950_compat import ensure_pyz3950_importable
+
+    # Apply PyZ3950 hotfix early for GUI usage to prevent regex errors
+    ensure_pyz3950_importable()
 
     app = QApplication(sys.argv)
     app.setApplicationName("LCCN Harvester")

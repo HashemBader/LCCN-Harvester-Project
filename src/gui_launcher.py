@@ -41,6 +41,7 @@ if str(SRC_DIR) not in sys.path:
 
 from PyQt6.QtWidgets import QApplication
 from gui.modern_window import ModernMainWindow
+from src.z3950.pyz3950_compat import ensure_pyz3950_importable
 
 
 def _configure_runtime_environment():
@@ -90,8 +91,10 @@ def main():
     Does not return until the user closes the application window.
     """
     _configure_runtime_environment()
+    # Apply PyZ3950 hotfix early for GUI usage to prevent regex errors
+    ensure_pyz3950_importable()
     app = QApplication(sys.argv)
-
+    
     # Application metadata is used by Qt for OS-level window/taskbar labels,
     # QSettings storage paths, and About dialogs.
     app.setApplicationName("LCCN Harvester")

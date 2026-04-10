@@ -33,7 +33,7 @@ from typing import Iterable, Optional
 import xml.etree.ElementTree as ET
 
 from src.config.profile_manager import ProfileManager
-from src.database.db_manager import DatabaseManager, MainRecord, now_datetime_str
+from src.database.db_manager import DatabaseManager, MainRecord, now_datetime_str, normalize_to_yyyymmdd_int
 from src.utils.isbn_validator import pick_lowest_isbn
 from src.utils.marc_parser import (
     extract_call_numbers_from_json,
@@ -203,6 +203,9 @@ class MarcImportService:
         source_name: str,
         import_date: Optional[str] = None,
         save_source_to_active_profile: bool = True,
+        source_file_name: Optional[str] = None,
+        source_file_hash: Optional[str] = None,
+        replace_existing_source: bool = False,
     ) -> MarcImportSummary:
         """Write parsed MARC records to the database in a single transaction.
 
@@ -237,6 +240,9 @@ class MarcImportService:
         skipped_records = 0
 
         with self.db.transaction() as conn:
+            if replace_existing_source:
+                conn.execute("DELETE FROM main WHERE source = ?", (normalized_source,))
+                conn.execute("DELETE FROM attempted WHERE last_target = ?", (normalized_source,))
             attempted_batch: list[tuple[str, Optional[str], str, Optional[str], Optional[str]]] = []
             main_batch: list[MainRecord] = []
 
@@ -282,6 +288,23 @@ class MarcImportService:
                 self.db.upsert_main_many(conn, main_batch, clear_attempted_on_success=True)
             if attempted_batch:
                 self.db.upsert_attempted_many(conn, attempted_batch)
+            if source_file_name and source_file_hash:
+                conn.execute(
+                    """
+                    INSERT INTO marc_imports (source_name, file_name, file_hash, imported_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(source_name) DO UPDATE SET
+                        file_name = excluded.file_name,
+                        file_hash = excluded.file_hash,
+                        imported_at = excluded.imported_at
+                    """,
+                    (
+                        normalized_source,
+                        source_file_name,
+                        source_file_hash,
+                        normalize_to_yyyymmdd_int(date_value),
+                    ),
+                )
 
         return MarcImportSummary(
             main_rows=main_rows,

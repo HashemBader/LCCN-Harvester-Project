@@ -32,7 +32,7 @@
       "concurrent_requests": 5,
       "rate_limit": 10
     },
-    "last_marc_import_source": "2607-Cambridge_EBA_University of Prince Edward Island_May_2022"
+    "last_marc_import_source": "ma"
   },
-  "last_modified": "2026-03-25T17:38:39.771410"
+  "last_modified": "2026-04-10T11:38:31.411445"
 }

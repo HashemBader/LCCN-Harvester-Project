@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QToolButton,
     QInputDialog,
+    QDialog,
     QSizePolicy,
 )
 
@@ -393,23 +394,24 @@ class TargetsTab(QWidget):
             self.table.setItem(row, 5, db_item)
 
             # --- Edit button (column 6) — pencil icon, theme-aware color ---
-            edit_btn = QPushButton()
-            edit_btn.setMinimumHeight(32)
-            edit_btn.setMinimumWidth(40)
-            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            edit_btn.setToolTip("Edit target")
-            # Read the raw SVG from disk so its stroke can be recolored at render time.
-            pencil_svg = (Path(__file__).parent / "icons" / "pencil.svg").read_text(encoding="utf-8")
-            # Choose icon tint based on the current theme so it stays legible.
-            pencil_color = "#ffffff" if ThemeManager().get_theme() == "dark" else "#000000"
-            # get_icon replaces "currentColor" in the SVG with pencil_color, then
-            # rasterizes the result into a QIcon via QSvgRenderer.
-            edit_btn.setIcon(get_icon(pencil_svg, pencil_color))
-            edit_btn.setIconSize(QSize(18, 18))
-            edit_btn.setProperty("class", "IconButton")
-            edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
-            self.table.setCellWidget(row, 6, edit_btn)
+            if target.target_type == "API":
+                blank_item = QTableWidgetItem("")
+                blank_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.table.setItem(row, 6, blank_item)
+            else:
+                edit_btn = QPushButton()
+                edit_btn.setMinimumHeight(32)
+                edit_btn.setMinimumWidth(40)
+                edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                edit_btn.setToolTip("Edit target")
+                pencil_svg = (Path(__file__).parent / "icons" / "pencil.svg").read_text(encoding="utf-8")
+                pencil_color = "#ffffff" if ThemeManager().get_theme() == "dark" else "#000000"
+                edit_btn.setIcon(get_icon(pencil_svg, pencil_color))
+                edit_btn.setIconSize(QSize(18, 18))
+                edit_btn.setProperty("class", "IconButton")
+                edit_btn.clicked.connect(lambda checked, t=target: self._edit_specific_target(t))
+                self.table.setCellWidget(row, 6, edit_btn)
 
             # --- Server status indicator (column 7) ---
             # None = not yet checked; True = online; False = offline.
@@ -578,7 +580,6 @@ class TargetsTab(QWidget):
     def _edit_specific_target(self, target):
         """Open edit dialog for a given target object."""
         if target.target_type == "API":
-            QMessageBox.information(self, "Info", "Built-in API targets cannot be edited.")
             return
         if not self._can_mutate_targets("edit a target"):
             return

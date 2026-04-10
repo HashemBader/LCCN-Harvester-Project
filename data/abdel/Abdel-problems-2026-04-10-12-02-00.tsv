@@ -1,0 +1,7 @@
+﻿Target	Problem
+OpenLibrary	Offline
+UCB	Offline
+Library of Congress	Offline
+Library of Congress	<urlopen error [Errno 11001] getaddrinfo failed>
+UCB	Could not connect to Z39.50 server: ('socket', '[Errno 11001] getaddrinfo failed')
+OpenLibrary	<urlopen error [Errno 11001] getaddrinfo failed>

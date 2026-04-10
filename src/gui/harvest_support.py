@@ -622,37 +622,18 @@ class HarvestWorker(QThread):
         self._refresh_live_linked_isbns_file()
 
     def _close_live_result_files(self):
-        """Flush and close all live TSV file handles, then generate CSV copies.
+        """Flush and close all live TSV file handles.
 
         Called from the ``finally`` block in ``run()`` to guarantee all output is
         persisted even when the run is cancelled or raises an exception.
         """
-        saved_paths = []
         for handle in self._live_result_handles.values():
             try:
                 handle.flush()
-                saved_paths.append(handle.name)
                 handle.close()
             except Exception:
                 pass
         self._live_result_handles = {}
-        # Convert each TSV to a companion CSV for spreadsheet apps.
-        self._generate_csv_copies(saved_paths)
-
-    def _generate_csv_copies(self, tsv_paths):
-        """Post-flight conversion of TSV to CSV for spreadsheet-friendly output."""
-        if not tsv_paths:
-            return
-        for path_str in tsv_paths:
-            tsv_path = Path(path_str)
-            if tsv_path.exists() and tsv_path.stat().st_size > 0:
-                try:
-                    with open(str(tsv_path), newline="", encoding="utf-8") as handle:
-                        rows = list(csv.reader(handle, delimiter="\t"))
-                    csv_path = tsv_path.with_suffix(".csv")
-                    _write_csv_rows(rows, str(csv_path))
-                except Exception:
-                    logger.exception("Failed to convert %s to CSV.", tsv_path.name)
 
     def _append_live_row(self, bucket, row):
         """Append a single TSV row to the named output bucket, thread-safely.
@@ -678,7 +659,7 @@ class HarvestWorker(QThread):
         """Rewrite the linked-ISBNs snapshot file from the current DB state.
 
         Called after every processed ISBN so the file stays current during a long
-        harvest.  Both TSV and CSV copies are written atomically (full rewrite, not
+        harvest. The TSV snapshot is written atomically (full rewrite, not
         append) because the table can change between calls.
         """
         linked_path_raw = self.live_paths.get("linked")
@@ -698,13 +679,10 @@ class HarvestWorker(QThread):
             rows = []
 
         try:
-            # Write the TSV snapshot.
             with open(linked_path, "w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.writer(handle, delimiter="\t")
                 writer.writerow(["ISBN", "Canonical ISBN"])
                 writer.writerows(rows)
-            # Write the companion CSV snapshot for spreadsheet apps.
-            _write_csv_rows([["ISBN", "Canonical ISBN"], *rows], str(linked_path.with_suffix(".csv")))
         except Exception:
             pass
 
@@ -1154,11 +1132,15 @@ class DroppableGroupBox(QGroupBox):
 
     file_dropped = pyqtSignal(str)
 
-    def __init__(self, title, parent=None):
+    def __init__(self, title, parent=None, *, accepted_extensions=None, invalid_message=None):
         super().__init__(title, parent)
         self.setAcceptDrops(True)
         self.setObjectName("DroppableArea")
         self.setProperty("dropState", "normal")
+        self._accepted_extensions = tuple(
+            ext.lower() for ext in (accepted_extensions or (".tsv", ".txt", ".csv", ".xlsx", ".xls"))
+        )
+        self._invalid_message = invalid_message or "Please drop a valid TSV, TXT, CSV, or Excel file."
 
     def _update_state(self, state: str):
         """Update the ``dropState`` property and force a QSS re-polish.
@@ -1190,7 +1172,7 @@ class DroppableGroupBox(QGroupBox):
     def dropEvent(self, event: QDropEvent):
         files = [url.toLocalFile() for url in event.mimeData().urls()]
         # Filter to recognised input-file extensions only.
-        valid_files = [path for path in files if path.endswith((".tsv", ".txt", ".csv", ".xlsx", ".xls"))]
+        valid_files = [path for path in files if path.lower().endswith(self._accepted_extensions)]
 
         if valid_files:
             # Emit the first valid file and briefly show the "dropped" state for visual feedback.
@@ -1204,7 +1186,7 @@ class DroppableGroupBox(QGroupBox):
         QMessageBox.warning(
             self,
             "Invalid File",
-            "Please drop a valid TSV, TXT, CSV, or Excel file.",
+            self._invalid_message,
         )
         event.ignore()
         self._update_state("normal")

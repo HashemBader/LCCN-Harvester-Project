@@ -1,11 +1,11 @@
 target_id	name	target_type	host	port	database	record_syntax	rank	selected	username	password
 8	OpenLibrary API	API					1	True		
 9	Library of Congress API	API					2	True		
-10	Harvard Library API	API					3	True		
+10	Harvard Library API	API					3	False		
 25	UCB	Z3950	berkeley.alma.exlibrisgroup.com	1921	01UCS_BER/UCB	USMARC	4	True		
 16	UAlberta	Z3950	ualapp.library.ualberta.ca	2200	unicorn	USMARC	5	False		
 20	Toronto	Z3950	utoronto.alma.exlibrisgroup.com	1921	01UTORONTO_INST	USMARC	6	False		
-23	UBC	Z3950	ils.library.ubc.ca	7090	Voyager	USMARC	7	True		
+23	UBC	Z3950	ils.library.ubc.ca	7090	Voyager	USMARC	7	False		
 5	NYC	Z3950	nyst.sirsi.net	8419	Unicorn	USMARC	8	False		
 19	Oxford	Z3950	library.ox.ac.uk	210	44OXF_INST	USMARC	9	False		
 21	UCLA	Z3950	z3950.library.ucla.edu	1921	01UCS_LAL	USMARC	10	False		
@@ -18,4 +18,4 @@ target_id	name	target_type	host	port	database	record_syntax	rank	selected	userna
 30	QUEENS	Z3950	ocul-qu.alma.exlibrisgroup.com	210	01OCUL_QU	USMARC	17	False		
 31	UPenn	Z3950	na03.alma.exlibrisgroup.com	1921	UPENN_INST	USMARC	18	False		
 32	NYPL	Z3950	nyst.sirsi.net	8419	unicorn	USMARC	19	False		
-33	ASHAL ONLY	Z3950	A	210	A	USMARC	20	True		
+33	ASHAL ONLY	Z3950	A	210	A	USMARC	20	False		

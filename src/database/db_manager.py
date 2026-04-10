@@ -1442,6 +1442,22 @@ class DatabaseManager:
             "invalid": int(invalid),
         }
 
+    def get_marc_import(self, source_name: str):
+        """Return MARC import metadata for a source name, or ``None``."""
+        normalized = (source_name or "").strip()
+        if not normalized:
+            return None
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT source_name, file_name, file_hash, imported_at
+                FROM marc_imports
+                WHERE source_name = ?
+                LIMIT 1
+                """,
+                (normalized,),
+            ).fetchone()
+
     def get_recent_results(self, limit: int = 10) -> list[dict]:
         """Return a merged chronological list of recent successes and failures.
 

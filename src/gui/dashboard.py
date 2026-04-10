@@ -47,7 +47,6 @@ from .dashboard_components import (
     problems_button_label,
     safe_filename,
     truncate_text,
-    write_csv_copy,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +84,8 @@ class DashboardTab(QWidget):
     create_profile_requested = pyqtSignal()
     # Emitted to ask ModernMainWindow to update its page-title label (e.g. "Dashboard" vs "Linked ISBNs").
     page_title_changed = pyqtSignal(str)
+    pause_harvest_requested = pyqtSignal()
+    cancel_harvest_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -185,6 +186,26 @@ class DashboardTab(QWidget):
         header_layout.addStretch()
         
         main_layout.addLayout(header_layout)
+
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(10)
+        self.btn_pause_harvest = QPushButton("Pause")
+        self.btn_pause_harvest.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pause_harvest.setMinimumHeight(40)
+        self.btn_pause_harvest.setProperty("class", "SecondaryButton")
+        self.btn_pause_harvest.setEnabled(False)
+        self.btn_pause_harvest.clicked.connect(self.pause_harvest_requested.emit)
+        controls_row.addWidget(self.btn_pause_harvest)
+
+        self.btn_cancel_harvest = QPushButton("Cancel")
+        self.btn_cancel_harvest.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cancel_harvest.setMinimumHeight(40)
+        self.btn_cancel_harvest.setProperty("class", "DangerButton")
+        self.btn_cancel_harvest.setEnabled(False)
+        self.btn_cancel_harvest.clicked.connect(self.cancel_harvest_requested.emit)
+        controls_row.addWidget(self.btn_cancel_harvest)
+        controls_row.addStretch()
+        main_layout.addLayout(controls_row)
 
         # 2. KPI Cards Row
         self.kpi_layout = QGridLayout()
@@ -317,7 +338,7 @@ class DashboardTab(QWidget):
         """Build the Result Files card.
 
         Contains:
-        - Header row: "RESULT FILES" title, TSV/CSV format combo, folder-open button.
+        - Header row: "RESULT FILES" title and folder-open button.
         - Subtitle helper text.
         - Four file-open buttons (successful, failed, invalid, problem targets).
         - Linked ISBNs open button.
@@ -338,15 +359,6 @@ class DashboardTab(QWidget):
         header.addWidget(title)
         header.addStretch()
 
-        # Format combo: switching between TSV and CSV triggers a button-state refresh
-        # so the correct file extension is checked for existence.
-        self.format_combo = ConsistentComboBox(popup_object_name="ResultFormatComboPopup", max_visible_items=2)
-        self.format_combo.setObjectName("ResultFormatCombo")
-        self.format_combo.addItems(["TSV (.tsv)", "CSV (.csv)"])
-        self.format_combo.setToolTip("Select the file format to open")
-        self.format_combo.currentTextChanged.connect(self._refresh_result_file_buttons)
-        header.addWidget(self.format_combo)
-        
         self.btn_open_profile_folder = QPushButton()
         self.btn_open_profile_folder.setIcon(get_icon(SVG_FOLDER_OPEN, "#f4c542"))
         self.btn_open_profile_folder.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -439,7 +451,6 @@ class DashboardTab(QWidget):
         """Enable/disable and re-label result file buttons based on what exists on disk.
 
         Called after every harvest event and on the auto-refresh timer tick.
-        The correct file extension (.tsv or .csv) is determined from the format combo.
         """
         if not hasattr(self, "btn_open_successful"):
             return
@@ -458,25 +469,14 @@ class DashboardTab(QWidget):
             "linked": self.btn_open_linked_isbns,
         }
         
-        is_csv = getattr(self, "format_combo", None) and self.format_combo.currentText().startswith("CSV")
-        ext = ".csv" if is_csv else ".tsv"
-        
         for key, btn in mapping.items():
             path = self.result_files.get(key)
             if path is not None:
-                # Check for the correct extension file
-                check_path = path.with_suffix(ext)
-                
-                # If CSV is requested but not finalized, we can enable the button as long as the base TSV exists.
                 if key == "linked":
-                    enabled = self._result_file_has_content(path.with_suffix(ext))
-                elif is_csv:
-                    enabled = path.exists() 
+                    enabled = self._result_file_has_content(path)
                 else:
-                    enabled = check_path.exists()
-                    
+                    enabled = path.exists()
                 btn.setEnabled(enabled)
-                
                 btn.setText(default_labels[key])
             else:
                 btn.setEnabled(False)
@@ -504,46 +504,22 @@ class DashboardTab(QWidget):
     def _open_result_file(self, key):
         """Open the result file for *key* in the default system application.
 
-        If the user has selected CSV format and only a TSV exists on disk, a CSV
-        copy is generated on the fly before opening.
-
         Args:
             key: Result bucket key — one of ``"successful"``, ``"failed"``,
                  ``"invalid"``, ``"problems"``, ``"linked"``.
         """
         path = self.result_files[key]
-        is_csv = getattr(self, "format_combo", None) and self.format_combo.currentText().startswith("CSV")
-        ext = ".csv" if is_csv else ".tsv"
-        target_path = path.with_suffix(ext)
-
-        # Generate on the fly if CSV is selected mid-harvest.
-        if is_csv and not target_path.exists() and path.exists():
-            try:
-                write_csv_copy(str(path), str(target_path))
-            except Exception as e:
-                QMessageBox.warning(self, "CSV Not Ready", f"Could not generate live CSV view:\n{e}")
-                return
-
-        if not target_path.exists():
-            QMessageBox.warning(self, "File Not Found", f"{target_path} does not exist yet.")
+        if not path.exists():
+            QMessageBox.warning(self, "File Not Found", f"{path} does not exist yet.")
             self._refresh_result_file_buttons()
             return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_path.resolve()))):
-            QMessageBox.warning(self, "Open Failed", f"Could not open {target_path}.")
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            QMessageBox.warning(self, "Open Failed", f"Could not open {path}.")
 
     def _export_linked_isbns(self):
-        """Export the ``linked_isbns`` DB table to a timestamped TSV or CSV file and open it.
-
-        Queries ``linked_isbns`` ordered by canonical ISBN, writes both a TSV and (if CSV
-        mode is selected) a CSV copy into the active profile's data directory, then opens
-        the file with the default system application.  Shows an informational dialog if
-        the table is empty.
-        """
+        """Export the ``linked_isbns`` DB table to a timestamped TSV file and open it."""
         import csv as _csv
         from datetime import datetime as _dt
-
-        is_csv = getattr(self, "format_combo", None) and self.format_combo.currentText().startswith("CSV")
-        ext = ".csv" if is_csv else ".tsv"
 
         # Query the database
         try:
@@ -570,12 +546,11 @@ class DashboardTab(QWidget):
         out_dir = self._profile_dir_path()
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = _dt.now().strftime("%Y-%m-%d-%H-%M-%S")
-        out_path = out_dir / f"{safe_filename(self.current_profile)}-linked-isbns-{stamp}{ext}"
+        out_path = out_dir / f"{safe_filename(self.current_profile)}-linked-isbns-{stamp}.tsv"
 
         try:
-            delimiter = "," if is_csv else "\t"
             with open(out_path, "w", newline="", encoding="utf-8-sig") as fh:
-                writer = _csv.writer(fh, delimiter=delimiter)
+                writer = _csv.writer(fh, delimiter="\t")
                 writer.writerow(["ISBN", "Canonical ISBN"])
                 writer.writerows(rows)
         except Exception as exc:
@@ -1176,6 +1151,68 @@ class DashboardTab(QWidget):
             self.lbl_run_status.setProperty("state", "idle")
         self._refresh_status_style()
         
+    def set_running(self):
+        """Switch the dashboard status pill to RUNNING and enable live controls."""
+        self._is_running = True
+        self.session_stats = {
+            "processed": 0,
+            "successful": 0,
+            "failed": 0,
+            "invalid": 0,
+        }
+        self.session_recent = []
+        self.recent_panel.update_data([])
+        self._refresh_result_file_buttons()
+        self.btn_pause_harvest.setText("Pause")
+        self.btn_pause_harvest.setEnabled(True)
+        self.btn_pause_harvest.setStyleSheet(
+            "background-color: #f97316; color: #ffffff; border: 1px solid #ea580c; "
+            "border-radius: 10px; font-weight: 700; padding: 8px 16px;"
+        )
+        self.btn_cancel_harvest.setEnabled(True)
+        self.lbl_run_status.setText("● RUNNING")
+        self.lbl_run_status.setProperty("state", "running")
+        self._refresh_status_style()
+
+    def set_paused(self, is_paused: bool):
+        """Update the dashboard status pill and controls for pause/resume."""
+        self.btn_pause_harvest.setText("Resume" if is_paused else "Pause")
+        self.btn_pause_harvest.setEnabled(True)
+        self.btn_pause_harvest.setStyleSheet(
+            "background-color: #2563eb; color: #ffffff; border: 1px solid #1d4ed8; "
+            "border-radius: 10px; font-weight: 700; padding: 8px 16px;"
+            if is_paused else
+            "background-color: #f97316; color: #ffffff; border: 1px solid #ea580c; "
+            "border-radius: 10px; font-weight: 700; padding: 8px 16px;"
+        )
+        self.btn_cancel_harvest.setEnabled(True)
+        if is_paused:
+            self.lbl_run_status.setText("● PAUSED")
+            self.lbl_run_status.setProperty("state", "paused")
+        else:
+            self.lbl_run_status.setText("● RUNNING")
+            self.lbl_run_status.setProperty("state", "running")
+        self._refresh_status_style()
+
+    def set_idle(self, success: bool | None = None):
+        """Transition the dashboard status pill to a terminal or idle state."""
+        self._is_running = False
+        self._refresh_result_file_buttons()
+        self.btn_pause_harvest.setText("Pause")
+        self.btn_pause_harvest.setEnabled(False)
+        self.btn_pause_harvest.setStyleSheet("")
+        self.btn_cancel_harvest.setEnabled(False)
+        if success is True:
+            self.lbl_run_status.setText("● COMPLETED")
+            self.lbl_run_status.setProperty("state", "success")
+        elif success is False:
+            self.lbl_run_status.setText("● Cancelled")
+            self.lbl_run_status.setProperty("state", "error")
+        else:
+            self.lbl_run_status.setText("● IDLE")
+            self.lbl_run_status.setProperty("state", "idle")
+        self._refresh_status_style()
+
     def _refresh_status_style(self):
         """Force Qt to re-evaluate the ``state`` property selector on the status pill.
 

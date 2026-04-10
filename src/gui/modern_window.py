@@ -159,14 +159,14 @@ class ModernMainWindow(QMainWindow):
 
         # Navigation Buttons — order matches the stacked-widget page indices below.
         # Dashboard(0) → Configure(1) → Harvest(2) → Help(3)
-        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
         self.btn_configure = self._create_nav_btn("Configure", SVG_TARGETS, 1)
         self.btn_harvest = self._create_nav_btn("Harvest", SVG_HARVEST, 2)
+        self.btn_dashboard = self._create_nav_btn("Dashboard", SVG_DASHBOARD, 0)
         self.btn_help = self._create_nav_btn("Help", SVG_RESULTS, 3)
 
-        sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_configure)
         sidebar_layout.addWidget(self.btn_harvest)
+        sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_help)
 
         sidebar_layout.addStretch() # Spacer
@@ -245,9 +245,10 @@ class ModernMainWindow(QMainWindow):
         self._refresh_targets_profile_controls()
         self._sync_tab_state()
         
-        # Select default page: Dashboard (index 0)
-        self.btn_dashboard.setChecked(True)
-        self.stack.setCurrentIndex(0)
+        # Select default page: Configure (index 1)
+        self.btn_configure.setChecked(True)
+        self.stack.setCurrentIndex(1)
+        self.page_title.setText("Configure")
 
     def _create_nav_btn(self, text, svg_icon, index):
         """Create a checkable sidebar navigation button and register it with the button group.
@@ -311,10 +312,10 @@ class ModernMainWindow(QMainWindow):
 
         add_mod_shortcut("B", self._toggle_sidebar)
         add_mod_shortcut("Q", self.close)
-        # Numeric shortcuts match visible sidebar order: 1=Dashboard, 2=Configure, 3=Harvest, 4=Help
-        add_mod_shortcut("1", lambda: self.btn_dashboard.click())
-        add_mod_shortcut("2", lambda: self.btn_configure.click())
-        add_mod_shortcut("3", lambda: self.btn_harvest.click())
+        # Numeric shortcuts match visible sidebar order: 1=Configure, 2=Harvest, 3=Dashboard, 4=Help
+        add_mod_shortcut("1", lambda: self.btn_configure.click())
+        add_mod_shortcut("2", lambda: self.btn_harvest.click())
+        add_mod_shortcut("3", lambda: self.btn_dashboard.click())
         add_mod_shortcut("4", lambda: self.btn_help.click())
 
         add_mod_shortcut("Shift+D", lambda: self.btn_dashboard.click())
@@ -510,6 +511,8 @@ class ModernMainWindow(QMainWindow):
         self.dashboard_tab.profile_selected.connect(self._on_dashboard_profile_selected)
         self.dashboard_tab.create_profile_requested.connect(self._open_profile_settings)
         self.dashboard_tab.page_title_changed.connect(self.page_title.setText)
+        self.dashboard_tab.pause_harvest_requested.connect(self.harvest_tab._toggle_pause)
+        self.dashboard_tab.cancel_harvest_requested.connect(self.harvest_tab.stop_harvest)
         self.help_tab.page_title_changed.connect(self.page_title.setText)
 
         # Keep tab state fresh when navigating

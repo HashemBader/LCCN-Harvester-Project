@@ -52,3 +52,15 @@ CREATE TABLE IF NOT EXISTS linked_isbns (
 CREATE INDEX IF NOT EXISTS idx_linked_lowest ON linked_isbns(lowest_isbn);
 CREATE INDEX IF NOT EXISTS idx_linked_other ON linked_isbns(other_isbn);
 
+-- =========================
+-- MARC import history
+-- =========================
+CREATE TABLE IF NOT EXISTS marc_imports (
+    source_name     TEXT PRIMARY KEY,
+    file_name       TEXT NOT NULL,
+    file_hash       TEXT NOT NULL,
+    imported_at     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_marc_imports_file_hash ON marc_imports(file_hash);
+

@@ -3,12 +3,12 @@
   "created_at": "2026-04-05T16:27:25.835625",
   "description": "",
   "settings": {
-    "retry_days": 6,
+    "retry_days": 3,
     "call_number_mode": "both",
     "collect_lccn": true,
     "collect_nlmcn": true,
     "stop_rule": "stop_either",
-    "last_marc_import_source": "h"
+    "last_marc_import_source": "metacoll.PVZ.updates.D20240604.T213014.OCLCConsolidated.1 (1)"
   },
-  "last_modified": "2026-04-05T19:06:54.803262"
+  "last_modified": "2026-04-10T11:57:51.220985"
 }

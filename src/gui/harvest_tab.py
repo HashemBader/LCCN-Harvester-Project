@@ -54,6 +54,8 @@ from PyQt6.QtGui import QShortcut, QKeySequence, QColor, QBrush, QDesktopService
 from pathlib import Path
 from enum import Enum, auto
 from itertools import islice
+import csv
+import hashlib
 import sys
 import json
 
@@ -67,12 +69,11 @@ from .harvest_support import (
     _looks_like_header_cell,
     _prepare_marc_import_records,
     _safe_filename,
-    _write_csv_rows,
 )
 
 from src.harvester.marc_import import MarcImportService
 from src.harvester.run_harvest import parse_isbn_file
-from src.database import now_datetime_str
+from src.database import DatabaseManager, now_datetime_str
 from src.config.profile_manager import ProfileManager
 from src.utils.isbn_validator import normalize_isbn
 from .theme_manager import ThemeManager
@@ -156,6 +157,7 @@ class HarvestTab(QWidget):
         self.is_running = False # Convenience flag mirrors current_state in {RUNNING, PAUSED}.
         self.current_state = UIState.IDLE
         self.input_file = None  # Absolute path string of the currently loaded ISBN file.
+        self._marc_selected_path = None
         # Session snapshots copied from the worker at harvest completion for later inspection.
         self._last_session_success = []
         self._last_session_failed = []
@@ -376,14 +378,7 @@ class HarvestTab(QWidget):
         marc_vbox.setContentsMargins(14, 12, 14, 14)
         marc_vbox.setSpacing(10)
 
-        # 1. Status banner
-        self._marc_status_label = QLabel("Select a MARC file (.mrc / .xml) to import into the database and export results.")
-        self._marc_status_label.setWordWrap(True)
-        self._marc_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._marc_status_label.setProperty("class", "MarcStatusBanner")
-        marc_vbox.addWidget(self._marc_status_label)
-
-        # 2. Four stat tiles in a row
+        # 1. Four stat tiles in a row
         marc_stat_row = QHBoxLayout()
         marc_stat_row.setSpacing(8)
         marc_stat_defs = [
@@ -412,24 +407,37 @@ class HarvestTab(QWidget):
             setattr(self, attr_name, lbl_val)
         marc_vbox.addLayout(marc_stat_row)
 
-        # 3. Drop zone — expands to fill remaining space
-        marc_drop_zone = QFrame()
-        marc_drop_zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        marc_drop_zone.setProperty("class", "MarcDropZone")
-        drop_zone_vbox = QVBoxLayout(marc_drop_zone)
-        drop_hint = QLabel("Drop .mrc or .xml file here")
-        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_hint.setStyleSheet("font-size: 13px;")
-        drop_zone_vbox.addWidget(drop_hint)
-        marc_vbox.addWidget(marc_drop_zone, stretch=1)
+        # 2. Drop zone — expands to fill remaining space
+        self._marc_drop_zone = DroppableGroupBox(
+            "",
+            accepted_extensions=(".mrc", ".marc", ".xml"),
+            invalid_message="Please drop a valid MARC file (.mrc, .marc, or .xml).",
+        )
+        self._marc_drop_zone.file_dropped.connect(self._set_marc_file)
+        self._marc_drop_zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._marc_drop_zone.setProperty("class", "MarcDropZone")
+        drop_zone_vbox = QVBoxLayout(self._marc_drop_zone)
+        self._marc_hint_label = QLabel("Drop .mrc or .xml file here")
+        self._marc_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._marc_hint_label.setWordWrap(True)
+        self._marc_hint_label.setStyleSheet("font-size: 13px;")
+        self._marc_status_label = self._marc_hint_label
+        drop_zone_vbox.addWidget(self._marc_hint_label)
+        marc_vbox.addWidget(self._marc_drop_zone, stretch=1)
 
-        # 4. File row at bottom
-        marc_file_row = QHBoxLayout()
-        marc_file_row.setSpacing(6)
+        # 3. File display plus actions at bottom
+        marc_file_box = QVBoxLayout()
+        marc_file_box.setSpacing(6)
         self._marc_path_edit = QLineEdit()
         self._marc_path_edit.setReadOnly(True)
         self._marc_path_edit.setPlaceholderText("No MARC file selected… (.mrc binary or .xml MARCXML)")
         self._marc_path_edit.setProperty("class", "LineEdit")
+        self._marc_path_edit.setMinimumWidth(0)
+        self._marc_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        marc_file_box.addWidget(self._marc_path_edit)
+
+        marc_file_row = QHBoxLayout()
+        marc_file_row.setSpacing(6)
         self._btn_browse_marc = QPushButton("Browse…")
         self._btn_browse_marc.setProperty("class", "PrimaryButton")
         self._btn_browse_marc.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -444,11 +452,12 @@ class HarvestTab(QWidget):
         self._btn_clear_marc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_clear_marc.clicked.connect(self._clear_marc_file)
         self._btn_clear_marc.setVisible(False)
-        marc_file_row.addWidget(self._marc_path_edit)
+        marc_file_row.addStretch()
         marc_file_row.addWidget(self._btn_clear_marc)
         marc_file_row.addWidget(self._btn_browse_marc)
         marc_file_row.addWidget(self._btn_import_marc)
-        marc_vbox.addLayout(marc_file_row)
+        marc_file_box.addLayout(marc_file_row)
+        marc_vbox.addLayout(marc_file_box)
 
         self.stats_card = QGroupBox("File Statistics")
         self.stats_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1883,19 +1892,71 @@ class HarvestTab(QWidget):
             "MARC Files (*.mrc *.marc *.xml);;All Files (*)",
         )
         if path:
-            self._marc_path_edit.setText(path)
-            self._btn_import_marc.setEnabled(True)
-            self._btn_clear_marc.setVisible(True)
-            self._marc_status_label.setText("Click 'Import Records' to import call numbers into the database and save results.")
+            self._set_marc_file(path)
+
+    def _set_marc_file(self, path: str):
+        """Populate the MARC controls after browse or drag-and-drop."""
+        self._marc_selected_path = path
+        file_name = Path(path).name
+        self._marc_path_edit.setText(file_name)
+        self._marc_path_edit.setToolTip(path)
+        self._btn_import_marc.setEnabled(True)
+        self._btn_clear_marc.setVisible(True)
+        self._marc_hint_label.setText("Click Run to import call numbers into the database.")
 
     def _clear_marc_file(self):
         """Reset all MARC-import controls to their default (no file selected) state."""
+        self._marc_selected_path = None
         self._marc_path_edit.clear()
+        self._marc_path_edit.setToolTip("")
         self._btn_import_marc.setEnabled(False)
         self._btn_clear_marc.setVisible(False)
-        self._marc_status_label.setText("Select a MARC file (.mrc / .xml) to import into the database and export results.")
+        self._marc_hint_label.setText("Drop .mrc or .xml file here")
         for attr in ("_marc_stat_records", "_marc_stat_callnums", "_marc_stat_matched", "_marc_stat_unmatched"):
             getattr(self, attr).setText("—")
+
+    @staticmethod
+    def _compute_file_hash(path: str) -> str:
+        """Return a stable SHA-256 hash for the selected MARC file."""
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _resolve_marc_source_conflict(self, db_path: str, source_name: str, path: str, file_hash: str) -> bool | None:
+        """Return replacement intent for a MARC source name, or ``None`` to abort."""
+        db = DatabaseManager(db_path)
+        existing = db.get_marc_import(source_name)
+        if existing is None:
+            return False
+
+        existing_hash = (existing["file_hash"] or "").strip()
+        existing_name = (existing["file_name"] or "").strip()
+        current_name = Path(path).name
+
+        if existing_hash != file_hash:
+            QMessageBox.warning(
+                self,
+                "Source Already Used",
+                f"The source name '{source_name}' is already linked to a different MARC file "
+                f"({existing_name}). Please choose a different source name.",
+            )
+            return None
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Replace Existing Import")
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setText(
+            f"The source '{source_name}' was already imported from the same MARC file "
+            f"({current_name}). Choose whether to insert again or replace the existing import "
+            f"for that source."
+        )
+        replace_button = dialog.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
+        insert_button = dialog.addButton("Insert", QMessageBox.ButtonRole.ActionRole)
+        dialog.setDefaultButton(replace_button)
+        dialog.exec()
+        return dialog.clickedButton() == replace_button
 
     def _import_marc_file(self):
         """Run the three-step MARC import pipeline for the currently selected file.
@@ -1907,7 +1968,7 @@ class HarvestTab(QWidget):
         3. Filter/transform records via ``_prepare_marc_import_records`` using the
            active call-number mode.
         4. Persist parsed records to the database via ``MarcImportService``.
-        5. Write a TSV export and a companion CSV to the profile's data directory.
+        5. Write a TSV export to the profile's data directory.
         6. Update the MARC stat tiles and show a rich-text summary dialog.
         """
         path = self._marc_path_edit.text().strip()
@@ -2075,6 +2136,179 @@ class HarvestTab(QWidget):
         ]
         dlg = QMessageBox(self)
         dlg.setWindowTitle("MARC Import — Summary")
+        dlg.setIcon(QMessageBox.Icon.Information)
+        dlg.setTextFormat(Qt.TextFormat.RichText)
+        dlg.setText("<br>".join(summary_lines))
+        dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        open_btn = dlg.addButton("Open Output Folder", QMessageBox.ButtonRole.ActionRole)
+        dlg.exec()
+        if dlg.clickedButton() == open_btn:
+            self._open_output_folder_path(live_dir)
+        
+
+    def _import_marc_file(self):
+        """Run the MARC import pipeline for the currently selected file."""
+        path = (self._marc_selected_path or "").strip()
+        if not path:
+            return
+
+        default_source = Path(path).stem
+        source_name, ok = QInputDialog.getText(
+            self,
+            "MARC Import - Source Name",
+            "Enter a source name to store with the imported records\n"
+            "(e.g. the library catalog or system the file came from):",
+            text=default_source,
+        )
+        if not ok:
+            return
+        source_name = source_name.strip() or default_source
+
+        self._btn_import_marc.setEnabled(False)
+        self._marc_hint_label.setText("Step 1/3 - Reading MARC file...")
+        QApplication.processEvents()
+
+        try:
+            records = self._parse_marc_records(path)
+        except Exception as exc:
+            self._marc_hint_label.setText(f"Error reading MARC file: {exc}")
+            self._btn_import_marc.setEnabled(True)
+            return
+
+        total_records = len(records)
+        if total_records == 0:
+            self._marc_hint_label.setText("No records found in the MARC file.")
+            self._btn_import_marc.setEnabled(True)
+            return
+
+        self._marc_hint_label.setText(f"Step 2/3 - Processing {total_records:,} records...")
+        QApplication.processEvents()
+
+        config = {}
+        if self._config_getter:
+            try:
+                config = self._config_getter() or {}
+            except Exception:
+                pass
+        mode = (config.get("call_number_mode", "lccn") or "lccn").strip().lower()
+
+        profile = "default"
+        if self._profile_getter:
+            try:
+                profile = _safe_filename(self._profile_getter() or "default")
+            except Exception:
+                pass
+        date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        live_dir = Path("data") / profile
+        live_dir.mkdir(parents=True, exist_ok=True)
+        out_path = live_dir / f"{profile}-marc-import-{date_str}.tsv"
+
+        if mode == "nlmcn":
+            headers = ["ISBN", "NLM", "NLM Source", "Date"]
+        elif mode == "both":
+            headers = ["ISBN", "LCCN", "LCCN Source", "Classification", "NLM", "NLM Source", "Date"]
+        else:
+            headers = ["ISBN", "LCCN", "LCCN Source", "Classification", "Date"]
+
+        selected_rows, parsed_records, written, skipped, no_isbn = _prepare_marc_import_records(
+            records,
+            mode=mode,
+            source_name=source_name,
+        )
+        date_added = now_datetime_str()
+
+        profile_name = None
+        if self._profile_getter:
+            try:
+                profile_name = self._profile_getter() or None
+            except Exception:
+                profile_name = None
+
+        db_path = "data/lccn_harvester.sqlite3"
+        if self._db_path_getter:
+            try:
+                db_path = str(self._db_path_getter())
+            except Exception:
+                pass
+
+        source_file_hash = self._compute_file_hash(path)
+        replace_existing_source = self._resolve_marc_source_conflict(db_path, source_name, path, source_file_hash)
+        if replace_existing_source is None:
+            self._btn_import_marc.setEnabled(True)
+            self._marc_hint_label.setText("Import cancelled. Choose a different source name.")
+            return
+
+        marc_service = MarcImportService(
+            db_path=db_path,
+            profile_manager=ProfileManager(),
+            profile_name=profile_name,
+        )
+        db_summary = marc_service.persist_records(
+            parsed_records,
+            source_name=source_name,
+            import_date=date_added,
+            save_source_to_active_profile=True,
+            source_file_name=Path(path).name,
+            source_file_hash=source_file_hash,
+            replace_existing_source=replace_existing_source,
+        )
+
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh, delimiter="\t")
+            writer.writerow(headers)
+            for i, (isbn, lccn, nlmcn) in enumerate(selected_rows, 1):
+                if mode == "nlmcn":
+                    row = [isbn or "", nlmcn, source_name, date_added]
+                elif mode == "both":
+                    classification = _extract_lc_classification(lccn or "")
+                    row = [
+                        isbn or "",
+                        lccn or "", source_name if lccn else "",
+                        classification,
+                        nlmcn or "", source_name if nlmcn else "",
+                        date_added,
+                    ]
+                else:
+                    classification = _extract_lc_classification(lccn)
+                    row = [isbn or "", lccn, source_name, classification, date_added]
+                writer.writerow(row)
+                if i % 500 == 0:
+                    self._marc_hint_label.setText(
+                        f"Step 2/3 - Processed {i:,} / {total_records:,}..."
+                    )
+                    QApplication.processEvents()
+
+        self._marc_hint_label.setText("Step 3/3 - Finalizing TSV export...")
+        QApplication.processEvents()
+        self._marc_hint_label.setText(
+            f"Done - {db_summary.main_rows:,} saved to database, {written:,} exported, "
+            f"{skipped:,} skipped -> {out_path.name}"
+        )
+        self._marc_stat_records.setText(f"{total_records:,}")
+        self._marc_stat_callnums.setText(f"{written:,}")
+        self._marc_stat_matched.setText(f"{db_summary.main_rows:,}")
+        self._marc_stat_unmatched.setText(f"{skipped + db_summary.skipped_records:,}")
+        self._btn_import_marc.setEnabled(True)
+
+        mode_label = {"lccn": "LCCN Only", "nlmcn": "NLM Only", "both": "Both (LCCN & NLM)"}.get(mode, mode)
+        summary_lines = [
+            "<b>MARC Import Complete</b>",
+            "",
+            f"<b>Source:</b> {source_name}",
+            f"<b>File:</b> {Path(path).name}",
+            f"<b>Mode:</b> {mode_label}",
+            "",
+            f"<b>Total records in file:</b> {total_records:,}",
+            f"<b>Saved to database (main):</b> {db_summary.main_rows:,}",
+            f"<b>Saved to database (attempted):</b> {db_summary.attempted_rows:,}",
+            f"<b>Exported to file:</b> {written:,}",
+            f"<b>Skipped</b> (no call number for mode): {skipped:,}",
+            f"<b>Missing ISBN</b> (not saved to database): {no_isbn:,}",
+            "",
+            f"<b>Output:</b> {out_path.name}",
+        ]
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("MARC Import - Summary")
         dlg.setIcon(QMessageBox.Icon.Information)
         dlg.setTextFormat(Qt.TextFormat.RichText)
         dlg.setText("<br>".join(summary_lines))

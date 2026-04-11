@@ -44,12 +44,14 @@ def _build_ssl_context() -> ssl.SSLContext:
     # Allow callers to completely disable certificate verification via env var.
     # Should only be used in development or behind a corporate MITM proxy.
     if os.getenv("LCCN_SSL_NO_VERIFY", "0") == "1":
+        # Return unverified context for testing/development
         return ssl._create_unverified_context()
 
     # Honour the standard environment variables used by the ``requests`` library
     # so that users who already set these for other tools benefit automatically.
     env_cafile = os.getenv("SSL_CERT_FILE") or os.getenv("REQUESTS_CA_BUNDLE")
     if env_cafile and Path(env_cafile).exists():
+        # Use the CA bundle from the environment if it points to an existing file
         return ssl.create_default_context(cafile=env_cafile)
 
     try:
@@ -93,5 +95,7 @@ def urlopen_with_ca(req: urllib.request.Request, timeout: int):
     urllib.error.HTTPError
         On non-2xx HTTP status codes.
     """
+    # Build the SSL context using the configured CA bundle resolution strategy
     ctx = _build_ssl_context()
+    # Open the URL using the given request, timeout, and SSL context
     return urllib.request.urlopen(req, timeout=timeout, context=ctx)

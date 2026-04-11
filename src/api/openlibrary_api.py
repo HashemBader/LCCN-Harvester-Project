@@ -58,11 +58,14 @@ class OpenLibraryApiClient(BaseApiClient):
         ``/{isbn}.json``.
     """
 
+    # Stable identifier for this API source
     source_name = "openlibrary"
+    # Base URL for OpenLibrary ISBN edition lookups
     base_url = "https://openlibrary.org/isbn"
 
     @property
     def source(self) -> str:
+        # Return the source identifier for this API client
         return self.source_name
 
     def fetch(self, isbn: str) -> Any:
@@ -87,19 +90,26 @@ class OpenLibraryApiClient(BaseApiClient):
         Exception
             For network-level failures.
         """
+        # Construct the URL for this ISBN's edition page
         url = f"{self.base_url}/{isbn}.json"
+        # Create a request object
         req = urllib.request.Request(url)
+        # Add a user agent header to identify ourselves to the API
         req.add_header("User-Agent", "LCCNHarvester/0.1 (edu)")
 
         try:
+            # Execute the request using the CA-aware HTTP utility
             with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
+                # Verify successful response
                 if resp.status != 200:
                     raise Exception(f"HTTP {resp.status}")
+                # Parse and return the JSON response
                 return json.load(resp)
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 # 404 means the ISBN is genuinely not in OpenLibrary — not a network error.
                 return None
+            # Re-raise other HTTP errors (5xx, etc.)
             raise
 
     def _extract_isbns(self, payload: Any) -> list[str]:
@@ -121,22 +131,29 @@ class OpenLibraryApiClient(BaseApiClient):
             Deduplicated list of normalized ISBN strings (insertion order
             preserved via ``dict.fromkeys``).
         """
+        # Return empty list if payload is not a dictionary
         if not isinstance(payload, dict):
             return []
 
+        # Helper function to convert various value types to lists of strings
         def _collect_values(value: Any) -> list[str]:
             """Coerce a field value to a flat list of stripped strings."""
             if isinstance(value, list):
+                # Convert list items to strings
                 return [str(item).strip() for item in value if isinstance(item, str)]
             if isinstance(value, str):
+                # Single string value
                 return [value.strip()]
+            # Empty result for other types
             return []
 
+        # Initialize accumulator for ISBNs
         isbns: list[str] = []
-        # Check both top-level ISBN fields
+        # Check top-level ISBN fields
         for key in ("isbn", "isbn_10", "isbn_13"):
             values = _collect_values(payload.get(key))
             for raw in values:
+                # Normalize and store the ISBN
                 normalized = normalize_isbn(raw)
                 if normalized:
                     isbns.append(normalized)
@@ -147,6 +164,7 @@ class OpenLibraryApiClient(BaseApiClient):
             for key in ("isbn", "isbn_10", "isbn_13"):
                 values = _collect_values(identifiers.get(key))
                 for raw in values:
+                    # Normalize and store the ISBN
                     normalized = normalize_isbn(raw)
                     if normalized:
                         isbns.append(normalized)
@@ -175,6 +193,7 @@ class OpenLibraryApiClient(BaseApiClient):
               ``lc_classifications`` field is absent/empty, or the extracted
               value fails validation.
         """
+        # Handle 404 — ISBN not in OpenLibrary
         if payload is None:
             return ApiResult(
                 isbn=isbn,
@@ -182,6 +201,7 @@ class OpenLibraryApiClient(BaseApiClient):
                 status="not_found",
             )
 
+        # Initialize call number placeholders
         lccn: Optional[str] = None
         nlmcn: Optional[str] = None
 
@@ -205,8 +225,10 @@ class OpenLibraryApiClient(BaseApiClient):
         lccn = validate_lccn(lccn, source=self.source)
         nlmcn = validate_nlmcn(nlmcn, source=self.source)
 
+        # Extract related ISBNs from the edition
         isbns = self._extract_isbns(payload)
 
+        # Return success if at least one valid call number was found
         if lccn or nlmcn:
             return ApiResult(
                 isbn=isbn,

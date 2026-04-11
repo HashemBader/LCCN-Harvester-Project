@@ -38,13 +38,21 @@ class ApiResult:
         Error details when status == "error".
     """
 
+    # The ISBN identifier being searched for
     isbn: str
+    # The name of the API source (e.g., "loc", "harvard")
     source: str
+    # The outcome of the search: "success", "not_found", or "error"
     status: str
+    # Library of Congress call number result (if retrieved)
     lccn: Optional[str] = None
+    # National Library of Medicine call number result (if retrieved)
     nlmcn: Optional[str] = None
+    # Raw API response data for debugging and future processing
     raw: Optional[Any] = None
+    # Additional ISBNs found during the search (e.g., related editions)
     isbns: List[str] = field(default_factory=list)
+    # Error message if the search failed or encountered an exception
     error_message: Optional[str] = None
 
 
@@ -63,7 +71,9 @@ class BaseApiClient(ABC):
     """
 
     def __init__(self, timeout_seconds: int = 10, max_retries: int = 0) -> None:
+        # Store the timeout duration for network requests
         self.timeout_seconds = timeout_seconds
+        # Store the maximum number of retry attempts for failed requests
         self.max_retries = max_retries
 
     @property
@@ -129,22 +139,30 @@ class BaseApiClient(ABC):
         ApiResult
             ApiResult with status "success", "not_found", or "error".
         """
+        # Track the last error message encountered during retries
         last_error: Optional[str] = None
 
+        # Attempt fetching and parsing, with retries up to max_retries times
         for attempt in range(1, self.max_retries + 2):
             try:
+                # Fetch raw data from the external API service
                 payload = self.fetch(isbn)
+                # Extract call numbers from the fetched payload
                 result = self.extract_call_numbers(isbn, payload)
-                # Ensure consistent source field
+                # Set the source field to ensure consistency across all API clients
                 result.source = self.source
+                # Return successful result immediately
                 return result
             except Exception as e:
+                # Store the error message for later use if all retries fail
                 last_error = str(e)
-                # Retry on exceptions up to max_retries
+                # Continue retrying only if we haven't exhausted max_retries
                 if attempt <= self.max_retries:
                     continue
+                # Exit retry loop when max_retries is exhausted
                 break
 
+        # Return an error result when all retry attempts have failed
         return ApiResult(
             isbn=isbn,
             source=self.source,

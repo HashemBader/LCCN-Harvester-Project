@@ -55,9 +55,11 @@ class LocApiClient(BaseApiClient):
         and the embedded MARCXML records (``marc:``).
     """
 
+    # Stable identifier for this API source
     source_name = "loc"
     # LoC SRU endpoint — port 210 is the standard Z39.50/SRU port.
     base_url = "http://lx2.loc.gov:210/LCDB"
+    # XML namespaces for SRW envelope and MARCXML records
     namespaces = {
         # SRW (Search/Retrieve Web service) envelope namespace
         "zs": "http://www.loc.gov/zing/srw/",
@@ -67,6 +69,7 @@ class LocApiClient(BaseApiClient):
 
     @property
     def source(self) -> str:
+        # Return the source identifier for this API client
         return self.source_name
 
     def build_url(self, isbn: str) -> str:
@@ -74,13 +77,15 @@ class LocApiClient(BaseApiClient):
         Build the LoC SRU query URL for an ISBN.
         Query syntax: bath.isbn={isbn}
         """
+        # Construct query parameters for the SRU search
         params = {
-            "operation": "searchRetrieve",
-            "version": "1.1",
-            "query": f"bath.isbn={isbn}",
-            "recordSchema": "marcxml",
-            "maximumRecords": "1",
+            "operation": "searchRetrieve",  # Standard SRU operation
+            "version": "1.1",  # SRU protocol version
+            "query": f"bath.isbn={isbn}",  # CQL query using BATH profile for ISBN
+            "recordSchema": "marcxml",  # Request MARCXML format output
+            "maximumRecords": "1",  # Only retrieve the first matching record
         }
+        # Construct and return the full URL with query string
         return f"{self.base_url}?{urllib.parse.urlencode(params)}"
 
     def fetch(self, isbn: str) -> Any:
@@ -102,16 +107,23 @@ class LocApiClient(BaseApiClient):
         Exception
             On non-200 HTTP status or unparseable XML.
         """
+        # Build the query URL for this ISBN
         url = self.build_url(isbn)
+        # Create a request object with the URL
         req = urllib.request.Request(url)
+        # Add HTTP headers for proper client identification and content negotiation
         req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")
         req.add_header("Accept", "application/xml,text/xml,*/*")
 
+        # Execute the request using the CA-aware HTTP utility
         with urlopen_with_ca(req, timeout=self.timeout_seconds) as resp:
+            # Verify successful response
             if resp.status != 200:
                 raise Exception(f"HTTP {resp.status}")
+            # Read the response body
             xml_bytes = resp.read()
 
+        # Parse the XML response into an element tree
         try:
             return ET.fromstring(xml_bytes)
         except Exception as e:
@@ -143,6 +155,7 @@ class LocApiClient(BaseApiClient):
             - ``status="error"`` if the payload is not an XML element (i.e.,
               ``fetch`` returned something unexpected).
         """
+        # Validate that the payload is an XML element
         if not isinstance(payload, ET.Element):
             return ApiResult(
                 isbn=isbn,
@@ -151,6 +164,7 @@ class LocApiClient(BaseApiClient):
                 error_message="Unexpected LoC payload format",
             )
 
+        # Extract the record count from the SRW response
         # zs:numberOfRecords is the SRW standard element that reports how many
         # bibliographic records matched the query.
         records_count_text = payload.findtext("zs:numberOfRecords", default="0", namespaces=self.namespaces)
@@ -159,6 +173,7 @@ class LocApiClient(BaseApiClient):
         except ValueError:
             records_count = 0
 
+        # Return not_found if no records matched the query
         if records_count <= 0:
             return ApiResult(
                 isbn=isbn,
@@ -185,6 +200,7 @@ class LocApiClient(BaseApiClient):
         lccn = validate_lccn(lccn, source=self.source)
         nlmcn = validate_nlmcn(nlmcn, source=self.source)
 
+        # Return success if at least one valid call number was found
         if lccn or nlmcn:
             return ApiResult(
                 isbn=isbn,
@@ -196,6 +212,7 @@ class LocApiClient(BaseApiClient):
                 isbns=isbns,
             )
 
+        # Record was found but no usable call number could be extracted
         return ApiResult(
             isbn=isbn,
             source=self.source,

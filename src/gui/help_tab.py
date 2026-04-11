@@ -98,11 +98,11 @@ class HelpTab(QWidget):
             f"border: 1px solid {c.get('border_strong', '#6b7280')};"
             f"border-bottom: 2px solid {c.get('shadow', '#030712')};"
             f"border-radius: 6px;"
-            f"padding: 5px 12px;"
+            f"padding: 4px 11px;"
             f"font-family: 'SF Mono','Consolas','Courier New',monospace;"
             f"font-size: 12px;"
             f"font-weight: 700;"
-            f"letter-spacing: 0.3px;"
+            f"letter-spacing: 0;"
         )
 
     def _panel_style(self) -> str:
@@ -147,7 +147,7 @@ class HelpTab(QWidget):
     def _section_title_style(self) -> str:
         section_color = "#ffffff" if self._colors.get("bg", "").lower() == CATPPUCCIN_DARK.get("bg", "").lower() else "#000000"
         return (
-            "font-size: 13px; font-weight: 800; letter-spacing: 1.3px;"
+            "font-size: 13px; font-weight: 800; letter-spacing: 1px;"
             f"color: {section_color};"
         )
 
@@ -271,7 +271,7 @@ class HelpTab(QWidget):
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._panel_frames.append(frame)
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setContentsMargins(28, 20, 28, 20)
         lay.setSpacing(0)
 
         heading_row = QHBoxLayout()
@@ -285,27 +285,28 @@ class HelpTab(QWidget):
         heading_row.addWidget(heading_lbl)
         heading_row.addStretch()
         lay.addLayout(heading_row)
-        lay.addSpacing(20)
+        lay.addSpacing(14)
 
         sections = self._shortcut_sections()
         for index, (category, items) in enumerate(sections):
             lay.addWidget(self._build_shortcut_section(category, items))
             if index < len(sections) - 1:
-                lay.addStretch(1)
+                lay.addSpacing(10)
+        lay.addStretch(1)
         return frame
 
     def _build_shortcut_section(self, category: str, items: list[tuple[str, str]]) -> QWidget:
         widget = QWidget()
         widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(0)
 
         cat_row = QHBoxLayout()
         cat_row.setSpacing(10)
-        cat_row.setContentsMargins(0, 4, 0, 10)
+        cat_row.setContentsMargins(0, 2, 0, 8)
         cat_lbl = QLabel(category.upper())
         cat_lbl.setStyleSheet(self._section_title_style())
         self._section_labels.append(cat_lbl)
@@ -322,20 +323,21 @@ class HelpTab(QWidget):
         for row_index, (keys, description) in enumerate(items):
             layout.addWidget(self._build_shortcut_row(keys, description))
             if row_index < len(items) - 1:
-                layout.addSpacing(12)
+                layout.addSpacing(6)
 
+        widget.setFixedHeight(widget.sizeHint().height())
         return widget
 
     def _build_shortcut_row(self, keys: str, description: str) -> QWidget:
         widget = QWidget()
         widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        widget.setMinimumHeight(40)
+        widget.setFixedHeight(34)
         row = QHBoxLayout(widget)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(18)
+        row.setSpacing(16)
 
         badge_box = QHBoxLayout()
-        badge_box.setSpacing(8)
+        badge_box.setSpacing(7)
         badge_box.setContentsMargins(0, 0, 0, 0)
         badge_box.addStretch(1)
 
@@ -344,6 +346,7 @@ class HelpTab(QWidget):
             kbd = QLabel(part)
             kbd.setAlignment(Qt.AlignmentFlag.AlignCenter)
             kbd.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            kbd.setFixedHeight(30)
             kbd.setStyleSheet(self._kbd_style())
             self._kbd_labels.append(kbd)
             badge_box.addWidget(kbd)
@@ -372,7 +375,7 @@ class HelpTab(QWidget):
         frame = QFrame()
         frame.setObjectName("HelpPanel")
         frame.setStyleSheet(self._panel_style())
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._panel_frames.append(frame)
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(26, 22, 26, 22)

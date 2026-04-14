@@ -142,6 +142,14 @@ def _dedupe_source_text(value: str) -> str:
     Splits the value on common separators (``+``, ``,``, ``;``, ``|``), normalises
     the known ``UCB`` → ``UBC`` alias, deduplicates preserving order, and rejoins
     with " + ".  Returns an empty string if no non-empty parts remain.
+
+    Args:
+        value: Raw source string as stored in a harvest event payload (may contain
+               multiple source names joined by any of the supported separators).
+
+    Returns:
+        Deduplicated, separator-normalised string suitable for display, or ``""``
+        when *value* is empty or contains only whitespace parts.
     """
     parts: list[str] = []
     for piece in re.split(r"[+,;|]", str(value or "")):
@@ -323,13 +331,42 @@ class HarvestWorker(QThread):
         self._session_invalid = []
 
     def _effective_targets_for_run(self, targets):
-        """Return the target list that should actually be used for this run."""
+        """Return the target list that should actually be used for this run.
+
+        When ``db_only`` is set in the active config (either via the profile or a
+        run-level override), no live targets are queried and an empty list is
+        returned so ``run_harvest`` operates in database-only mode.
+
+        Args:
+            targets: Full list of instantiated target objects built by
+                     ``_build_targets``.
+
+        Returns:
+            The original *targets* list, or ``[]`` when running in DB-only mode.
+        """
         if self.config.get("db_only", False):
             return []
         return targets
 
     def _build_final_stats(self, summary, invalid_count):
-        """Build the final dashboard summary dict from a harvest summary."""
+        """Build the final dashboard summary dict from a harvest summary.
+
+        Merges the ``not_in_local_catalog`` count into ``"failed"`` so the
+        dashboard displays a single consolidated failure number.
+
+        Args:
+            summary: ``HarvestSummary`` object returned by ``run_harvest``;
+                     must expose ``total_isbns``, ``successes``, ``failures``,
+                     ``cached_hits``, ``skipped_recent_fail``, and optionally
+                     ``not_in_local_catalog``.
+            invalid_count: Number of ISBNs that failed format validation before
+                           the harvest loop started.
+
+        Returns:
+            Dict with keys ``"total"``, ``"found"``, ``"failed"``, ``"cached"``,
+            ``"skipped"``, ``"invalid"``, ``"not_in_local_catalog"``, and
+            ``"run_stats"`` (the live ``RunStats`` dataclass).
+        """
         local_catalog_misses = int(getattr(summary, "not_in_local_catalog", 0) or 0)
         return {
             "total": summary.total_isbns,

@@ -22,47 +22,47 @@ Key design decisions:
   ``finally`` block.
 """
 
-from PyQt6.QtWidgets import (
-    QWidget,
-    QApplication,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QGroupBox,
-    QTextEdit,
-    QProgressBar,
-    QFrame,
-    QGridLayout,
-    QMessageBox,
-    QFileDialog,
-    QInputDialog,
-    QLineEdit,
-    QScrollArea,
-    QSizePolicy,
-    QComboBox,
-    QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QDialog,
-    QCheckBox,
+from PyQt6.QtWidgets import (  # Core Qt widget toolkit
+    QWidget,          # Base class for all UI widgets
+    QApplication,     # Application singleton (clipboard access, processEvents)
+    QVBoxLayout,      # Vertical box layout
+    QHBoxLayout,      # Horizontal box layout
+    QLabel,           # Static text / image display
+    QPushButton,      # Clickable button
+    QGroupBox,        # Labelled container with optional border
+    QTextEdit,        # Multi-line scrollable text area
+    QProgressBar,     # Horizontal progress indicator
+    QFrame,           # Generic styled container frame
+    QGridLayout,      # Two-dimensional grid layout
+    QMessageBox,      # Modal alert / confirmation dialogs
+    QFileDialog,      # OS-native open/save file picker
+    QInputDialog,     # Simple single-value input dialogs
+    QLineEdit,        # Single-line text input
+    QScrollArea,      # Scrollable viewport for large content
+    QSizePolicy,      # Widget resize / stretch behaviour
+    QComboBox,        # Drop-down selection widget
+    QSplitter,        # Resizable divider between two widgets
+    QTableWidget,     # Spreadsheet-style table with editable cells
+    QTableWidgetItem, # Single cell item for QTableWidget
+    QHeaderView,      # Column/row header for table or tree views
+    QDialog,          # Base class for custom modal dialogs
+    QCheckBox,        # Toggleable tick-box control
 )
-from datetime import datetime, timedelta
-from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QUrl
-from PyQt6.QtGui import QShortcut, QKeySequence, QColor, QBrush, QDesktopServices
-from pathlib import Path
-from enum import Enum, auto
-from itertools import islice
-import csv
-import hashlib
-import logging
-import sys
-import json
+from datetime import datetime, timedelta  # Timestamps and retry-window arithmetic
+from PyQt6.QtCore import Qt, QTimer, QTime, pyqtSignal, QSize, QUrl  # Core non-widget Qt types: alignment flags, timers, signals, URLs
+from PyQt6.QtGui import QShortcut, QKeySequence, QColor, QBrush, QDesktopServices  # Keyboard shortcuts, colours, and OS shell integration
+from pathlib import Path  # OS-independent filesystem path handling
+from enum import Enum, auto  # UIState enumeration definition
+from itertools import islice  # Efficient first-N-lines reading for large files
+import csv  # Reading and writing TSV/CSV output files
+import hashlib  # SHA-256 hashing for MARC file deduplication
+import logging  # Module-level logger
+import sys  # Platform detection (darwin check for Cmd key)
+import json  # Loading advanced_settings.json overrides
 
-from .icons import SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY
-from .input_tab import ClickableDropZone
-from .harvest_support import (
+from .icons import SVG_HARVEST, SVG_INPUT, SVG_ACTIVITY  # Inline SVG icon strings for header labels
+from .input_tab import ClickableDropZone  # Reusable drop-zone widget from the Input tab
+from .harvest_support import (  # Worker thread, drag-drop box, and shared helper functions
     DroppableGroupBox,
     HarvestWorker,
     _extract_call_number_classification,
@@ -72,18 +72,29 @@ from .harvest_support import (
     _safe_filename,
 )
 
-from src.harvester.marc_import import MarcImportService
-from src.harvester.run_harvest import parse_isbn_file
-from src.database import DatabaseManager, now_datetime_str
-from src.config.profile_manager import ProfileManager
-from src.utils.isbn_validator import normalize_isbn
-from .theme_manager import ThemeManager
+from src.harvester.marc_import import MarcImportService  # Persists parsed MARC records to the database
+from src.harvester.run_harvest import parse_isbn_file  # Parses and validates an ISBN input file
+from src.database import DatabaseManager, now_datetime_str  # DB access and current-timestamp helper
+from src.config.profile_manager import ProfileManager  # Reading and writing profile settings
+from src.utils.isbn_validator import normalize_isbn  # Normalises raw ISBN strings for validation
+from .theme_manager import ThemeManager  # Reads the active light/dark theme name
 
 logger = logging.getLogger(__name__)
 
 
 def _friendly_error(exc: Exception) -> str:
-    """Convert a technical exception into a plain-language message for end users."""
+    """Convert a technical exception into a plain-language message for end users.
+
+    Matches common substrings in the lowercased exception message and returns a
+    sentence the user can act on without reading a traceback.  Falls back to a
+    generic "unexpected error" message when no pattern matches.
+
+    Args:
+        exc: The exception to translate.
+
+    Returns:
+        A plain-English string suitable for display in a ``QMessageBox``.
+    """
     msg = str(exc).lower()
     if "database is locked" in msg:
         return "The database is currently in use by another process. Please wait a moment and try again."
@@ -834,10 +845,12 @@ class HarvestTab(QWidget):
         """Reserved hook called on every resize event. Currently no scroll-policy adjustment is needed."""
 
     def resizeEvent(self, event):
+        """Re-evaluate scroll policies whenever the widget is resized."""
         super().resizeEvent(event)
         self._update_scrollbar_policy()
 
     def changeEvent(self, event):
+        """Re-evaluate scroll policies on window-state changes (e.g. maximise/restore)."""
         super().changeEvent(event)
         if event.type() == event.Type.WindowStateChange:
             self._update_scrollbar_policy()
@@ -981,7 +994,12 @@ class HarvestTab(QWidget):
         self._transition_state(UIState.READY, count=count)
 
     def _load_file_preview(self):
-        """Load a snippet of the file into the preview table."""
+        """Load a snippet of the file into the preview table.
+
+        Reads up to 21 lines (keeping 20), splits on tab, and validates the first
+        cell of each row as an ISBN.  Appends a colour-coded "Valid"/"Invalid" status
+        column.  Called internally by ``set_input_file`` after a new file is accepted.
+        """
         self.preview_table.clearContents()
         self.preview_table.setRowCount(0)
         if not self.input_file:
@@ -1036,7 +1054,15 @@ class HarvestTab(QWidget):
             self._show_preview_message("Could not load preview.")
 
     def _show_preview_message(self, msg: str):
-        """Show a single-cell message in the preview table."""
+        """Show a single-cell message in the preview table instead of row data.
+
+        Resets the table to one row / one column and writes *msg* into the only cell.
+        Used to surface errors (file missing, unreadable) inside the preview area
+        without a separate dialog.
+
+        Args:
+            msg: Human-readable text to display (e.g. ``"Error: File does not exist."``).
+        """
         self.preview_table.setColumnCount(1)
         self.preview_table.setRowCount(1)
         self.preview_table.setHorizontalHeaderLabels(["Info"])
@@ -1070,14 +1096,28 @@ class HarvestTab(QWidget):
                 checkbox.setStyleSheet(style)
 
     def _on_marc_only_toggled(self, checked: bool):
-        """Keep MARC-only and database-only run overrides mutually exclusive."""
+        """Keep MARC-only and database-only run overrides mutually exclusive.
+
+        When the user enables MARC-only mode, this slot unchecks the database-only
+        checkbox (blocking its signal to avoid a recursive toggle loop).
+
+        Args:
+            checked: ``True`` when the MARC-only checkbox was just checked.
+        """
         if checked and hasattr(self, "chk_db_only") and self.chk_db_only.isChecked():
             self.chk_db_only.blockSignals(True)
             self.chk_db_only.setChecked(False)
             self.chk_db_only.blockSignals(False)
 
     def _on_db_only_toggled(self, checked: bool):
-        """Keep database-only and MARC-only run overrides mutually exclusive."""
+        """Keep database-only and MARC-only run overrides mutually exclusive.
+
+        When the user enables database-only mode, this slot unchecks the MARC-only
+        checkbox (blocking its signal to avoid a recursive toggle loop).
+
+        Args:
+            checked: ``True`` when the database-only checkbox was just checked.
+        """
         if checked and hasattr(self, "chk_marc_only") and self.chk_marc_only.isChecked():
             self.chk_marc_only.blockSignals(True)
             self.chk_marc_only.setChecked(False)
@@ -1388,6 +1428,15 @@ class HarvestTab(QWidget):
         self._start_worker(config, targets, bypass_retry_isbns=bypass_retry_isbns)
 
     def _prompt_both_stop_policy(self):
+        """Ask the user which stop policy to use when running in "both" call-number mode.
+
+        Presents a ``QMessageBox`` with four choices reflecting how the harvester
+        should behave when a target returns only one of LCCN or NLM for an ISBN.
+
+        Returns:
+            One of ``"lccn"``, ``"nlmcn"``, ``"either"``, ``"both"``, or ``None``
+            when the user cancels the dialog.
+        """
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Both Mode")
@@ -1962,7 +2011,14 @@ class HarvestTab(QWidget):
             self._set_marc_file(path)
 
     def _set_marc_file(self, path: str):
-        """Populate the MARC controls after browse or drag-and-drop."""
+        """Populate the MARC controls after browse or drag-and-drop.
+
+        Stores the selected path, updates the path display field and its tooltip,
+        enables the Run button, shows the Clear button, and resets the progress bar.
+
+        Args:
+            path: Absolute path string to the MARC file that was selected.
+        """
         self._marc_selected_path = path
         file_name = Path(path).name
         self._marc_path_edit.setText(file_name)
@@ -1986,7 +2042,18 @@ class HarvestTab(QWidget):
 
     @staticmethod
     def _compute_file_hash(path: str) -> str:
-        """Return a stable SHA-256 hash for the selected MARC file."""
+        """Return a stable SHA-256 hash for the selected MARC file.
+
+        Reads the file in 1 MB chunks to keep memory usage constant for large
+        MARC files.  Used by ``_run_marc_import`` to detect re-imports of the
+        same physical file under a different name.
+
+        Args:
+            path: Absolute path string to the file to hash.
+
+        Returns:
+            Lowercase hex-encoded SHA-256 digest string.
+        """
         digest = hashlib.sha256()
         with open(path, "rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -2074,7 +2141,18 @@ class HarvestTab(QWidget):
         state: str = "running",
         visible: bool = True,
     ) -> None:
-        """Update the MARC-only progress bar without touching harvest state."""
+        """Update the MARC-only progress bar without touching harvest state.
+
+        Clamps *value* to ``[0, 100]``, sets the ``"state"`` dynamic property
+        (``"running"``, ``"success"``, or ``"error"``) so QSS can apply the
+        appropriate colour, and forces a QSS re-polish.
+
+        Args:
+            value: Integer percentage (0–100) to display.
+            state: QSS state string; defaults to ``"running"``.
+            visible: Whether to show the progress bar; use ``False`` to hide it
+                     after an idle or completed import.
+        """
         if not hasattr(self, "_marc_progress_bar"):
             return
 
@@ -2285,7 +2363,16 @@ class HarvestTab(QWidget):
         
 
     def _run_marc_import(self):
-        """Run the MARC import pipeline for the currently selected file."""
+        """Execute the full MARC import pipeline for the currently selected file.
+
+        Performs source-conflict detection via ``_resolve_marc_source_conflict`` and
+        SHA-256 deduplication via ``_compute_file_hash``.  Persists records using
+        ``MarcImportService`` (which optionally replaces the existing source), writes
+        a TSV export, updates the MARC stat tiles, and shows a summary dialog.
+
+        This method contains all the business logic; it is called by ``_import_marc_file``
+        which wraps it in a try/except to surface errors as a ``QMessageBox``.
+        """
         path = (self._marc_selected_path or "").strip()
         if not path:
             return
@@ -2491,7 +2578,12 @@ class HarvestTab(QWidget):
             self._open_output_folder_path(live_dir)
 
     def _import_marc_file(self):
-        """Run the MARC import pipeline and keep failures inside the GUI."""
+        """Public entry point wired to the "Run" button in the MARC Import card.
+
+        Delegates all work to ``_run_marc_import`` and catches any unhandled exception
+        so the application never crashes silently; instead a ``QMessageBox.critical``
+        dialog is shown with a plain-language description of the failure.
+        """
         try:
             self._run_marc_import()
         except Exception as exc:

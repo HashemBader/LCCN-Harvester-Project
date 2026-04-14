@@ -594,7 +594,16 @@ class TargetsTab(QWidget):
             self._edit_specific_target(target)
 
     def _edit_specific_target(self, target):
-        """Open edit dialog for a given target object."""
+        """Open the ``TargetDialog`` pre-populated with *target* and apply any accepted changes.
+
+        Handles the three possible dialog outcomes: accepted (save edits), remove
+        requested (delegate to ``_remove_specific_target``), and rejected (no-op).
+        After saving, applies any rank change via ``_on_rank_changed`` and updates
+        the server-status cache with the connection result from the dialog.
+
+        Args:
+            target: The ``Target`` object to edit.
+        """
         if target.target_type == "API":
             return
         if not self._can_mutate_targets("edit a target"):
@@ -639,7 +648,15 @@ class TargetsTab(QWidget):
             self._remove_specific_target(target)
 
     def _remove_specific_target(self, target):
-        """Remove a specific target object."""
+        """Prompt the user to confirm deletion and, on confirmation, remove *target*.
+
+        Built-in API targets are protected and cannot be deleted.  The mutation
+        guard (``_can_mutate_targets``) is also checked before presenting the
+        confirmation dialog.
+
+        Args:
+            target: The ``Target`` object to remove.
+        """
         if target.target_type == "API":
             QMessageBox.warning(self, "Restricted", "Cannot remove built-in API targets.")
             return

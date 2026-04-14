@@ -322,6 +322,26 @@ class HarvestWorker(QThread):
         self._session_failed = []
         self._session_invalid = []
 
+    def _effective_targets_for_run(self, targets):
+        """Return the target list that should actually be used for this run."""
+        if self.config.get("db_only", False):
+            return []
+        return targets
+
+    def _build_final_stats(self, summary, invalid_count):
+        """Build the final dashboard summary dict from a harvest summary."""
+        local_catalog_misses = int(getattr(summary, "not_in_local_catalog", 0) or 0)
+        return {
+            "total": summary.total_isbns,
+            "found": summary.successes,
+            "failed": summary.failures + local_catalog_misses,
+            "cached": summary.cached_hits,
+            "skipped": summary.skipped_recent_fail,
+            "invalid": invalid_count,
+            "not_in_local_catalog": local_catalog_misses,
+            "run_stats": self.run_stats,
+        }
+
     def run(self):
         """Entry point of the QThread; executes the full harvest lifecycle.
 
@@ -361,7 +381,7 @@ class HarvestWorker(QThread):
 
             self.run_stats = RunStats(
                 total_rows=parsed.total_nonempty,
-                valid_rows=parsed.valid_count,
+                valid_rows=total,
                 duplicates=parsed.duplicate_count,
                 invalid=invalid_count,
                 processed_unique=0,
@@ -528,7 +548,7 @@ class HarvestWorker(QThread):
                     self._refresh_live_linked_isbns_file()
                     return
 
-            targets = self._build_targets()
+            targets = self._effective_targets_for_run(self._build_targets())
 
             retry_days = self.config.get("retry_days", 7)
             call_number_mode = self.config.get("call_number_mode", "lccn")
@@ -553,15 +573,7 @@ class HarvestWorker(QThread):
                 db_only=self.config.get("db_only", False),
             )
 
-            final_stats = {
-                "total": summary.total_isbns,
-                "found": summary.successes,
-                "failed": summary.failures,
-                "cached": summary.cached_hits,
-                "skipped": summary.skipped_recent_fail,
-                "invalid": invalid_count,
-                "run_stats": self.run_stats,
-            }
+            final_stats = self._build_final_stats(summary, invalid_count)
 
             self.status_message.emit(
                 messages.HarvestMessages.harvest_completed.format(

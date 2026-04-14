@@ -4,6 +4,39 @@ This guide covers the current GUI workflow for LCCN Harvester.
 
 For plain-language definitions of ISBNs, call numbers, MARC, caching, and linked ISBNs, see [concepts.md](concepts.md).
 
+## Table Of Contents
+
+- [Overview](#overview)
+- [Launching the App](#launching-the-app)
+- [Profiles](#profiles)
+  - [Important profile behavior](#important-profile-behavior)
+  - [Create a profile](#create-a-profile)
+  - [Switch profiles](#switch-profiles)
+- [Configure: Targets](#configure-targets)
+- [Configure: Harvest Settings](#configure-harvest-settings)
+- [Preparing Input Files](#preparing-input-files)
+- [Harvest Page](#harvest-page)
+  - [Run setup controls](#run-setup-controls)
+  - [Stop Rule options](#stop-rule-options)
+  - [Running a harvest](#running-a-harvest)
+- [Harvest Outputs](#harvest-outputs)
+  - [Successful results](#successful-results)
+  - [Failed results](#failed-results)
+  - [Invalid results](#invalid-results)
+  - [Problems results](#problems-results)
+  - [Linked ISBNs snapshot](#linked-isbns-snapshot)
+- [MARC Import](#marc-import)
+  - [MARC import flow](#marc-import-flow)
+- [Dashboard](#dashboard)
+- [Help And Accessibility](#help-and-accessibility)
+- [Troubleshooting](#troubleshooting)
+  - [No results returned](#no-results-returned)
+  - [File preview shows no valid rows](#file-preview-shows-no-valid-rows)
+  - [SSL or certificate problems](#ssl-or-certificate-problems)
+  - [Database locked](#database-locked)
+  - [Target unavailable](#target-unavailable)
+- [See Also](#see-also)
+
 ---
 
 ## Overview
@@ -31,14 +64,6 @@ From source:
 python app_entry.py
 ```
 
-On macOS and Linux you can also use:
-
-```bash
-./run_gui.sh
-```
-
-Packaged builds created with the repository build scripts launch the same GUI.
-
 ---
 
 ## Profiles
@@ -48,7 +73,7 @@ Profiles keep settings and targets separate for different workflows.
 Each profile has:
 
 - Its own settings JSON under `config/profiles/<slug>/`
-- Its own targets TSV under `config/profiles/<slug>/`
+- Its own targets TSV under `config/profiles/<slug>/` if it is a user-created profile
 - Its own output folder under `data/<slug>/`
 
 All profiles share the same SQLite database file at `data/lccn_harvester.sqlite3`.
@@ -56,6 +81,7 @@ All profiles share the same SQLite database file at `data/lccn_harvester.sqlite3
 ### Important profile behavior
 
 - `Default Settings` is built in and read-only.
+- `Default Settings` uses the shared targets file at `data/targets.tsv`.
 - To keep changes, create a new profile and save there.
 - Deleting a profile removes its saved configuration files, but its existing output folder is left in place.
 
@@ -131,8 +157,6 @@ Recognized first-column header values include:
 - `ISBNs`
 - `ISBN10`
 - `ISBN13`
-- `World ISBN`
-- `Book ISBN`
 
 Example:
 

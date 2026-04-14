@@ -47,6 +47,7 @@ class HarvestSummary:
         attempted:            ISBNs that were actually looked up externally.
         successes:            ISBNs for which a call number was found.
         failures:             ISBNs attempted but not found.
+        not_in_local_catalog: ISBNs missing from the local DB during a DB-only run.
         dry_run:              ``True`` if the run was read-only (no DB writes).
     """
     total_rows: int
@@ -57,6 +58,7 @@ class HarvestSummary:
     successes: int
     failures: int
     dry_run: bool
+    not_in_local_catalog: int = 0
 
 
 @dataclass
@@ -336,5 +338,6 @@ def run_harvest(
         attempted=orch_summary.attempted,
         successes=orch_summary.successes,
         failures=orch_summary.failures,
+        not_in_local_catalog=orch_summary.not_in_local_catalog,
         dry_run=orch_summary.dry_run,
     )

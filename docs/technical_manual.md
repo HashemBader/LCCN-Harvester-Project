@@ -2,6 +2,29 @@
 
 This document is the developer-facing reference for the current LCCN Harvester codebase.
 
+## Table Of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Entry Points](#entry-points)
+- [Runtime Paths](#runtime-paths)
+- [GUI Layer](#gui-layer)
+  - [Pages](#pages)
+  - [Notable GUI behavior](#notable-gui-behavior)
+- [Profiles And Targets](#profiles-and-targets)
+- [Input Parsing](#input-parsing)
+- [Harvest Pipeline](#harvest-pipeline)
+- [MARC Import](#marc-import)
+- [Output Files](#output-files)
+- [Database Schema](#database-schema)
+  - [`main`](#main)
+  - [`attempted`](#attempted)
+  - [`linked_isbns`](#linked_isbns)
+  - [`marc_imports`](#marc_imports)
+- [Database Browser](#database-browser)
+- [Notifications And Accessibility](#notifications-and-accessibility)
+- [Build And Packaging](#build-and-packaging)
+- [See Also](#see-also)
+
 ---
 
 ## Architecture Overview
@@ -61,6 +84,7 @@ config/
 
 data/
   gui_settings.json
+  targets.tsv
   lccn_harvester.sqlite3
   <slug>/
     <profile>-success-<timestamp>.tsv / .csv
@@ -110,7 +134,8 @@ Key points:
 
 - The active profile name in `config/active_profile.txt`
 - Profile settings in `config/profiles/<slug>/<slug>.json`
-- Per-profile targets in `config/profiles/<slug>/<slug>_targets.tsv`
+- The built-in default targets in `data/targets.tsv`
+- User-profile targets in `config/profiles/<slug>/<slug>_targets.tsv`
 
 `TargetsManager` persists the target list as TSV and ensures the built-in API targets are present.
 
@@ -294,19 +319,14 @@ It does not execute arbitrary SQL.
 Accessibility-related notes live in:
 
 - `docs/WCAG_ACCESSIBILITY.md`
-- `docs/WCAG_SELF_CHECK_REPORT.md`
-
-The repository also includes `wcag_self_check.py`, which regenerates the report.
 
 ---
 
 ## Build And Packaging
 
-- `build_mac.sh` builds the macOS app bundle
-- `build_windows.bat` builds the Windows executable
-- Both use `LCCN_Harvester.spec`
+For the `main` branch baseline, the reliable documented execution path is running from source.
 
-See [local_app_build_guide.md](local_app_build_guide.md) for the packaging workflow.
+Packaging instructions should only claim script-based build support when the branch actually contains the corresponding packaging assets.
 
 ---
 

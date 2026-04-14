@@ -983,8 +983,11 @@ class DashboardTab(QWidget):
             if summary_keys.intersection(stats):
                 # "cached" means a call number was retrieved from a linked ISBN — still a success.
                 successful = cls._int_stat(stats.get("found")) + cls._int_stat(stats.get("cached"))
-                # "skipped" (retry window not yet expired) is counted in the Failed KPI, not ignored.
-                failed = cls._int_stat(stats.get("failed")) + cls._int_stat(stats.get("skipped"))
+                failed = (
+                    cls._int_stat(stats.get("failed"))
+                    + cls._int_stat(stats.get("skipped"))
+                    + cls._int_stat(stats.get("not_in_local_catalog"))
+                )
                 return {
                     "processed": successful + failed,
                     "successful": successful,

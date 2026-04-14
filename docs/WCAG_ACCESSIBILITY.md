@@ -23,23 +23,6 @@ Formal WCAG conformance requires manual assistive-technology testing and indepen
 
 ---
 
-## Internal Self-Check
-
-The repository includes:
-
-- `wcag_self_check.py`
-- [WCAG_SELF_CHECK_REPORT.md](WCAG_SELF_CHECK_REPORT.md)
-
-The script performs a small static code-level check covering areas such as focus styling, accessible labels, and shortcut discoverability.
-
-To regenerate the report:
-
-```bash
-python3 wcag_self_check.py --write docs/WCAG_SELF_CHECK_REPORT.md
-```
-
----
-
 ## Recommended Manual Verification
 
 For release readiness, manually test:

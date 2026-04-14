@@ -81,20 +81,16 @@ Try to keep new code aligned with the surrounding module style rather than intro
 The application itself does not enforce a branching model. Use the workflow your team prefers, but keep these basics in place:
 
 1. Create a branch for your work.
-2. Run the relevant tests before opening a PR.
-3. Update docs when behavior changes.
-4. Keep commits focused and reviewable.
+2. Update docs when behavior changes.
+3. Keep commits focused and reviewable.
 
 ---
 
 ## Packaging
 
-Local packaging is handled by:
+Do not assume packaging assets exist on every branch.
 
-- `build_mac.sh`
-- `build_windows.bat`
-
-See [local_app_build_guide.md](local_app_build_guide.md) for details.
+For the `main` branch baseline used in this documentation pass, the reliable documented execution path is running from source.
 
 ---
 

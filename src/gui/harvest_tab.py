@@ -56,6 +56,7 @@ from enum import Enum, auto
 from itertools import islice
 import csv
 import hashlib
+import logging
 import sys
 import json
 
@@ -77,6 +78,8 @@ from src.database import DatabaseManager, now_datetime_str
 from src.config.profile_manager import ProfileManager
 from src.utils.isbn_validator import normalize_isbn
 from .theme_manager import ThemeManager
+
+logger = logging.getLogger(__name__)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -2281,7 +2284,7 @@ class HarvestTab(QWidget):
             self._open_output_folder_path(live_dir)
         
 
-    def _import_marc_file(self):
+    def _run_marc_import(self):
         """Run the MARC import pipeline for the currently selected file."""
         path = (self._marc_selected_path or "").strip()
         if not path:
@@ -2389,6 +2392,17 @@ class HarvestTab(QWidget):
             self._set_marc_import_progress(100, state="error")
             return
 
+        selected_rows = [
+            (
+                record.isbns[0] if getattr(record, "isbns", ()) else "",
+                record.lccn,
+                record.nlmcn,
+            )
+            for record in parsed_records
+        ]
+        written = len(selected_rows)
+        no_isbn = sum(1 for record in parsed_records if not getattr(record, "isbns", ()))
+
         marc_service = MarcImportService(
             db_path=db_path,
             profile_manager=ProfileManager(),
@@ -2475,6 +2489,22 @@ class HarvestTab(QWidget):
         dlg.exec()
         if dlg.clickedButton() == open_btn:
             self._open_output_folder_path(live_dir)
+
+    def _import_marc_file(self):
+        """Run the MARC import pipeline and keep failures inside the GUI."""
+        try:
+            self._run_marc_import()
+        except Exception as exc:
+            logger.exception("MARC import failed.")
+            self._btn_import_marc.setEnabled(True)
+            self._marc_hint_label.setText("MARC import failed. Please check the file and try again.")
+            self._set_marc_import_progress(100, state="error")
+            QMessageBox.critical(
+                self,
+                "MARC Import Failed",
+                "The MARC import could not be completed.\n\n"
+                f"{_friendly_error(exc)}",
+            )
 
     def _parse_marc_records(self, path: str) -> list:
         """Parse a binary MARC21 or MARCXML file and return (isbn, lccn, nlmcn) tuples.

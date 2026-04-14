@@ -4,7 +4,7 @@ This guide covers the supported ways to run LCCN Harvester.
 
 ---
 
-## Option 1: Run From Source
+## Run From Source
 
 ### Requirements
 
@@ -31,24 +31,15 @@ pip install -r requirements.txt
 python app_entry.py
 ```
 
-On macOS and Linux you can also launch with:
-
-```bash
-./run_gui.sh
-```
-
-That helper sets certificate-related environment variables before starting the GUI.
+This is the documented launch path that is fully represented in the `main` branch.
 
 ---
 
-## Option 2: Build A Local App Package
+## Packaged Builds
 
-Prebuilt binaries are not committed to the repository. Build locally instead:
+The `main` branch does not currently contain committed local packaging scripts or a checked-in build pipeline for platform executables.
 
-- macOS: `build_mac.sh`
-- Windows: `build_windows.bat`
-
-See [local_app_build_guide.md](local_app_build_guide.md) for the full packaging workflow.
+If your team distributes packaged builds separately, follow the release process that belongs to the branch or repository where those packaging assets actually live.
 
 ---
 

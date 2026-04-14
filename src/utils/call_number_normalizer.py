@@ -18,7 +18,7 @@ validator modules (lccn_validator, nlmcn_validator, isbn_validator).
 Part of the LCCN Harvester Project.
 """
 
-from src.utils.isbn_validator import strip_isbn_qualifier
+from src.utils.isbn_validator import strip_isbn_qualifier  # Strips MARC binding qualifiers from raw ISBN subfield text
 
 
 def normalize_call_number(subfield_a: list[str], subfield_b: list[str] | None = None) -> str:

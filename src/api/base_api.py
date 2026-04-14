@@ -10,9 +10,9 @@ the harvest orchestrator can treat clients uniformly.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from abc import ABC, abstractmethod  # Abstract base class machinery
+from dataclasses import dataclass, field  # Declarative data classes with default factories
+from typing import Any, List, Optional  # Generic type hints used throughout this module
 
 
 @dataclass
@@ -63,14 +63,24 @@ class BaseApiClient(ABC):
     This class centralizes shared configuration such as timeouts and retry policy.
     Subclasses must implement fetch() and extract_call_numbers().
 
-    Notes
-    -----
-    - Network logic is implemented in subclasses (requests/urllib/etc.).
-    - Parsing should be kept lightweight here; deeper MARC parsing/normalization
-      should be handled by dedicated modules to avoid duplication.
+    Attributes:
+        timeout_seconds: Socket timeout (seconds) forwarded to every HTTP call.
+        max_retries: Number of additional attempts after an initial failure.
+
+    Notes:
+        Network logic is implemented in subclasses (requests/urllib/etc.).
+        Parsing should be kept lightweight here; deeper MARC parsing/normalization
+        should be handled by dedicated modules to avoid duplication.
     """
 
     def __init__(self, timeout_seconds: int = 10, max_retries: int = 0) -> None:
+        """
+        Initialise shared network settings shared by all concrete API clients.
+
+        Args:
+            timeout_seconds: Socket timeout in seconds for each outbound request.
+            max_retries: How many times to retry a failed request before giving up.
+        """
         # Store the timeout duration for network requests
         self.timeout_seconds = timeout_seconds
         # Store the maximum number of retry attempts for failed requests
@@ -89,20 +99,14 @@ class BaseApiClient(ABC):
         """
         Fetch raw data for the given ISBN from the external service.
 
-        Parameters
-        ----------
-        isbn : str
-            Normalized ISBN string.
+        Args:
+            isbn: Normalized ISBN string.
 
-        Returns
-        -------
-        Any
+        Returns:
             Raw response data (dict, str, bytes, etc.) depending on the API.
 
-        Raises
-        ------
-        Exception
-            For network errors, invalid responses, etc. Caller may retry.
+        Raises:
+            Exception: For network errors, invalid responses, etc. Caller may retry.
         """
         raise NotImplementedError
 
@@ -111,16 +115,11 @@ class BaseApiClient(ABC):
         """
         Extract call numbers from the API payload and return an ApiResult.
 
-        Parameters
-        ----------
-        isbn : str
-            Normalized ISBN string.
-        payload : Any
-            Data returned by fetch() (already decoded/parsed as needed).
+        Args:
+            isbn: Normalized ISBN string.
+            payload: Data returned by fetch() (already decoded/parsed as needed).
 
-        Returns
-        -------
-        ApiResult
+        Returns:
             Standard result object including status and extracted call numbers.
         """
         raise NotImplementedError
@@ -129,14 +128,10 @@ class BaseApiClient(ABC):
         """
         High-level search wrapper with basic retry behavior.
 
-        Parameters
-        ----------
-        isbn : str
-            Normalized ISBN string.
+        Args:
+            isbn: Normalized ISBN string.
 
-        Returns
-        -------
-        ApiResult
+        Returns:
             ApiResult with status "success", "not_found", or "error".
         """
         # Track the last error message encountered during retries
